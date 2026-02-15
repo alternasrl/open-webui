@@ -105,6 +105,9 @@ def file_format(record: "Record"):
         "response_status_code": record["extra"].get("response_status_code", 0),
         "source_ip": record["extra"].get("source_ip", ""),
         "user_agent": record["extra"].get("user_agent", ""),
+        # NIS2 compliance fields
+        "correlation_id": record["extra"].get("correlation_id"),
+        "oidc_claims": record["extra"].get("oidc_claims"),
         "request_object": record["extra"].get("request_object", b""),
         "response_object": record["extra"].get("response_object", b""),
         "extra": record["extra"].get("extra", {}),
@@ -132,7 +135,7 @@ def start_logger():
         level=GLOBAL_LOG_LEVEL,
         format=stdout_format,
         filter=lambda record: (
-            "auditable" not in record["extra"] if ENABLE_AUDIT_STDOUT else True
+            True if ENABLE_AUDIT_STDOUT else "auditable" not in record["extra"]
         ),
     )
     if AUDIT_LOG_LEVEL != "NONE" and ENABLE_AUDIT_LOGS_FILE:

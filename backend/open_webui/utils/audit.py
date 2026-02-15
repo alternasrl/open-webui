@@ -1,5 +1,5 @@
 from contextlib import asynccontextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from enum import Enum
 import re
 from typing import (
@@ -13,6 +13,7 @@ from typing import (
 )
 import uuid
 
+import jwt as pyjwt
 from asgiref.typing import (
     ASGI3Application,
     ASGIReceiveCallable,
@@ -33,6 +34,16 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True)
+class OIDCClaims:
+    """OIDC claims extracted from JWT for NIS2-compliant audit logging."""
+    sub: Optional[str] = None            # OIDC persistent subject identifier
+    auth_time: Optional[int] = None      # Timestamp of IdP authentication
+    amr: Optional[list] = None           # Authentication Methods References (MFA)
+    acr: Optional[str] = None            # Authentication Context Class Reference
+    ad_groups: Optional[list] = None     # AD groups from token claims
+
+
+@dataclass(frozen=True)
 class AuditLogEntry:
     # `Metadata` audit level properties
     id: str
@@ -40,6 +51,9 @@ class AuditLogEntry:
     audit_level: str
     verb: str
     request_uri: str
+    # NIS2 compliance fields
+    correlation_id: Optional[str] = None       # X-Request-ID from WAF/ADSSPM
+    oidc_claims: Optional[dict[str, Any]] = None  # OIDC claims for identity assurance
     user_agent: Optional[str] = None
     source_ip: Optional[str] = None
     # `Request` audit level properties
@@ -202,6 +216,115 @@ class AuditLoggingMiddleware:
 
         return None
 
+    def _extract_correlation_id(self, request: Request) -> Optional[str]:
+        """Extract X-Request-ID header passed by WAF/ADSSPM for NIS2 correlation."""
+        return (
+            request.headers.get("X-Request-ID")
+            or request.headers.get("X-Correlation-ID")
+            or request.headers.get("X-Azure-Ref")
+            or None
+        )
+
+    def _extract_client_ip(self, request: Request) -> Optional[str]:
+        """
+        Extract the real client IP address, traversing Azure WAF / reverse proxy headers.
+
+        Priority:
+          1. X-Azure-ClientIP   — set by Azure Front Door / Application Gateway
+          2. X-Original-Forwarded-For — original client IP before WAF rewrite
+          3. X-Forwarded-For    — standard proxy header (first IP = real client)
+          4. X-Real-IP          — set by some reverse proxies (nginx)
+          5. request.client.host — direct ASGI connection IP (container-internal)
+        """
+        for header in (
+            "X-Azure-ClientIP",
+            "X-Original-Forwarded-For",
+            "X-Forwarded-For",
+            "X-Real-IP",
+        ):
+            value = request.headers.get(header)
+            if value:
+                # X-Forwarded-For can be comma-separated; first entry is the real client
+                return value.split(",")[0].strip()
+
+        return request.client.host if request.client else None
+
+    def _extract_oidc_claims(self, request: Request) -> Optional[dict[str, Any]]:
+        """
+        Extract NIS2-relevant OIDC claims from JWT tokens.
+
+        Tries in order:
+          1. oauth_id_token cookie (OIDC ID token from ADSSPM)
+          2. Authorization Bearer token
+          3. token cookie (session JWT)
+
+        Extracts: sub, auth_time, amr, acr, AD groups.
+        """
+        tokens_to_try = []
+
+        # Priority 1: OIDC ID token cookie (set by OAuth flow)
+        oauth_id_token = request.cookies.get("oauth_id_token")
+        if oauth_id_token:
+            tokens_to_try.append(oauth_id_token)
+
+        # Priority 2: Authorization Bearer token
+        auth_header = request.headers.get("Authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            bearer_token = auth_header[len("Bearer "):]
+            # Skip API keys
+            if not bearer_token.startswith("sk-"):
+                tokens_to_try.append(bearer_token)
+
+        # Priority 3: Session token cookie
+        session_token = request.cookies.get("token")
+        if session_token:
+            tokens_to_try.append(session_token)
+
+        for token in tokens_to_try:
+            claims = self._decode_jwt_claims(token)
+            if claims:
+                return claims
+
+        return None
+
+    def _decode_jwt_claims(self, token: str) -> Optional[dict[str, Any]]:
+        """
+        Decode a JWT token without signature verification to extract
+        NIS2-relevant OIDC claims.
+        """
+        try:
+            decoded = pyjwt.decode(
+                token,
+                options={"verify_signature": False},
+                algorithms=["RS256", "HS256", "ES256"],
+            )
+
+            claims = OIDCClaims(
+                sub=decoded.get("sub"),
+                auth_time=decoded.get("auth_time"),
+                amr=decoded.get("amr"),
+                acr=decoded.get("acr"),
+                ad_groups=(
+                    decoded.get("groups")
+                    or decoded.get("ad_groups")
+                    or decoded.get("roles")
+                    or decoded.get("wids")
+                ),
+            )
+
+            # Only return if we have at least one meaningful claim
+            claims_dict = asdict(claims)
+            if any(v is not None for v in claims_dict.values()):
+                # Filter out None values for cleaner logs
+                return {k: v for k, v in claims_dict.items() if v is not None}
+
+        except pyjwt.exceptions.DecodeError:
+            logger.debug("Failed to decode JWT for OIDC claims extraction")
+        except Exception as e:
+            logger.debug(f"Unexpected error extracting OIDC claims: {str(e)}")
+
+        return None
+
     def _should_skip_auditing(self, request: Request) -> bool:
         if (
             request.method not in {"POST", "PUT", "PATCH", "DELETE"}
@@ -256,6 +379,10 @@ class AuditLoggingMiddleware:
                 user.model_dump(include={"id", "name", "email", "role"}) if user else {}
             )
 
+            # NIS2: Extract correlation ID and OIDC claims
+            correlation_id = self._extract_correlation_id(request)
+            oidc_claims = self._extract_oidc_claims(request)
+
             request_body = context.request_body.decode("utf-8", errors="replace")
             response_body = context.response_body.decode("utf-8", errors="replace")
 
@@ -273,8 +400,10 @@ class AuditLoggingMiddleware:
                 audit_level=self.audit_level.value,
                 verb=request.method,
                 request_uri=str(request.url),
+                correlation_id=correlation_id,
+                oidc_claims=oidc_claims,
                 response_status_code=context.metadata.get("response_status_code", None),
-                source_ip=request.client.host if request.client else None,
+                source_ip=self._extract_client_ip(request),
                 user_agent=request.headers.get("user-agent"),
                 request_object=request_body,
                 response_object=response_body,

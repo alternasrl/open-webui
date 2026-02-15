@@ -23,6 +23,12 @@ services:
     environment:
       - 'OLLAMA_BASE_URL=http://ollama:11434'
       - 'WEBUI_SECRET_KEY='
+      # NIS2: Audit logging - abilita sia stdout (docker logs / Azure Container Apps console) che file
+      - 'AUDIT_LOG_LEVEL=${AUDIT_LOG_LEVEL-REQUEST}'
+      - 'ENABLE_AUDIT_STDOUT=${ENABLE_AUDIT_STDOUT-true}'
+      - 'ENABLE_AUDIT_LOGS_FILE=${ENABLE_AUDIT_LOGS_FILE-true}'
+      # NIS2: Preserve OIDC ID token cookie from ADSSPM for claim extraction
+      - 'ENABLE_OAUTH_ID_TOKEN_COOKIE=${ENABLE_OAUTH_ID_TOKEN_COOKIE-true}'
     extra_hosts:
       - host.docker.internal:host-gateway
     restart: unless-stopped
