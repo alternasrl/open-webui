@@ -1010,6 +1010,12 @@ class OAuthClientManager:
                         token=token,
                     )
                     log.info(f'Stored OAuth session server-side for user {user_id}, client_id {client_id}')
+                    # Invalidate access-log cache so subsequent requests pick up OIDC claims
+                    try:
+                        from open_webui.middleware.access_log import invalidate_user_cache
+                        invalidate_user_cache(user_id)
+                    except Exception:
+                        pass
                 except Exception as e:
                     error_message = 'Failed to store OAuth session server-side'
                     log.error(f'Failed to store OAuth session server-side: {e}')
@@ -1832,6 +1838,12 @@ class OAuthManager:
                 )
 
                 log.info(f'Stored OAuth session server-side for user {user.id}, provider {provider}')
+                # Invalidate access-log cache so subsequent requests pick up OIDC claims
+                try:
+                    from open_webui.middleware.access_log import invalidate_user_cache
+                    invalidate_user_cache(user.id)
+                except Exception:
+                    pass
             else:
                 log.warning(f'Failed to create OAuth session for user {user.id}, provider {provider}')
         except Exception as e:

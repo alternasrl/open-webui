@@ -43,12 +43,38 @@ class _UserContext(NamedTuple):
 
 _CACHE_MAX = 2048
 _CACHE_TTL = 300  # seconds
+_CACHE_TTL_SHORT = 10  # seconds — for entries missing OIDC claims (login race)
 _cache_lock = threading.Lock()
 _cache_data: dict[str, tuple[_UserContext, float]] = {}  # user_id → (ctx, ts)
 
 
-def _decode_id_token_claims(id_token_raw: str) -> tuple[Optional[str], Optional[str]]:
-    """Decode an OIDC id_token (without signature verification) and extract sub + MFA claims."""
+def invalidate_user_cache(user_id: str) -> None:
+    """Invalidate cached user context so the next request re-fetches from DB.
+
+    Call this after saving/updating an OAuth session for the user.
+    """
+    with _cache_lock:
+        _cache_data.pop(user_id, None)
+    _log.debug("Invalidated access-log cache for user %s", user_id)
+
+
+# ---------------------------------------------------------------------------
+# NIS2-required claims inside the OIDC id_token.
+#   sub  — unique subject identifier (mandatory per OIDC Core)
+#   amr  — Authentication Methods References (RFC 8176) — proves MFA
+#   acr  — Authentication Context Class Reference — alternative MFA signal
+# If any of these are absent the access-log cannot be fully NIS2-compliant.
+# ---------------------------------------------------------------------------
+_NIS2_REQUIRED_CLAIMS = ("sub",)
+_NIS2_MFA_CLAIMS = ("amr", "acr")  # at least one must be present
+
+
+def _decode_id_token_claims(id_token_raw: str, user_hint: str = "") -> tuple[Optional[str], Optional[str]]:
+    """Decode an OIDC id_token (without signature verification) and extract sub + MFA claims.
+
+    Emits a WARNING when claims required for NIS2 compliance are missing.
+    *user_hint* is included in warnings to ease troubleshooting.
+    """
     if not id_token_raw or pyjwt is None:
         return None, None
     try:
@@ -57,6 +83,31 @@ def _decode_id_token_claims(id_token_raw: str) -> tuple[Optional[str], Optional[
             options={"verify_signature": False},
             algorithms=["RS256", "HS256", "ES256", "PS256", "EdDSA"],
         )
+
+        # --- NIS2 compliance check ----------------------------------------
+        missing_required = [c for c in _NIS2_REQUIRED_CLAIMS if not decoded.get(c)]
+        has_mfa_claim = any(decoded.get(c) for c in _NIS2_MFA_CLAIMS)
+
+        if missing_required:
+            _log.warning(
+                "NIS2-COMPLIANCE: OIDC id_token for user [%s] is missing required claim(s): %s. "
+                "The IdP (ManageEngine ADSSPM) must be configured to include these claims. "
+                "Available claims: %s",
+                user_hint or "unknown",
+                ", ".join(missing_required),
+                ", ".join(sorted(decoded.keys())),
+            )
+        if not has_mfa_claim:
+            _log.warning(
+                "NIS2-COMPLIANCE: OIDC id_token for user [%s] contains neither 'amr' nor 'acr'. "
+                "MFA status cannot be determined. "
+                "Configure the IdP (ManageEngine ADSSPM) to emit 'amr' (RFC 8176) or 'acr' claims. "
+                "Available claims: %s",
+                user_hint or "unknown",
+                ", ".join(sorted(decoded.keys())),
+            )
+        # ------------------------------------------------------------------
+
         oidc_sub = decoded.get("sub")
         amr = decoded.get("amr")
         acr = decoded.get("acr")
@@ -68,7 +119,11 @@ def _decode_id_token_claims(id_token_raw: str) -> tuple[Optional[str], Optional[
             mfa_status = None
         return oidc_sub, mfa_status
     except Exception as e:
-        _log.debug("Failed to decode id_token: %s", e)
+        _log.warning(
+            "NIS2-COMPLIANCE: Failed to decode OIDC id_token for user [%s]: %s. "
+            "OIDC sub and MFA status will be unavailable.",
+            user_hint or "unknown", e,
+        )
         return None, None
 
 
@@ -85,7 +140,9 @@ def _resolve_user_context(user_id: str) -> _UserContext:
         entry = _cache_data.get(user_id)
         if entry is not None:
             ctx, ts = entry
-            if now - ts < _CACHE_TTL:
+            # Use shorter TTL when OIDC claims are missing (login race condition)
+            ttl = _CACHE_TTL if ctx.oidc_sub else _CACHE_TTL_SHORT
+            if now - ts < ttl:
                 return ctx
             del _cache_data[user_id]
 
@@ -114,12 +171,28 @@ def _resolve_user_context(user_id: str) -> _UserContext:
             if isinstance(token_dict, dict):
                 id_token_raw = token_dict.get("id_token")
                 if id_token_raw and isinstance(id_token_raw, str):
-                    oidc_sub, mfa_status = _decode_id_token_claims(id_token_raw)
+                    oidc_sub, mfa_status = _decode_id_token_claims(
+                        id_token_raw, user_hint=email or user_id
+                    )
+                else:
+                    _log.warning(
+                        "NIS2-COMPLIANCE: OAuth session for user [%s] does not contain an id_token. "
+                        "The IdP (ManageEngine ADSSPM) token response must include an id_token "
+                        "for NIS2-compliant logging. Token keys present: %s",
+                        email or user_id,
+                        ", ".join(sorted(token_dict.keys())) if token_dict else "(empty)",
+                    )
                 # Fallback: some providers put userinfo directly in the token response
                 if not oidc_sub:
                     userinfo = token_dict.get("userinfo")
                     if isinstance(userinfo, dict):
                         oidc_sub = userinfo.get("sub")
+        else:
+            # User is authenticated but has no OAuth session — local account or API key
+            _log.debug(
+                "No OAuth session found for user %s — OIDC claims unavailable (local auth?)",
+                user_id,
+            )
     except Exception as e:
         _log.debug("Failed to resolve OIDC claims from OAuth session for user %s: %s", user_id, e)
 
@@ -170,7 +243,19 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
         
         # Client info: prefer Azure WAF / proxy headers over direct connection
         client_host = self._get_client_ip(request)
-        client_port = request.client.port if request.client else 0
+        # Only append port if using direct connection (not proxy headers)
+        # Proxy headers like X-Forwarded-For may already include port info
+        _has_proxy_header = any(
+            request.headers.get(h) for h in (
+                "X-Azure-ClientIP", "X-Original-Forwarded-For",
+                "X-Forwarded-For", "X-Real-IP",
+            )
+        )
+        if _has_proxy_header:
+            client_display = client_host
+        else:
+            client_port = request.client.port if request.client else 0
+            client_display = f"{client_host}:{client_port}"
         
         # Timestamp inizio
         start_time = time.time()
@@ -186,7 +271,7 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
                 f"email={user_display} | session_id={session_id[:8]} | "
                 f"correlation_id={correlation_id or '-'} | "
                 f"oidc_sub={oidc_sub or '-'} | mfa={mfa_status or '-'} | "
-                f"{client_host}:{client_port} - "
+                f"{client_display} - "
                 f'"{request.method} {request.url.path}" EXCEPTION - '
                 f"{str(e)[:100]} | time={process_time:.3f}s"
             )
@@ -200,7 +285,7 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
             f"email={user_display} | session_id={session_id[:8]} | "
             f"correlation_id={correlation_id or '-'} | "
             f"oidc_sub={oidc_sub or '-'} | mfa={mfa_status or '-'} | "
-            f"{client_host}:{client_port} - "
+            f"{client_display} - "
             f'"{request.method} {request.url.path}" {status_code} | '
             f"time={process_time:.3f}s"
         )
