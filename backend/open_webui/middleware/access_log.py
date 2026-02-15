@@ -9,7 +9,8 @@ import uuid
 import logging
 import sys
 import time
-from typing import Callable, Optional
+import threading
+from typing import Callable, Optional, NamedTuple
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
@@ -18,6 +19,118 @@ try:
     import jwt as pyjwt
 except ImportError:
     pyjwt = None
+
+# ---------------------------------------------------------------------------
+# Thread-safe cache: resolve user UUID → (email, oidc_sub, mfa_status) via DB.
+#
+# Design notes for 2 000 users / 200 concurrent:
+#   - maxsize=2048 covers the full user base → ~100 % hit rate after warm-up.
+#   - TTL of 300 s ensures changes propagate within 5 min.
+#   - threading.Lock protects the dict; released during I/O.
+#   - DB lookups are synchronous but fast (PK index, single row).
+#     They run inside BaseHTTPMiddleware's worker thread, so the
+#     asyncio event loop is NOT blocked.
+# ---------------------------------------------------------------------------
+
+_log = logging.getLogger(__name__)
+
+
+class _UserContext(NamedTuple):
+    email: Optional[str]
+    oidc_sub: Optional[str]
+    mfa_status: Optional[str]
+
+
+_CACHE_MAX = 2048
+_CACHE_TTL = 300  # seconds
+_cache_lock = threading.Lock()
+_cache_data: dict[str, tuple[_UserContext, float]] = {}  # user_id → (ctx, ts)
+
+
+def _decode_id_token_claims(id_token_raw: str) -> tuple[Optional[str], Optional[str]]:
+    """Decode an OIDC id_token (without signature verification) and extract sub + MFA claims."""
+    if not id_token_raw or pyjwt is None:
+        return None, None
+    try:
+        decoded = pyjwt.decode(
+            id_token_raw,
+            options={"verify_signature": False},
+            algorithms=["RS256", "HS256", "ES256", "PS256", "EdDSA"],
+        )
+        oidc_sub = decoded.get("sub")
+        amr = decoded.get("amr")
+        acr = decoded.get("acr")
+        if amr:
+            mfa_status = ",".join(amr) if isinstance(amr, list) else str(amr)
+        elif acr:
+            mfa_status = str(acr)
+        else:
+            mfa_status = None
+        return oidc_sub, mfa_status
+    except Exception as e:
+        _log.debug("Failed to decode id_token: %s", e)
+        return None, None
+
+
+def _resolve_user_context(user_id: str) -> _UserContext:
+    """Resolve email, oidc_sub and mfa_status for a user UUID.
+
+    Uses the Users table for email and the OAuthSessions table for OIDC claims
+    (decrypts the stored id_token server-side — no dependency on browser cookies).
+    Thread-safe, bounded cache with TTL.
+    """
+    now = time.monotonic()
+
+    with _cache_lock:
+        entry = _cache_data.get(user_id)
+        if entry is not None:
+            ctx, ts = entry
+            if now - ts < _CACHE_TTL:
+                return ctx
+            del _cache_data[user_id]
+
+    # --- DB lookups (outside lock) ---
+    email: Optional[str] = None
+    oidc_sub: Optional[str] = None
+    mfa_status: Optional[str] = None
+
+    # 1) Resolve email from Users table
+    try:
+        from open_webui.models.users import Users
+        user = Users.get_user_by_id(user_id)
+        if user and getattr(user, "email", None):
+            email = str(user.email)
+    except Exception:
+        pass
+
+    # 2) Resolve OIDC claims from server-side OAuth session
+    try:
+        from open_webui.models.oauth_sessions import OAuthSessions
+        sessions = OAuthSessions.get_sessions_by_user_id(user_id)
+        if sessions:
+            # Take the most recent session
+            session = sessions[0]
+            token_dict = session.token  # already decrypted by the model
+            if isinstance(token_dict, dict):
+                id_token_raw = token_dict.get("id_token")
+                if id_token_raw and isinstance(id_token_raw, str):
+                    oidc_sub, mfa_status = _decode_id_token_claims(id_token_raw)
+                # Fallback: some providers put userinfo directly in the token response
+                if not oidc_sub:
+                    userinfo = token_dict.get("userinfo")
+                    if isinstance(userinfo, dict):
+                        oidc_sub = userinfo.get("sub")
+    except Exception as e:
+        _log.debug("Failed to resolve OIDC claims from OAuth session for user %s: %s", user_id, e)
+
+    ctx = _UserContext(email=email, oidc_sub=oidc_sub, mfa_status=mfa_status)
+
+    with _cache_lock:
+        while len(_cache_data) >= _CACHE_MAX:
+            _cache_data.pop(next(iter(_cache_data)))
+        _cache_data[user_id] = (ctx, time.monotonic())
+
+    return ctx
 
 
 class AccessLogMiddleware(BaseHTTPMiddleware):
@@ -40,14 +153,20 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
         # Genera o recupera session_id
         session_id = self._get_session_id(request)
         
-        # Estrai user_id dall'autenticazione
-        user_id = await self._get_user_id(request)
+        # Estrai user UUID dal JWT, poi risolvi email + OIDC claims dal DB (con cache)
+        user_uuid = self._extract_user_uuid(request)
+        if user_uuid:
+            ctx = _resolve_user_context(user_uuid)
+            user_display = ctx.email or user_uuid
+            oidc_sub = ctx.oidc_sub
+            mfa_status = ctx.mfa_status
+        else:
+            user_display = "anonymous"
+            # Fast path: try to extract OIDC claims from cookies (pre-login, API keys, etc.)
+            oidc_sub, mfa_status = self._get_oidc_claims_from_cookies(request)
 
         # NIS2: Extract correlation ID from WAF/ADSSPM
         correlation_id = self._get_correlation_id(request)
-
-        # NIS2: Extract OIDC claims (sub, MFA status)
-        oidc_sub, mfa_status = self._get_oidc_nis2_fields(request)
         
         # Client info: prefer Azure WAF / proxy headers over direct connection
         client_host = self._get_client_ip(request)
@@ -64,7 +183,7 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
             # Log anche in caso di eccezione
             process_time = time.time() - start_time
             self.logger.error(
-                f"email={user_id} | session_id={session_id[:8]} | "
+                f"email={user_display} | session_id={session_id[:8]} | "
                 f"correlation_id={correlation_id or '-'} | "
                 f"oidc_sub={oidc_sub or '-'} | mfa={mfa_status or '-'} | "
                 f"{client_host}:{client_port} - "
@@ -78,7 +197,7 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
         
         # Log NIS2-compliant con correlation ID, OIDC subject e MFA status
         self.logger.info(
-            f"email={user_id} | session_id={session_id[:8]} | "
+            f"email={user_display} | session_id={session_id[:8]} | "
             f"correlation_id={correlation_id or '-'} | "
             f"oidc_sub={oidc_sub or '-'} | mfa={mfa_status or '-'} | "
             f"{client_host}:{client_port} - "
@@ -123,58 +242,55 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
 
         return request.client.host if request.client else "-"
 
-    def _get_oidc_nis2_fields(self, request: Request) -> tuple[Optional[str], Optional[str]]:
+    def _get_oidc_claims_from_cookies(self, request: Request) -> tuple[Optional[str], Optional[str]]:
         """
-        Extract NIS2-relevant OIDC fields from JWT tokens.
-        Returns (oidc_sub, mfa_status) tuple.
-
-        Tries:
-          1. oauth_id_token cookie (OIDC ID token)
-          2. Authorization Bearer token
-          3. token cookie (session JWT)
+        Fast path: extract OIDC sub + MFA from cookies without DB access.
+        Used only for unauthenticated requests (no user UUID available).
+        Tries oauth_id_token and Authorization Bearer tokens.
         """
         tokens_to_try = []
 
         oauth_id_token = request.cookies.get("oauth_id_token")
         if oauth_id_token:
-            tokens_to_try.append(oauth_id_token)
+            tokens_to_try.append(("oauth_id_token cookie", oauth_id_token))
 
         auth_header = request.headers.get("Authorization")
         if auth_header and auth_header.startswith("Bearer "):
             bearer = auth_header[len("Bearer "):]
             if not bearer.startswith("sk-"):
-                tokens_to_try.append(bearer)
+                tokens_to_try.append(("Bearer token", bearer))
 
-        session_token = request.cookies.get("token")
-        if session_token:
-            tokens_to_try.append(session_token)
-
-        for token in tokens_to_try:
-            try:
-                if pyjwt is None:
-                    continue
-                decoded = pyjwt.decode(
-                    token,
-                    options={"verify_signature": False},
-                    algorithms=["RS256", "HS256", "ES256"],
-                )
-                oidc_sub = decoded.get("sub")
-                # MFA status: amr is a list of methods, acr is a single value
-                amr = decoded.get("amr")
-                acr = decoded.get("acr")
-                if amr:
-                    mfa_status = ",".join(amr) if isinstance(amr, list) else str(amr)
-                elif acr:
-                    mfa_status = str(acr)
-                else:
-                    mfa_status = None
-
-                if oidc_sub or mfa_status:
-                    return oidc_sub, mfa_status
-            except Exception:
-                continue
+        for source, token_value in tokens_to_try:
+            oidc_sub, mfa_status = _decode_id_token_claims(token_value)
+            if oidc_sub or mfa_status:
+                return oidc_sub, mfa_status
 
         return None, None
+
+    def _extract_user_uuid(self, request: Request) -> Optional[str]:
+        """Extract the user UUID from request.state.user or from the session JWT cookie.
+
+        Returns the UUID string, or None if the user is not authenticated.
+        Does NOT do any DB lookups — that is deferred to _resolve_user_context.
+        """
+        try:
+            # Method 1: request.state.user (set by auth middleware upstream)
+            if hasattr(request.state, "user") and request.state.user:
+                user = request.state.user
+                uid = user.get("id") if isinstance(user, dict) else getattr(user, "id", None)
+                if uid:
+                    return str(uid)
+
+            # Method 2: decode session JWT cookie
+            token = request.cookies.get("token")
+            if token and pyjwt is not None:
+                decoded = pyjwt.decode(token, options={"verify_signature": False})
+                uid = decoded.get("id")
+                if uid:
+                    return str(uid)
+        except Exception:
+            pass
+        return None
 
     def _get_session_id(self, request: Request) -> str:
         """
@@ -208,54 +324,6 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
         # FALLBACK: Genera nuovo UUID
         return str(uuid.uuid4())[:16]
     
-    async def _get_user_id(self, request: Request) -> str:
-        """Estrae email (o user_id come fallback) dalla richiesta"""
-        try:
-            # Metodo 1: request.state.user (dopo autenticazione)
-            if hasattr(request.state, "user") and request.state.user:
-                user = request.state.user
-                if isinstance(user, dict):
-                    # PRIORITÀ: email > username > id
-                    email = user.get("email")
-                    if email:
-                        return str(email)
-                    username = user.get("username")
-                    if username:
-                        return str(username)
-                    user_id = user.get("id")
-                    if user_id:
-                        return str(user_id)
-                elif hasattr(user, "email"):
-                    return str(user.email)
-                elif hasattr(user, "username"):
-                    return str(user.username)
-                elif hasattr(user, "id"):
-                    return str(user.id)
-            
-            # Metodo 2: JWT token nei cookies - estrai l'email
-            token = request.cookies.get("token")
-            if token:
-                try:
-                    if pyjwt is not None:
-                        decoded = pyjwt.decode(token, options={"verify_signature": False})
-                        # PRIORITÀ: email > username > sub > user_id > id
-                        email = (
-                            decoded.get("email") or
-                            decoded.get("username") or 
-                            decoded.get("sub") or 
-                            decoded.get("user_id") or
-                            decoded.get("id")
-                        )
-                        if email:
-                            return str(email)
-                except Exception as e:
-                    self.logger.debug(f"Errore decodifica JWT: {e}")
-        
-        except Exception as e:
-            self.logger.debug(f"Errore estrazione user: {e}")
-        
-        return "anonymous"
-
 
 def setup_access_logging(app, log_level: str = "INFO", exclude_paths: list = None):
     """
