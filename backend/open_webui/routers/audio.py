@@ -1194,12 +1194,11 @@ def transcription(
         )
 
     try:
-        from pathlib import Path
         import re
 
-        # Sanitize extension: extract only alphanumeric characters to prevent path traversal
-        raw_ext = Path(file.filename).suffix.lstrip(".") if file.filename else ""
-        # Allow only safe characters in extension (alphanumeric)
+        safe_name = os.path.basename(file.filename) if file.filename else ""
+        raw_ext = safe_name.rsplit(".", 1)[-1] if "." in safe_name else ""
+        # Allow only safe characters in extension (alphanumeric) to prevent path traversal
         ext = re.sub(r"[^a-zA-Z0-9]", "", raw_ext)
         if not ext:
             ext = "tmp"
@@ -1219,6 +1218,10 @@ def transcription(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid file path",
             )
+
+        # Defense-in-depth: ensure resolved path stays within intended directory
+        if not os.path.realpath(file_path).startswith(os.path.realpath(file_dir)):
+            raise ValueError("Invalid file path detected")
 
         with open(file_path, "wb") as f:
             f.write(contents)
@@ -1241,7 +1244,7 @@ def transcription(
 
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=ERROR_MESSAGES.DEFAULT(e),
+                detail="Transcription failed.",
             )
 
     except Exception as e:
@@ -1249,7 +1252,7 @@ def transcription(
 
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=ERROR_MESSAGES.DEFAULT(e),
+            detail="Transcription failed.",
         )
 
 
