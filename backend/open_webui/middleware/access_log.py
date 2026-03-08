@@ -17,7 +17,7 @@ Key features:
   • User identity resolved via JWT cookie → DB (email, role).
   • OIDC subject (``sub``) and MFA status (``amr``/``acr``)
     extracted from server-side OAuth sessions (id_token).
-  • ~80 regex rules classify every API route into a semantic
+  • ~110 regex rules classify every API route into a semantic
     action type (AUTH_LOGIN, GROUP_MEMBER_ADD, CONFIG_IMPORT, …).
   • Failed authentication attempts auto-detected (status ≥ 400
     on AUTH_LOGIN* → AUTH_LOGIN_FAIL with nis2=Y).
@@ -94,8 +94,13 @@ NIS2 Action Categories
   NOTE_*       — Note management
   FILE_*       — File upload/deletion
   KNOWLEDGE_*  — Knowledge base management
-  RESOURCE_*   — Tools, functions, models management
+  RESOURCE_*   — Tools, functions, models, prompts management
   CHANNEL_*    — Channel & webhook management
+  SCIM_*       — SCIM 2.0 identity provisioning (IdP sync)
+  PIPELINE_*   — Pipeline upload/management (code execution)
+  MEMORY_*     — User memory management
+  FOLDER_*     — Folder organisation
+  EVAL_*       — Evaluation & feedback management
   DATA_*       — Data export/import
   READ         — Read-only operations (lower severity)
 """
@@ -150,8 +155,13 @@ _log = logging.getLogger(__name__)
 #   NOTE_*       — Note management
 #   FILE_*       — File upload/deletion
 #   KNOWLEDGE_*  — Knowledge base management
-#   RESOURCE_*   — Tools, functions, models management
+#   RESOURCE_*   — Tools, functions, models, prompts management
 #   CHANNEL_*    — Channel & webhook management
+#   SCIM_*       — SCIM 2.0 identity provisioning (IdP sync)
+#   PIPELINE_*   — Pipeline upload/management (code execution)
+#   MEMORY_*     — User memory management
+#   FOLDER_*     — Folder organisation
+#   EVAL_*       — Evaluation & feedback management
 #   DATA_*       — Data export/import
 #   READ         — Read-only operations (lower severity)
 # ---------------------------------------------------------------------------
@@ -177,6 +187,7 @@ def _compile_action_rules() -> list[tuple[re.Pattern, Optional[str], str]]:
         (rf"^/api/v1/auths/signup$", "POST", "AUTH_SIGNUP"),
         (rf"^/api/v1/auths/signout$", "GET", "AUTH_LOGOUT"),
         (rf"^/api/v1/auths/update/password$", "POST", "AUTH_PASSWORD_CHANGE"),
+        (rf"^/api/v1/auths/update/timezone$", "POST", "AUTH_TIMEZONE_UPDATE"),
         (rf"^/api/v1/auths/update/profile$", "POST", "AUTH_PROFILE_UPDATE"),
         (rf"^/api/v1/auths/api_key$", "POST", "AUTH_API_KEY_CREATE"),
         (rf"^/api/v1/auths/api_key$", "DELETE", "AUTH_API_KEY_DELETE"),
@@ -192,6 +203,8 @@ def _compile_action_rules() -> list[tuple[re.Pattern, Optional[str], str]]:
         (rf"^/api/v1/users/{_ID}$", "DELETE", "USER_DELETE"),
         (rf"^/api/v1/users/user/settings/update$", "POST", "USER_SETTINGS_UPDATE"),
         (rf"^/api/v1/users/user/info/update$", "POST", "USER_INFO_UPDATE"),
+        (rf"^/api/v1/users/user/status/update$", "POST", "USER_STATUS_UPDATE"),
+        (rf"^/api/v1/users/{_ID}/oauth/sessions$", "GET", "USER_OAUTH_SESSIONS_VIEW"),
 
         # ── Group Management ─────────────────────────────────────────────
         (rf"^/api/v1/groups/create$", "POST", "GROUP_CREATE"),
@@ -206,7 +219,9 @@ def _compile_action_rules() -> list[tuple[re.Pattern, Optional[str], str]]:
         (rf"^/api/v1/configs/export$", "GET", "CONFIG_EXPORT"),
         (rf"^/api/v1/configs/connections$", "POST", "CONFIG_CONNECTIONS"),
         (rf"^/api/v1/configs/oauth/clients/register$", "POST", "CONFIG_OAUTH_CLIENT"),
+        (rf"^/api/v1/configs/tool_servers/verify$", "POST", "CONFIG_TOOL_SERVERS_VERIFY"),
         (rf"^/api/v1/configs/tool_servers$", "POST", "CONFIG_TOOL_SERVERS"),
+        (rf"^/api/v1/configs/terminal_servers$", "POST", "CONFIG_TERMINAL_SERVERS"),
         (rf"^/api/v1/configs/code_execution$", "POST", "CONFIG_CODE_EXECUTION"),
         (rf"^/api/v1/configs/models$", "POST", "CONFIG_MODELS"),
         (rf"^/api/v1/configs/suggestions$", "POST", "CONFIG_SUGGESTIONS"),
@@ -282,6 +297,56 @@ def _compile_action_rules() -> list[tuple[re.Pattern, Optional[str], str]]:
         (rf"^/api/v1/models/export$", "GET", "DATA_EXPORT"),
         (rf"^/api/v1/models/sync$", "POST", "RESOURCE_SYNC_MODELS"),
 
+        # ── SCIM 2.0 Identity Provisioning ─────────────────────────────
+        # SCIM endpoints are used by IdPs (ManageEngine ADSSPM, Entra ID,
+        # Okta, etc.) to sync users and groups. All write operations are
+        # NIS2-critical because they modify the identity store.
+        (rf"^/api/v1/scim/v2/Users$", "POST", "SCIM_USER_CREATE"),
+        (rf"^/api/v1/scim/v2/Users/{_ID}$", "PUT", "SCIM_USER_UPDATE"),
+        (rf"^/api/v1/scim/v2/Users/{_ID}$", "PATCH", "SCIM_USER_PATCH"),
+        (rf"^/api/v1/scim/v2/Users/{_ID}$", "DELETE", "SCIM_USER_DELETE"),
+        (rf"^/api/v1/scim/v2/Groups$", "POST", "SCIM_GROUP_CREATE"),
+        (rf"^/api/v1/scim/v2/Groups/{_ID}$", "PUT", "SCIM_GROUP_UPDATE"),
+        (rf"^/api/v1/scim/v2/Groups/{_ID}$", "PATCH", "SCIM_GROUP_PATCH"),
+        (rf"^/api/v1/scim/v2/Groups/{_ID}$", "DELETE", "SCIM_GROUP_DELETE"),
+
+        # ── Pipelines (code execution risk) ──────────────────────────────
+        (rf"^/api/v1/pipelines/upload$", "POST", "PIPELINE_UPLOAD"),
+        (rf"^/api/v1/pipelines/add$", "POST", "PIPELINE_ADD"),
+        (rf"^/api/v1/pipelines/delete$", "DELETE", "PIPELINE_DELETE"),
+        (rf"^/api/v1/pipelines/{_ID}/valves/update$", "POST", "PIPELINE_VALVES_UPDATE"),
+
+        # ── Prompts ──────────────────────────────────────────────────────
+        (rf"^/api/v1/prompts/create$", "POST", "RESOURCE_CREATE_PROMPT"),
+        (rf"^/api/v1/prompts/id/{_ID}/update$", "POST", "RESOURCE_UPDATE_PROMPT"),
+        (rf"^/api/v1/prompts/id/{_ID}/update/meta$", "POST", "RESOURCE_UPDATE_PROMPT_META"),
+        (rf"^/api/v1/prompts/id/{_ID}/update/version$", "POST", "RESOURCE_UPDATE_PROMPT_VERSION"),
+        (rf"^/api/v1/prompts/id/{_ID}/access/update$", "POST", "ACCESS_PROMPT_UPDATE"),
+        (rf"^/api/v1/prompts/id/{_ID}/toggle$", "POST", "RESOURCE_TOGGLE_PROMPT"),
+        (rf"^/api/v1/prompts/id/{_ID}/delete$", "DELETE", "RESOURCE_DELETE_PROMPT"),
+        (rf"^/api/v1/prompts/id/{_ID}/history/{_ID}$", "DELETE", "RESOURCE_DELETE_PROMPT_HISTORY"),
+
+        # ── Evaluations & Feedback ───────────────────────────────────────
+        (rf"^/api/v1/evaluations/config$", "POST", "CONFIG_EVALUATIONS"),
+        (rf"^/api/v1/evaluations/feedbacks/all$", "DELETE", "EVAL_DELETE_ALL_FEEDBACKS"),
+        (rf"^/api/v1/evaluations/feedbacks$", "DELETE", "EVAL_DELETE_FEEDBACKS"),
+        (rf"^/api/v1/evaluations/feedback/{_ID}$", "POST", "EVAL_UPDATE_FEEDBACK"),
+        (rf"^/api/v1/evaluations/feedback/{_ID}$", "DELETE", "EVAL_DELETE_FEEDBACK"),
+        (rf"^/api/v1/evaluations/feedback$", "POST", "EVAL_CREATE_FEEDBACK"),
+
+        # ── Memories ─────────────────────────────────────────────────────
+        (rf"^/api/v1/memories/add$", "POST", "MEMORY_ADD"),
+        (rf"^/api/v1/memories/reset$", "POST", "MEMORY_RESET"),
+        (rf"^/api/v1/memories/delete/user$", "DELETE", "MEMORY_DELETE_ALL"),
+        (rf"^/api/v1/memories/{_ID}/update$", "POST", "MEMORY_UPDATE"),
+        (rf"^/api/v1/memories/{_ID}$", "DELETE", "MEMORY_DELETE"),
+
+        # ── Folders ──────────────────────────────────────────────────────
+        (rf"^/api/v1/folders/$", "POST", "FOLDER_CREATE"),
+        (rf"^/api/v1/folders/{_ID}/update$", "POST", "FOLDER_UPDATE"),
+        (rf"^/api/v1/folders/{_ID}/update/parent$", "POST", "FOLDER_MOVE"),
+        (rf"^/api/v1/folders/{_ID}$", "DELETE", "FOLDER_DELETE"),
+
         # ── Channels ─────────────────────────────────────────────────────
         (rf"^/api/v1/channels/create$", "POST", "CHANNEL_CREATE"),
         (rf"^/api/v1/channels/{_ID}/update$", "POST", "CHANNEL_UPDATE"),
@@ -326,24 +391,34 @@ _NIS2_SECURITY_ACTIONS = frozenset({
     # Group management
     "GROUP_CREATE", "GROUP_UPDATE", "GROUP_DELETE",
     "GROUP_MEMBER_ADD", "GROUP_MEMBER_REMOVE",
+    # SCIM 2.0 identity provisioning (IdP → Open WebUI sync)
+    "SCIM_USER_CREATE", "SCIM_USER_UPDATE", "SCIM_USER_PATCH", "SCIM_USER_DELETE",
+    "SCIM_GROUP_CREATE", "SCIM_GROUP_UPDATE", "SCIM_GROUP_PATCH", "SCIM_GROUP_DELETE",
     # Configuration
     "CONFIG_AUTH", "CONFIG_LDAP", "CONFIG_LDAP_SERVER",
     "CONFIG_CONNECTIONS", "CONFIG_OAUTH_CLIENT", "CONFIG_TOOL_SERVERS",
+    "CONFIG_TOOL_SERVERS_VERIFY", "CONFIG_TERMINAL_SERVERS",
     "CONFIG_CODE_EXECUTION", "CONFIG_MODELS", "CONFIG_IMPORT",
+    "CONFIG_EVALUATIONS",
     # Access control / sharing
     "ACCESS_SHARE_CHAT", "ACCESS_UNSHARE_CHAT",
     "ACCESS_NOTE_UPDATE", "ACCESS_KNOWLEDGE_UPDATE",
     "ACCESS_TOOL_UPDATE", "ACCESS_MODEL_UPDATE",
+    "ACCESS_PROMPT_UPDATE",
     # Data export (potential data exfiltration)
     "CONFIG_EXPORT", "DATA_EXPORT", "DATA_IMPORT",
     # Destructive operations
     "CHAT_DELETE_ALL", "FILE_DELETE_ALL", "RESOURCE_DELETE_ALL_MODELS",
     "KNOWLEDGE_DELETE", "KNOWLEDGE_RESET",
+    "EVAL_DELETE_ALL_FEEDBACKS", "EVAL_DELETE_FEEDBACKS",
+    "MEMORY_RESET", "MEMORY_DELETE_ALL",
     # Resource management with security implications
     "RESOURCE_CREATE_FUNCTION", "RESOURCE_UPDATE_FUNCTION",
     "RESOURCE_DELETE_FUNCTION", "RESOURCE_LOAD_FUNCTION_URL",
     "RESOURCE_CREATE_TOOL", "RESOURCE_UPDATE_TOOL",
     "RESOURCE_DELETE_TOOL", "RESOURCE_LOAD_TOOL_URL",
+    # Pipelines (code execution — upload/manage executable code)
+    "PIPELINE_UPLOAD", "PIPELINE_ADD", "PIPELINE_DELETE", "PIPELINE_VALVES_UPDATE",
     # Channel/webhook (external integrations)
     "CHANNEL_WEBHOOK_CREATE", "CHANNEL_WEBHOOK_UPDATE", "CHANNEL_WEBHOOK_DELETE",
 })
@@ -392,6 +467,13 @@ def _compile_object_id_patterns() -> list[tuple[re.Pattern, str]]:
         (rf"/functions/id/{_ID}", "function"),
         (rf"/tools/id/{_ID}", "tool"),
         (rf"/channels/{_ID}", "channel"),
+        (rf"/scim/v2/Users/{_ID}", "scim_user"),
+        (rf"/scim/v2/Groups/{_ID}", "scim_group"),
+        (rf"/pipelines/{_ID}", "pipeline"),
+        (rf"/prompts/id/{_ID}", "prompt"),
+        (rf"/memories/{_ID}", "memory"),
+        (rf"/folders/{_ID}", "folder"),
+        (rf"/evaluations/feedback/{_ID}", "feedback"),
     ]
 
     return [(re.compile(p, re.IGNORECASE), obj_type) for p, obj_type in raw]
