@@ -88,10 +88,10 @@ export const updateOllamaConfig = async (token: string = '', config: OllamaConfi
 		})
 		.catch((err) => {
 			console.error(err);
-			if ('detail' in err) {
+			if (err !== null && typeof err === 'object' && 'detail' in err) {
 				error = err.detail;
 			} else {
-				error = 'Server connection failed';
+				error = `Ollama: ${err?.message ?? 'Server connection failed'}`;
 			}
 			return null;
 		});
