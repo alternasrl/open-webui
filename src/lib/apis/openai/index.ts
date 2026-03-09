@@ -54,7 +54,10 @@ export const updateOpenAIConfig = async (token: string = '', config: OpenAIConfi
 		})
 	})
 		.then(async (res) => {
-			if (!res.ok) throw await res.json();
+			if (!res.ok) {
+				const body = await res.json().catch(() => null);
+				throw body ?? { detail: `HTTP ${res.status}` };
+			}
 			return res.json();
 		})
 		.catch((err) => {
