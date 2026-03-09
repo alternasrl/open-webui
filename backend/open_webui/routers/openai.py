@@ -229,44 +229,51 @@ class OpenAIConfigForm(BaseModel):
 async def update_config(
     request: Request, form_data: OpenAIConfigForm, user=Depends(get_admin_user)
 ):
-    request.app.state.config.ENABLE_OPENAI_API = form_data.ENABLE_OPENAI_API
-    request.app.state.config.OPENAI_API_BASE_URLS = form_data.OPENAI_API_BASE_URLS
-    request.app.state.config.OPENAI_API_KEYS = form_data.OPENAI_API_KEYS
+    try:
+        request.app.state.config.ENABLE_OPENAI_API = form_data.ENABLE_OPENAI_API
+        request.app.state.config.OPENAI_API_BASE_URLS = form_data.OPENAI_API_BASE_URLS
+        request.app.state.config.OPENAI_API_KEYS = form_data.OPENAI_API_KEYS
 
-    # Check if API KEYS length is same than API URLS length
-    if len(request.app.state.config.OPENAI_API_KEYS) != len(
-        request.app.state.config.OPENAI_API_BASE_URLS
-    ):
-        if len(request.app.state.config.OPENAI_API_KEYS) > len(
+        # Check if API KEYS length is same than API URLS length
+        if len(request.app.state.config.OPENAI_API_KEYS) != len(
             request.app.state.config.OPENAI_API_BASE_URLS
         ):
-            request.app.state.config.OPENAI_API_KEYS = (
-                request.app.state.config.OPENAI_API_KEYS[
-                    : len(request.app.state.config.OPENAI_API_BASE_URLS)
-                ]
-            )
-        else:
-            request.app.state.config.OPENAI_API_KEYS += [""] * (
-                len(request.app.state.config.OPENAI_API_BASE_URLS)
-                - len(request.app.state.config.OPENAI_API_KEYS)
-            )
+            if len(request.app.state.config.OPENAI_API_KEYS) > len(
+                request.app.state.config.OPENAI_API_BASE_URLS
+            ):
+                request.app.state.config.OPENAI_API_KEYS = (
+                    request.app.state.config.OPENAI_API_KEYS[
+                        : len(request.app.state.config.OPENAI_API_BASE_URLS)
+                    ]
+                )
+            else:
+                request.app.state.config.OPENAI_API_KEYS += [""] * (
+                    len(request.app.state.config.OPENAI_API_BASE_URLS)
+                    - len(request.app.state.config.OPENAI_API_KEYS)
+                )
 
-    request.app.state.config.OPENAI_API_CONFIGS = form_data.OPENAI_API_CONFIGS
+        request.app.state.config.OPENAI_API_CONFIGS = form_data.OPENAI_API_CONFIGS
 
-    # Remove the API configs that are not in the API URLS
-    keys = list(map(str, range(len(request.app.state.config.OPENAI_API_BASE_URLS))))
-    request.app.state.config.OPENAI_API_CONFIGS = {
-        key: value
-        for key, value in request.app.state.config.OPENAI_API_CONFIGS.items()
-        if key in keys
-    }
+        # Remove the API configs that are not in the API URLS
+        keys = list(map(str, range(len(request.app.state.config.OPENAI_API_BASE_URLS))))
+        request.app.state.config.OPENAI_API_CONFIGS = {
+            key: value
+            for key, value in request.app.state.config.OPENAI_API_CONFIGS.items()
+            if key in keys
+        }
 
-    return {
-        "ENABLE_OPENAI_API": request.app.state.config.ENABLE_OPENAI_API,
-        "OPENAI_API_BASE_URLS": request.app.state.config.OPENAI_API_BASE_URLS,
-        "OPENAI_API_KEYS": request.app.state.config.OPENAI_API_KEYS,
-        "OPENAI_API_CONFIGS": request.app.state.config.OPENAI_API_CONFIGS,
-    }
+        return {
+            "ENABLE_OPENAI_API": request.app.state.config.ENABLE_OPENAI_API,
+            "OPENAI_API_BASE_URLS": request.app.state.config.OPENAI_API_BASE_URLS,
+            "OPENAI_API_KEYS": request.app.state.config.OPENAI_API_KEYS,
+            "OPENAI_API_CONFIGS": request.app.state.config.OPENAI_API_CONFIGS,
+        }
+    except Exception as e:
+        log.exception("Failed to update OpenAI config")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to save OpenAI config: {str(e)}",
+        )
 
 
 @router.post("/audio/speech")

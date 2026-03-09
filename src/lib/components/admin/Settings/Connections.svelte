@@ -81,7 +81,11 @@
 
 			if (res) {
 				toast.success($i18n.t('OpenAI API settings updated'));
-				await models.set(await getModels());
+				try {
+					await models.set(await getModels());
+				} catch (e) {
+					console.error('Failed to refresh models after OpenAI config update', e);
+				}
 			}
 		}
 	};
@@ -101,7 +105,11 @@
 
 			if (res) {
 				toast.success($i18n.t('Ollama API settings updated'));
-				await models.set(await getModels());
+				try {
+					await models.set(await getModels());
+				} catch (e) {
+					console.error('Failed to refresh models after Ollama config update', e);
+				}
 			}
 		}
 	};

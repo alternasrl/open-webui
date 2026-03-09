@@ -59,10 +59,10 @@ export const updateOpenAIConfig = async (token: string = '', config: OpenAIConfi
 		})
 		.catch((err) => {
 			console.error(err);
-			if ('detail' in err) {
+			if (err !== null && typeof err === 'object' && 'detail' in err) {
 				error = err.detail;
 			} else {
-				error = 'Server connection failed';
+				error = `OpenAI: ${err?.message ?? 'Server connection failed'}`;
 			}
 			return null;
 		});

@@ -277,24 +277,31 @@ class OllamaConfigForm(BaseModel):
 async def update_config(
     request: Request, form_data: OllamaConfigForm, user=Depends(get_admin_user)
 ):
-    request.app.state.config.ENABLE_OLLAMA_API = form_data.ENABLE_OLLAMA_API
+    try:
+        request.app.state.config.ENABLE_OLLAMA_API = form_data.ENABLE_OLLAMA_API
 
-    request.app.state.config.OLLAMA_BASE_URLS = form_data.OLLAMA_BASE_URLS
-    request.app.state.config.OLLAMA_API_CONFIGS = form_data.OLLAMA_API_CONFIGS
+        request.app.state.config.OLLAMA_BASE_URLS = form_data.OLLAMA_BASE_URLS
+        request.app.state.config.OLLAMA_API_CONFIGS = form_data.OLLAMA_API_CONFIGS
 
-    # Remove the API configs that are not in the API URLS
-    keys = list(map(str, range(len(request.app.state.config.OLLAMA_BASE_URLS))))
-    request.app.state.config.OLLAMA_API_CONFIGS = {
-        key: value
-        for key, value in request.app.state.config.OLLAMA_API_CONFIGS.items()
-        if key in keys
-    }
+        # Remove the API configs that are not in the API URLS
+        keys = list(map(str, range(len(request.app.state.config.OLLAMA_BASE_URLS))))
+        request.app.state.config.OLLAMA_API_CONFIGS = {
+            key: value
+            for key, value in request.app.state.config.OLLAMA_API_CONFIGS.items()
+            if key in keys
+        }
 
-    return {
-        "ENABLE_OLLAMA_API": request.app.state.config.ENABLE_OLLAMA_API,
-        "OLLAMA_BASE_URLS": request.app.state.config.OLLAMA_BASE_URLS,
-        "OLLAMA_API_CONFIGS": request.app.state.config.OLLAMA_API_CONFIGS,
-    }
+        return {
+            "ENABLE_OLLAMA_API": request.app.state.config.ENABLE_OLLAMA_API,
+            "OLLAMA_BASE_URLS": request.app.state.config.OLLAMA_BASE_URLS,
+            "OLLAMA_API_CONFIGS": request.app.state.config.OLLAMA_API_CONFIGS,
+        }
+    except Exception as e:
+        log.exception("Failed to update Ollama config")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to save Ollama config: {str(e)}",
+        )
 
 
 def merge_ollama_models_lists(model_lists):
