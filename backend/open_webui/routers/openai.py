@@ -690,6 +690,8 @@ async def verify_connection(
                     headers["api-key"] = key
 
                 api_version = api_config.get("api_version", "") or "2023-03-15-preview"
+                model_ids = api_config.get("model_ids", [])
+
                 async with session.get(
                     url=f"{url}/openai/models?api-version={api_version}",
                     headers=headers,
@@ -702,6 +704,18 @@ async def verify_connection(
                         response_data = await r.text()
 
                     if r.status != 200:
+                        # If model_ids are pre-configured (e.g. Azure AI Services /
+                        # serverless deployments where /openai/models is not available),
+                        # treat the connection as verified using those model IDs,
+                        # unless it is an authentication error (401/403).
+                        if model_ids and r.status not in (401, 403):
+                            return {
+                                "object": "list",
+                                "data": [
+                                    {"id": m, "object": "model"} for m in model_ids
+                                ],
+                            }
+
                         if isinstance(response_data, (dict, list)):
                             return JSONResponse(
                                 status_code=r.status, content=response_data
