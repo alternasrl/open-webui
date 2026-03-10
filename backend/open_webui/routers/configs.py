@@ -36,8 +36,76 @@ log = logging.getLogger(__name__)
 
 
 ############################
-# ImportConfig
+# OpenAI Config alias
+# Mirrors /openai/config/update so WAF rules on /openai/* do not block
+# admin config management operations.
 ############################
+
+
+@router.get("/openai")
+async def get_openai_config_alias(request: Request, user=Depends(get_admin_user)):
+    """Alias for GET /openai/config — bypasses /openai WAF rules."""
+    return {
+        "ENABLE_OPENAI_API": request.app.state.config.ENABLE_OPENAI_API,
+        "OPENAI_API_BASE_URLS": request.app.state.config.OPENAI_API_BASE_URLS,
+        "OPENAI_API_KEYS": request.app.state.config.OPENAI_API_KEYS,
+        "OPENAI_API_CONFIGS": request.app.state.config.OPENAI_API_CONFIGS,
+    }
+
+
+class OpenAIConfigAliasForm(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    ENABLE_OPENAI_API: Optional[bool] = None
+    OPENAI_API_BASE_URLS: list[str]
+    OPENAI_API_KEYS: list[str]
+    OPENAI_API_CONFIGS: dict
+
+
+@router.post("/openai")
+async def update_openai_config_alias(
+    request: Request,
+    form_data: OpenAIConfigAliasForm,
+    user=Depends(get_admin_user),
+):
+    """Alias for POST /openai/config/update — bypasses /openai WAF rules."""
+    try:
+        request.app.state.config.ENABLE_OPENAI_API = form_data.ENABLE_OPENAI_API
+        request.app.state.config.OPENAI_API_BASE_URLS = form_data.OPENAI_API_BASE_URLS
+        request.app.state.config.OPENAI_API_KEYS = form_data.OPENAI_API_KEYS
+
+        num_urls = len(request.app.state.config.OPENAI_API_BASE_URLS)
+        num_keys = len(request.app.state.config.OPENAI_API_KEYS)
+        if num_keys != num_urls:
+            if num_keys > num_urls:
+                request.app.state.config.OPENAI_API_KEYS = (
+                    request.app.state.config.OPENAI_API_KEYS[:num_urls]
+                )
+            else:
+                request.app.state.config.OPENAI_API_KEYS += [""] * (num_urls - num_keys)
+
+        request.app.state.config.OPENAI_API_CONFIGS = form_data.OPENAI_API_CONFIGS
+        keys = list(map(str, range(len(request.app.state.config.OPENAI_API_BASE_URLS))))
+        request.app.state.config.OPENAI_API_CONFIGS = {
+            k: v
+            for k, v in request.app.state.config.OPENAI_API_CONFIGS.items()
+            if k in keys
+        }
+
+        return {
+            "ENABLE_OPENAI_API": request.app.state.config.ENABLE_OPENAI_API,
+            "OPENAI_API_BASE_URLS": request.app.state.config.OPENAI_API_BASE_URLS,
+            "OPENAI_API_KEYS": request.app.state.config.OPENAI_API_KEYS,
+            "OPENAI_API_CONFIGS": request.app.state.config.OPENAI_API_CONFIGS,
+        }
+    except Exception as e:
+        log.exception("Failed to update OpenAI config (alias endpoint)")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to save OpenAI config: {str(e)}",
+        )
+
+
+
 
 
 class ImportConfigForm(BaseModel):
