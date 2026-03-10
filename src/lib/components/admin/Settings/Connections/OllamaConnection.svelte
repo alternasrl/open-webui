@@ -36,10 +36,10 @@
 		onDelete();
 		showConfigModal = false;
 	}}
-	onSubmit={(connection) => {
+	onSubmit={async (connection) => {
 		url = connection.url;
 		config = { ...connection.config, key: connection.key };
-		onSubmit(connection);
+		await onSubmit(connection);
 	}}
 />
 
