@@ -34,6 +34,7 @@ router = APIRouter()
 
 log = logging.getLogger(__name__)
 
+MASKED_KEY = "__MASKED__"
 
 ############################
 # OpenAI Config alias
@@ -48,7 +49,12 @@ async def get_openai_config_alias(request: Request, user=Depends(get_admin_user)
     return {
         "ENABLE_OPENAI_API": request.app.state.config.ENABLE_OPENAI_API,
         "OPENAI_API_BASE_URLS": request.app.state.config.OPENAI_API_BASE_URLS,
-        "OPENAI_API_KEYS": request.app.state.config.OPENAI_API_KEYS,
+        # Return a placeholder so secrets are never retransmitted over the wire
+        # (prevents WAF false-positive blocks on Base64-encoded keys).
+        "OPENAI_API_KEYS": [
+            MASKED_KEY if k else ""
+            for k in request.app.state.config.OPENAI_API_KEYS
+        ],
         "OPENAI_API_CONFIGS": request.app.state.config.OPENAI_API_CONFIGS,
     }
 
@@ -71,7 +77,14 @@ async def update_openai_config_alias(
     try:
         request.app.state.config.ENABLE_OPENAI_API = form_data.ENABLE_OPENAI_API
         request.app.state.config.OPENAI_API_BASE_URLS = form_data.OPENAI_API_BASE_URLS
-        request.app.state.config.OPENAI_API_KEYS = form_data.OPENAI_API_KEYS
+
+        # Resolve masked keys: if the client echoes __MASKED__ back it means the
+        # key was not changed — keep the currently stored value.
+        existing_keys = list(request.app.state.config.OPENAI_API_KEYS)
+        request.app.state.config.OPENAI_API_KEYS = [
+            existing_keys[i] if (k == MASKED_KEY and i < len(existing_keys)) else k
+            for i, k in enumerate(form_data.OPENAI_API_KEYS)
+        ]
 
         num_urls = len(request.app.state.config.OPENAI_API_BASE_URLS)
         num_keys = len(request.app.state.config.OPENAI_API_KEYS)
@@ -94,7 +107,11 @@ async def update_openai_config_alias(
         return {
             "ENABLE_OPENAI_API": request.app.state.config.ENABLE_OPENAI_API,
             "OPENAI_API_BASE_URLS": request.app.state.config.OPENAI_API_BASE_URLS,
-            "OPENAI_API_KEYS": request.app.state.config.OPENAI_API_KEYS,
+            # Return masked keys so the response also never exposes secrets.
+            "OPENAI_API_KEYS": [
+                MASKED_KEY if k else ""
+                for k in request.app.state.config.OPENAI_API_KEYS
+            ],
             "OPENAI_API_CONFIGS": request.app.state.config.OPENAI_API_CONFIGS,
         }
     except Exception as e:
