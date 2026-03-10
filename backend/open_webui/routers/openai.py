@@ -208,12 +208,21 @@ def get_microsoft_entra_id_access_token():
 router = APIRouter()
 
 
+MASKED_KEY = "__MASKED__"
+
+
 @router.get("/config")
 async def get_config(request: Request, user=Depends(get_admin_user)):
     return {
         "ENABLE_OPENAI_API": request.app.state.config.ENABLE_OPENAI_API,
         "OPENAI_API_BASE_URLS": request.app.state.config.OPENAI_API_BASE_URLS,
-        "OPENAI_API_KEYS": request.app.state.config.OPENAI_API_KEYS,
+        # Return a placeholder instead of the real key so that secrets are never
+        # retransmitted over the wire (prevents WAF false-positive blocks on
+        # Base64-encoded keys, and avoids exposing secrets unnecessarily).
+        "OPENAI_API_KEYS": [
+            MASKED_KEY if k else ""
+            for k in request.app.state.config.OPENAI_API_KEYS
+        ],
         "OPENAI_API_CONFIGS": request.app.state.config.OPENAI_API_CONFIGS,
     }
 
@@ -232,7 +241,14 @@ async def update_config(
     try:
         request.app.state.config.ENABLE_OPENAI_API = form_data.ENABLE_OPENAI_API
         request.app.state.config.OPENAI_API_BASE_URLS = form_data.OPENAI_API_BASE_URLS
-        request.app.state.config.OPENAI_API_KEYS = form_data.OPENAI_API_KEYS
+
+        # Resolve masked keys: if the client sends __MASKED__ it means the key
+        # was not changed — keep the currently stored value instead.
+        existing_keys = list(request.app.state.config.OPENAI_API_KEYS)
+        request.app.state.config.OPENAI_API_KEYS = [
+            existing_keys[i] if (k == MASKED_KEY and i < len(existing_keys)) else k
+            for i, k in enumerate(form_data.OPENAI_API_KEYS)
+        ]
 
         # Check if API KEYS length is same than API URLS length
         if len(request.app.state.config.OPENAI_API_KEYS) != len(
@@ -265,7 +281,11 @@ async def update_config(
         return {
             "ENABLE_OPENAI_API": request.app.state.config.ENABLE_OPENAI_API,
             "OPENAI_API_BASE_URLS": request.app.state.config.OPENAI_API_BASE_URLS,
-            "OPENAI_API_KEYS": request.app.state.config.OPENAI_API_KEYS,
+            # Return masked keys so the response also never exposes secrets.
+            "OPENAI_API_KEYS": [
+                MASKED_KEY if k else ""
+                for k in request.app.state.config.OPENAI_API_KEYS
+            ],
             "OPENAI_API_CONFIGS": request.app.state.config.OPENAI_API_CONFIGS,
         }
     except Exception as e:
@@ -670,7 +690,16 @@ async def verify_connection(
     user=Depends(get_admin_user),
 ):
     url = form_data.url
-    key = form_data.key
+
+    # If the frontend sends the placeholder, look up the real stored key.
+    if form_data.key == MASKED_KEY:
+        try:
+            idx = request.app.state.config.OPENAI_API_BASE_URLS.index(url)
+            key = request.app.state.config.OPENAI_API_KEYS[idx]
+        except (ValueError, IndexError):
+            key = ""
+    else:
+        key = form_data.key
 
     api_config = form_data.config or {}
 
