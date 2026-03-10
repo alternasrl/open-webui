@@ -42,11 +42,11 @@
 	onDelete={() => {
 		showDeleteConfirmDialog = true;
 	}}
-	onSubmit={(connection) => {
+	onSubmit={async (connection) => {
 		url = connection.url;
 		key = connection.key;
 		config = connection.config;
-		onSubmit(connection);
+		await onSubmit(connection);
 	}}
 />
 
