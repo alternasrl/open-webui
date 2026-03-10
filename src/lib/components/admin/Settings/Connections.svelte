@@ -86,8 +86,10 @@
 				} catch (e) {
 					console.error('Failed to refresh models after OpenAI config update', e);
 				}
+				return true;
 			}
 		}
+		return false;
 	};
 
 	const updateOllamaHandler = async () => {
@@ -110,8 +112,10 @@
 				} catch (e) {
 					console.error('Failed to refresh models after Ollama config update', e);
 				}
+				return true;
 			}
 		}
+		return false;
 	};
 
 	const updateConnectionsHandler = async () => {
@@ -203,10 +207,14 @@
 	});
 
 	const submitHandler = async () => {
-		updateOpenAIHandler();
-		updateOllamaHandler();
+		const [openaiOk, ollamaOk] = await Promise.all([
+			updateOpenAIHandler(),
+			updateOllamaHandler()
+		]);
 
-		dispatch('save');
+		if (openaiOk || ollamaOk) {
+			dispatch('save');
+		}
 
 		await config.set(await getBackendConfig());
 	};
@@ -273,9 +281,7 @@
 											bind:key={OPENAI_API_KEYS[idx]}
 											bind:config={OPENAI_API_CONFIGS[idx]}
 											pipeline={pipelineUrls[url] ? true : false}
-											onSubmit={() => {
-												updateOpenAIHandler();
-											}}
+										onSubmit={() => updateOpenAIHandler()}
 											onDelete={() => {
 												OPENAI_API_BASE_URLS = OPENAI_API_BASE_URLS.filter(
 													(url, urlIdx) => idx !== urlIdx
@@ -337,9 +343,7 @@
 											bind:url={OLLAMA_BASE_URLS[idx]}
 											bind:config={OLLAMA_API_CONFIGS[idx]}
 											{idx}
-											onSubmit={() => {
-												updateOllamaHandler();
-											}}
+											onSubmit={() => updateOllamaHandler()}
 											onDelete={() => {
 												OLLAMA_BASE_URLS = OLLAMA_BASE_URLS.filter((url, urlIdx) => idx !== urlIdx);
 
