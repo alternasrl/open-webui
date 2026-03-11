@@ -58,12 +58,13 @@ async def get_model_analytics(
     start_date: Optional[int] = Query(None, description="Start timestamp (epoch)"),
     end_date: Optional[int] = Query(None, description="End timestamp (epoch)"),
     group_id: Optional[str] = Query(None, description="Filter by user group ID"),
+    user_id: Optional[str] = Query(None, description="Filter by user ID"),
     user=Depends(get_admin_user),
     db: Session = Depends(get_session),
 ):
     """Get message counts per model."""
     counts = ChatMessages.get_message_count_by_model(
-        start_date=start_date, end_date=end_date, group_id=group_id, db=db
+        start_date=start_date, end_date=end_date, group_id=group_id, user_id=user_id, db=db
     )
     models = [
         ModelAnalyticsEntry(model_id=model_id, count=count)
@@ -77,16 +78,17 @@ async def get_user_analytics(
     start_date: Optional[int] = Query(None, description="Start timestamp (epoch)"),
     end_date: Optional[int] = Query(None, description="End timestamp (epoch)"),
     group_id: Optional[str] = Query(None, description="Filter by user group ID"),
+    model_id: Optional[str] = Query(None, description="Filter by model ID"),
     limit: int = Query(50, description="Max users to return"),
     user=Depends(get_admin_user),
     db: Session = Depends(get_session),
 ):
     """Get message counts and token usage per user with user info."""
     counts = ChatMessages.get_message_count_by_user(
-        start_date=start_date, end_date=end_date, group_id=group_id, db=db
+        start_date=start_date, end_date=end_date, group_id=group_id, model_id=model_id, db=db
     )
     token_usage = ChatMessages.get_token_usage_by_user(
-        start_date=start_date, end_date=end_date, group_id=group_id, db=db
+        start_date=start_date, end_date=end_date, group_id=group_id, model_id=model_id, db=db
     )
 
     # Get user info for top users
@@ -236,12 +238,13 @@ async def get_token_usage(
     start_date: Optional[int] = Query(None),
     end_date: Optional[int] = Query(None),
     group_id: Optional[str] = Query(None, description="Filter by user group ID"),
+    user_id: Optional[str] = Query(None, description="Filter by user ID"),
     user=Depends(get_admin_user),
     db: Session = Depends(get_session),
 ):
     """Get token usage aggregated by model."""
     usage = ChatMessages.get_token_usage_by_model(
-        start_date=start_date, end_date=end_date, group_id=group_id, db=db
+        start_date=start_date, end_date=end_date, group_id=group_id, user_id=user_id, db=db
     )
 
     models = [
