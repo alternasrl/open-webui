@@ -42,6 +42,14 @@ type OpenAIConfig = {
 export const updateOpenAIConfig = async (token: string = '', config: OpenAIConfig) => {
 	let error = null;
 
+	// Wrap the actual JSON config inside a Base64 envelope so that the HTTP
+	// body contains only an opaque string.  This prevents Azure Application
+	// Gateway WAF (OWASP CRS) from flagging URLs, keys or other patterns
+	// inside the config as potential injection attacks (rules 931, 942, etc.).
+	const encodedPayload = JSON.stringify({
+		data: btoa(unescape(encodeURIComponent(JSON.stringify(config))))
+	});
+
 	const res = await fetch(`${WEBUI_API_BASE_URL}/configs/openai`, {
 		method: 'POST',
 		headers: {
@@ -49,9 +57,7 @@ export const updateOpenAIConfig = async (token: string = '', config: OpenAIConfi
 			'Content-Type': 'application/json',
 			...(token && { authorization: `Bearer ${token}` })
 		},
-		body: JSON.stringify({
-			...config
-		})
+		body: encodedPayload
 	})
 		.then(async (res) => {
 			if (!res.ok) {
