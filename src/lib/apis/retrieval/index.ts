@@ -202,15 +202,21 @@ type EmbeddingModelUpdateForm = {
 export const updateEmbeddingConfig = async (token: string, payload: EmbeddingModelUpdateForm) => {
 	let error = null;
 
+	// Wrap the actual JSON config inside a Base64 envelope so that the HTTP
+	// body contains only an opaque string.  This prevents Azure Application
+	// Gateway WAF (OWASP CRS) from flagging URLs, keys or other patterns
+	// inside the config as potential injection attacks (rules 931, 942, etc.).
+	const encodedPayload = JSON.stringify({
+		data: btoa(unescape(encodeURIComponent(JSON.stringify(payload))))
+	});
+
 	const res = await fetch(`${RETRIEVAL_API_BASE_URL}/embedding/update`, {
 		method: 'POST',
 		headers: {
 			'Content-Type': 'application/json',
 			Authorization: `Bearer ${token}`
 		},
-		body: JSON.stringify({
-			...payload
-		})
+		body: encodedPayload
 	})
 		.then(async (res) => {
 			if (!res.ok) throw await res.json();

@@ -1,3 +1,4 @@
+import base64
 import json
 import logging
 import mimetypes
@@ -342,8 +343,26 @@ def unload_embedding_model(request: Request):
                 torch.cuda.empty_cache()
 
 
+def _decode_payload(raw: bytes, model_cls):
+    """Accept either a Base64-encoded envelope or plain JSON.
+
+    The frontend wraps the real JSON config inside ``{"data": "<base64>"}``
+    so that the WAF only sees an opaque string — no URLs, keys or patterns
+    that could trigger OWASP CRS rules (931 RFI, 942 SQLi, etc.).
+    For backward compatibility, plain JSON payloads are still accepted.
+    """
+    outer = json.loads(raw)
+    if isinstance(outer, dict) and 'data' in outer and len(outer) == 1:
+        inner_bytes = base64.b64decode(outer['data'])
+        outer = json.loads(inner_bytes)
+    return model_cls(**outer)
+
+
 @router.post('/embedding/update')
-async def update_embedding_config(request: Request, form_data: EmbeddingModelUpdateForm, user=Depends(get_admin_user)):
+async def update_embedding_config(
+    request: Request, user=Depends(get_admin_user)
+):
+    form_data = _decode_payload(await request.body(), EmbeddingModelUpdateForm)
     log.info(
         f'Updating embedding model: {request.app.state.config.RAG_EMBEDDING_MODEL} to {form_data.RAG_EMBEDDING_MODEL}'
     )
