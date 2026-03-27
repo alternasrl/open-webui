@@ -718,6 +718,9 @@ app = FastAPI(
 
 setup_access_logging(app)
 
+# Used by readiness checks to gate traffic until startup work is done.
+app.state.startup_complete = False
+
 # For Open WebUI OIDC/OAuth2
 oauth_manager = OAuthManager(app)
 app.state.oauth_manager = oauth_manager
