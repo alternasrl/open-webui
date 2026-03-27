@@ -190,6 +190,9 @@ def get_api_key(idx, url, configs):
     return configs.get(str(idx), configs.get(base_url, {})).get('key', None)  # Legacy support
 
 
+MASKED_KEY = "__MASKED__"
+
+
 ##########################################
 #
 # API routes
@@ -210,10 +213,23 @@ class ConnectionVerificationForm(BaseModel):
     key: Optional[str] = None
 
 
-@router.post('/verify')
-async def verify_connection(form_data: ConnectionVerificationForm, user=Depends(get_admin_user)):
+@router.post("/verify")
+async def verify_connection(
+    request: Request,
+    form_data: ConnectionVerificationForm,
+    user=Depends(get_admin_user),
+):
     url = form_data.url
-    key = form_data.key
+
+    # If the frontend sends the placeholder, look up the real stored key.
+    if form_data.key == MASKED_KEY:
+        try:
+            idx = request.app.state.config.OLLAMA_BASE_URLS.index(url)
+            key = get_api_key(idx, url, request.app.state.config.OLLAMA_API_CONFIGS)
+        except (ValueError, IndexError):
+            key = None
+    else:
+        key = form_data.key
 
     async with aiohttp.ClientSession(
         trust_env=True,
@@ -253,10 +269,17 @@ async def verify_connection(form_data: ConnectionVerificationForm, user=Depends(
 
 @router.get('/config')
 async def get_config(request: Request, user=Depends(get_admin_user)):
+    # Mask the per-connection API key stored inside each OLLAMA_API_CONFIGS entry
+    # so that secrets are never retransmitted over the wire.
+    raw_configs = request.app.state.config.OLLAMA_API_CONFIGS
+    masked_configs = {
+        k: {**v, "key": MASKED_KEY if v.get("key") else ""}
+        for k, v in raw_configs.items()
+    }
     return {
-        'ENABLE_OLLAMA_API': request.app.state.config.ENABLE_OLLAMA_API,
-        'OLLAMA_BASE_URLS': request.app.state.config.OLLAMA_BASE_URLS,
-        'OLLAMA_API_CONFIGS': request.app.state.config.OLLAMA_API_CONFIGS,
+        "ENABLE_OLLAMA_API": request.app.state.config.ENABLE_OLLAMA_API,
+        "OLLAMA_BASE_URLS": request.app.state.config.OLLAMA_BASE_URLS,
+        "OLLAMA_API_CONFIGS": masked_configs,
     }
 
 
@@ -266,24 +289,49 @@ class OllamaConfigForm(BaseModel):
     OLLAMA_API_CONFIGS: dict
 
 
-@router.post('/config/update')
-async def update_config(request: Request, form_data: OllamaConfigForm, user=Depends(get_admin_user)):
-    request.app.state.config.ENABLE_OLLAMA_API = form_data.ENABLE_OLLAMA_API
+@router.post("/config/update")
+async def update_config(
+    request: Request, form_data: OllamaConfigForm, user=Depends(get_admin_user)
+):
+    try:
+        request.app.state.config.ENABLE_OLLAMA_API = form_data.ENABLE_OLLAMA_API
 
-    request.app.state.config.OLLAMA_BASE_URLS = form_data.OLLAMA_BASE_URLS
-    request.app.state.config.OLLAMA_API_CONFIGS = form_data.OLLAMA_API_CONFIGS
+        request.app.state.config.OLLAMA_BASE_URLS = form_data.OLLAMA_BASE_URLS
 
-    # Remove the API configs that are not in the API URLS
-    keys = list(map(str, range(len(request.app.state.config.OLLAMA_BASE_URLS))))
-    request.app.state.config.OLLAMA_API_CONFIGS = {
-        key: value for key, value in request.app.state.config.OLLAMA_API_CONFIGS.items() if key in keys
-    }
+        # Resolve masked keys stored inside OLLAMA_API_CONFIGS entries.
+        existing_configs = request.app.state.config.OLLAMA_API_CONFIGS
+        resolved_configs = {}
+        for k, v in form_data.OLLAMA_API_CONFIGS.items():
+            entry = dict(v)
+            if entry.get("key") == MASKED_KEY:
+                existing_key = existing_configs.get(k, {}).get("key", "")
+                entry["key"] = existing_key
+            resolved_configs[k] = entry
+        request.app.state.config.OLLAMA_API_CONFIGS = resolved_configs
 
-    return {
-        'ENABLE_OLLAMA_API': request.app.state.config.ENABLE_OLLAMA_API,
-        'OLLAMA_BASE_URLS': request.app.state.config.OLLAMA_BASE_URLS,
-        'OLLAMA_API_CONFIGS': request.app.state.config.OLLAMA_API_CONFIGS,
-    }
+        # Remove the API configs that are not in the API URLS
+        keys = list(map(str, range(len(request.app.state.config.OLLAMA_BASE_URLS))))
+        request.app.state.config.OLLAMA_API_CONFIGS = {
+            key: value
+            for key, value in request.app.state.config.OLLAMA_API_CONFIGS.items()
+            if key in keys
+        }
+
+        return {
+            "ENABLE_OLLAMA_API": request.app.state.config.ENABLE_OLLAMA_API,
+            "OLLAMA_BASE_URLS": request.app.state.config.OLLAMA_BASE_URLS,
+            # Return masked configs so the response never exposes secrets.
+            "OLLAMA_API_CONFIGS": {
+                k: {**v, "key": MASKED_KEY if v.get("key") else ""}
+                for k, v in request.app.state.config.OLLAMA_API_CONFIGS.items()
+            },
+        }
+    except Exception as e:
+        log.exception("Failed to update Ollama config")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to save Ollama config: {str(e)}",
+        )
 
 
 def merge_ollama_models_lists(model_lists):

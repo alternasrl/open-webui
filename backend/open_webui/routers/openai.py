@@ -228,13 +228,22 @@ def get_microsoft_entra_id_access_token():
 router = APIRouter()
 
 
-@router.get('/config')
+MASKED_KEY = "__MASKED__"
+
+
+@router.get("/config")
 async def get_config(request: Request, user=Depends(get_admin_user)):
     return {
-        'ENABLE_OPENAI_API': request.app.state.config.ENABLE_OPENAI_API,
-        'OPENAI_API_BASE_URLS': request.app.state.config.OPENAI_API_BASE_URLS,
-        'OPENAI_API_KEYS': request.app.state.config.OPENAI_API_KEYS,
-        'OPENAI_API_CONFIGS': request.app.state.config.OPENAI_API_CONFIGS,
+        "ENABLE_OPENAI_API": request.app.state.config.ENABLE_OPENAI_API,
+        "OPENAI_API_BASE_URLS": request.app.state.config.OPENAI_API_BASE_URLS,
+        # Return a placeholder instead of the real key so that secrets are never
+        # retransmitted over the wire (prevents WAF false-positive blocks on
+        # Base64-encoded keys, and avoids exposing secrets unnecessarily).
+        "OPENAI_API_KEYS": [
+            MASKED_KEY if k else ""
+            for k in request.app.state.config.OPENAI_API_KEYS
+        ],
+        "OPENAI_API_CONFIGS": request.app.state.config.OPENAI_API_CONFIGS,
     }
 
 
@@ -245,37 +254,66 @@ class OpenAIConfigForm(BaseModel):
     OPENAI_API_CONFIGS: dict
 
 
-@router.post('/config/update')
-async def update_config(request: Request, form_data: OpenAIConfigForm, user=Depends(get_admin_user)):
-    request.app.state.config.ENABLE_OPENAI_API = form_data.ENABLE_OPENAI_API
-    request.app.state.config.OPENAI_API_BASE_URLS = form_data.OPENAI_API_BASE_URLS
-    request.app.state.config.OPENAI_API_KEYS = form_data.OPENAI_API_KEYS
+@router.post("/config/update")
+async def update_config(
+    request: Request, form_data: OpenAIConfigForm, user=Depends(get_admin_user)
+):
+    try:
+        request.app.state.config.ENABLE_OPENAI_API = form_data.ENABLE_OPENAI_API
+        request.app.state.config.OPENAI_API_BASE_URLS = form_data.OPENAI_API_BASE_URLS
 
-    # Check if API KEYS length is same than API URLS length
-    if len(request.app.state.config.OPENAI_API_KEYS) != len(request.app.state.config.OPENAI_API_BASE_URLS):
-        if len(request.app.state.config.OPENAI_API_KEYS) > len(request.app.state.config.OPENAI_API_BASE_URLS):
-            request.app.state.config.OPENAI_API_KEYS = request.app.state.config.OPENAI_API_KEYS[
-                : len(request.app.state.config.OPENAI_API_BASE_URLS)
-            ]
-        else:
-            request.app.state.config.OPENAI_API_KEYS += [''] * (
-                len(request.app.state.config.OPENAI_API_BASE_URLS) - len(request.app.state.config.OPENAI_API_KEYS)
-            )
+        # Resolve masked keys: if the client sends __MASKED__ it means the key
+        # was not changed — keep the currently stored value instead.
+        existing_keys = list(request.app.state.config.OPENAI_API_KEYS)
+        request.app.state.config.OPENAI_API_KEYS = [
+            existing_keys[i] if (k == MASKED_KEY and i < len(existing_keys)) else k
+            for i, k in enumerate(form_data.OPENAI_API_KEYS)
+        ]
 
-    request.app.state.config.OPENAI_API_CONFIGS = form_data.OPENAI_API_CONFIGS
+        # Check if API KEYS length is same than API URLS length
+        if len(request.app.state.config.OPENAI_API_KEYS) != len(
+            request.app.state.config.OPENAI_API_BASE_URLS
+        ):
+            if len(request.app.state.config.OPENAI_API_KEYS) > len(
+                request.app.state.config.OPENAI_API_BASE_URLS
+            ):
+                request.app.state.config.OPENAI_API_KEYS = (
+                    request.app.state.config.OPENAI_API_KEYS[
+                        : len(request.app.state.config.OPENAI_API_BASE_URLS)
+                    ]
+                )
+            else:
+                request.app.state.config.OPENAI_API_KEYS += [""] * (
+                    len(request.app.state.config.OPENAI_API_BASE_URLS)
+                    - len(request.app.state.config.OPENAI_API_KEYS)
+                )
 
-    # Remove the API configs that are not in the API URLS
-    keys = list(map(str, range(len(request.app.state.config.OPENAI_API_BASE_URLS))))
-    request.app.state.config.OPENAI_API_CONFIGS = {
-        key: value for key, value in request.app.state.config.OPENAI_API_CONFIGS.items() if key in keys
-    }
+        request.app.state.config.OPENAI_API_CONFIGS = form_data.OPENAI_API_CONFIGS
 
-    return {
-        'ENABLE_OPENAI_API': request.app.state.config.ENABLE_OPENAI_API,
-        'OPENAI_API_BASE_URLS': request.app.state.config.OPENAI_API_BASE_URLS,
-        'OPENAI_API_KEYS': request.app.state.config.OPENAI_API_KEYS,
-        'OPENAI_API_CONFIGS': request.app.state.config.OPENAI_API_CONFIGS,
-    }
+        # Remove the API configs that are not in the API URLS
+        keys = list(map(str, range(len(request.app.state.config.OPENAI_API_BASE_URLS))))
+        request.app.state.config.OPENAI_API_CONFIGS = {
+            key: value
+            for key, value in request.app.state.config.OPENAI_API_CONFIGS.items()
+            if key in keys
+        }
+
+        return {
+            "ENABLE_OPENAI_API": request.app.state.config.ENABLE_OPENAI_API,
+            "OPENAI_API_BASE_URLS": request.app.state.config.OPENAI_API_BASE_URLS,
+            # Return masked keys so the response also never exposes secrets.
+            "OPENAI_API_KEYS": [
+                MASKED_KEY if k else ""
+                for k in request.app.state.config.OPENAI_API_KEYS
+            ],
+            "OPENAI_API_CONFIGS": request.app.state.config.OPENAI_API_CONFIGS,
+        }
+    except Exception as e:
+        log.exception("Failed to update OpenAI config")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to save OpenAI config: {str(e)}",
+        )
 
 
 @router.post('/audio/speech')
@@ -647,7 +685,16 @@ async def verify_connection(
     user=Depends(get_admin_user),
 ):
     url = form_data.url
-    key = form_data.key
+
+    # If the frontend sends the placeholder, look up the real stored key.
+    if form_data.key == MASKED_KEY:
+        try:
+            idx = request.app.state.config.OPENAI_API_BASE_URLS.index(url)
+            key = request.app.state.config.OPENAI_API_KEYS[idx]
+        except (ValueError, IndexError):
+            key = ""
+    else:
+        key = form_data.key
 
     api_config = form_data.config or {}
 
@@ -664,7 +711,8 @@ async def verify_connection(
                 if auth_type not in ('azure_ad', 'microsoft_entra_id'):
                     headers['api-key'] = key
 
-                api_version = api_config.get('api_version', '') or '2023-03-15-preview'
+                api_version = api_config.get("api_version", "") or "2023-03-15-preview"
+                model_ids = api_config.get("model_ids", [])
                 async with session.get(
                     url=f'{url}/openai/models?api-version={api_version}',
                     headers=headers,
@@ -677,6 +725,18 @@ async def verify_connection(
                         response_data = await r.text()
 
                     if r.status != 200:
+                        # If model_ids are pre-configured (e.g. Azure AI Services /
+                        # serverless deployments where /openai/models is not available),
+                        # treat the connection as verified using those model IDs,
+                        # unless it is an authentication error (401/403).
+                        if model_ids and r.status not in (401, 403):
+                            return {
+                                "object": "list",
+                                "data": [
+                                    {"id": m, "object": "model"} for m in model_ids
+                                ],
+                            }
+
                         if isinstance(response_data, (dict, list)):
                             return JSONResponse(status_code=r.status, content=response_data)
                         else:
