@@ -742,6 +742,7 @@ async def lifespan(app: FastAPI):
     if hasattr(app.state, 'redis_task_command_listener'):
         app.state.redis_task_command_listener.cancel()
 
+from open_webui.middleware.access_log import setup_access_logging
 
 app = FastAPI(
     title='Open WebUI',
@@ -750,6 +751,8 @@ app = FastAPI(
     redoc_url=None,
     lifespan=lifespan,
 )
+
+setup_access_logging(app)
 
 # Used by readiness checks to gate traffic until startup work is done.
 app.state.startup_complete = False
