@@ -1,0 +1,94 @@
+From 7d9ec545ec97d08764274ef6ec52f0dc310aaa90 Mon Sep 17 00:00:00 2001
+From: Fabio Paracchini <fparacchini@alteanet.it>
+Date: Mon, 30 Mar 2026 13:02:22 +0200
+Subject: [PATCH 01/21] fix: enhance path validation and sanitization for file
+ handling
+
+Co-authored-by: Francesco De Simone <fdesimone@alteanet.it>
+Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>
+---
+ backend/open_webui/main.py          | 26 ++++++++++++++++++++------
+ backend/open_webui/routers/audio.py | 24 +++++++++++++++++++-----
+ 2 files changed, 39 insertions(+), 11 deletions(-)
+
+diff --git a/backend/open_webui/main.py b/backend/open_webui/main.py
+index 008178806..6ffee8813 100644
+--- a/backend/open_webui/main.py
++++ b/backend/open_webui/main.py
+@@ -2561,12 +2561,26 @@ async def serve_cache_file(
+     path: str,
+     user=Depends(get_verified_user),
+ ):
+-    file_path = os.path.abspath(os.path.join(CACHE_DIR, path))
+-    # prevent path traversal
+-    if not file_path.startswith(os.path.abspath(CACHE_DIR)):
+-        raise HTTPException(status_code=404, detail='File not found')
+-    if not os.path.isfile(file_path):
+-        raise HTTPException(status_code=404, detail='File not found')
++    from pathlib import Path
++
++    # Sanitize: reject any path containing traversal sequences or absolute paths
++    if ".." in path or path.startswith("/") or path.startswith("\\"):
++        raise HTTPException(status_code=400, detail="Invalid path")
++
++    # Use only the filename (last component) to prevent any directory traversal
++    safe_filename = Path(path).name
++    if not safe_filename or safe_filename in (".", ".."):
++        raise HTTPException(status_code=400, detail="Invalid path")
++
++    cache_dir = Path(CACHE_DIR).resolve()
++    file_path = (cache_dir / safe_filename).resolve()
++
++    # Verify the resolved path is strictly within CACHE_DIR
++    if cache_dir not in file_path.parents and file_path.parent != cache_dir:
++        raise HTTPException(status_code=404, detail="File not found")
++
++    if not file_path.is_file():
++        raise HTTPException(status_code=404, detail="File not found")
+     return FileResponse(file_path)
+ 
+ 
+diff --git a/backend/open_webui/routers/audio.py b/backend/open_webui/routers/audio.py
+index 8e14387a7..06fd4f90d 100644
+--- a/backend/open_webui/routers/audio.py
++++ b/backend/open_webui/routers/audio.py
+@@ -1151,17 +1151,31 @@ def transcription(
+         )
+ 
+     try:
+-        safe_name = os.path.basename(file.filename) if file.filename else ''
+-        ext = safe_name.rsplit('.', 1)[-1] if '.' in safe_name else ''
++        from pathlib import Path
++        import re
++
++        # Sanitize extension: extract only alphanumeric characters to prevent path traversal
++        raw_ext = Path(file.filename).suffix.lstrip(".") if file.filename else ""
++        # Allow only safe characters in extension (alphanumeric)
++        ext = re.sub(r"[^a-zA-Z0-9]", "", raw_ext)
++        if not ext:
++            ext = "tmp"
+ 
+         id = uuid.uuid4()
+ 
+         filename = f'{id}.{ext}'
+         contents = file.file.read()
+ 
+-        file_dir = f'{CACHE_DIR}/audio/transcriptions'
+-        os.makedirs(file_dir, exist_ok=True)
+-        file_path = f'{file_dir}/{filename}'
++        file_dir = Path(CACHE_DIR) / "audio" / "transcriptions"
++        file_dir.mkdir(parents=True, exist_ok=True)
++        file_path = file_dir / filename
++
++        # Verify the resolved path is within the expected directory
++        if file_dir.resolve() not in file_path.resolve().parents and file_path.resolve().parent != file_dir.resolve():
++            raise HTTPException(
++                status_code=status.HTTP_400_BAD_REQUEST,
++                detail="Invalid file path",
++            )
+ 
+         # Defense-in-depth: ensure resolved path stays within intended directory
+         if not os.path.realpath(file_path).startswith(os.path.realpath(file_dir)):
+-- 
+2.53.0
+

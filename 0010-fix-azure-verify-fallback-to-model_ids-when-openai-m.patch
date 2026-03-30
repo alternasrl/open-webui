@@ -1,0 +1,55 @@
+From b7d173ba054036228e0b7a6e7988f57e113260f7 Mon Sep 17 00:00:00 2001
+From: Fabio Paracchini <fparacchini@alteanet.it>
+Date: Tue, 10 Mar 2026 19:11:59 +0100
+Subject: [PATCH 10/21] fix: azure verify fallback to model_ids when
+ /openai/models endpoint fails
+
+For Azure AI Services / serverless deployments (cognitiveservices.azure.com),
+the /openai/models endpoint may return an error like 'The string did not match
+the expected pattern.' because the resource does not support model listing.
+
+When model_ids are explicitly configured in the connection config and the
+models endpoint returns a non-auth error (not 401/403), return those pre-
+configured model IDs as the verification result instead of propagating the
+Azure error to the user.
+
+This allows verify (circular arrow button) to succeed for connections where
+the chat endpoint works correctly but model listing is not supported.
+---
+ backend/open_webui/routers/openai.py | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/backend/open_webui/routers/openai.py b/backend/open_webui/routers/openai.py
+index f35cddd77..6df34c97e 100644
+--- a/backend/open_webui/routers/openai.py
++++ b/backend/open_webui/routers/openai.py
+@@ -674,6 +674,7 @@ async def verify_connection(
+                     headers['api-key'] = key
+ 
+                 api_version = api_config.get('api_version', '') or '2023-03-15-preview'
++                model_ids = api_config.get('model_ids', [])
+                 async with session.get(
+                     url=f'{url}/openai/models?api-version={api_version}',
+                     headers=headers,
+@@ -686,6 +687,18 @@ async def verify_connection(
+                         response_data = await r.text()
+ 
+                     if r.status != 200:
++                        # If model_ids are pre-configured (e.g. Azure AI Services /
++                        # serverless deployments where /openai/models is not available),
++                        # treat the connection as verified using those model IDs,
++                        # unless it is an authentication error (401/403).
++                        if model_ids and r.status not in (401, 403):
++                            return {
++                                "object": "list",
++                                "data": [
++                                    {"id": m, "object": "model"} for m in model_ids
++                                ],
++                            }
++
+                         if isinstance(response_data, (dict, list)):
+                             return JSONResponse(status_code=r.status, content=response_data)
+                         else:
+-- 
+2.53.0
+

@@ -1,0 +1,138 @@
+From becc1438bbc7577f6e7ca5f6c6e95bab5f900915 Mon Sep 17 00:00:00 2001
+From: Fabio Paracchini <fparacchini@alteanet.it>
+Date: Tue, 10 Mar 2026 22:57:29 +0100
+Subject: [PATCH 12/21] fix: await save handlers before dispatching save event;
+ propagate async through connection modal chain
+
+---
+ src/lib/apis/openai/index.ts                  |  7 ++++--
+ .../admin/Settings/Connections.svelte         | 22 +++++++++++--------
+ .../Connections/OllamaConnection.svelte       |  4 ++--
+ .../Connections/OpenAIConnection.svelte       |  4 ++--
+ 4 files changed, 22 insertions(+), 15 deletions(-)
+
+diff --git a/src/lib/apis/openai/index.ts b/src/lib/apis/openai/index.ts
+index 90032fdfc..3d0235743 100644
+--- a/src/lib/apis/openai/index.ts
++++ b/src/lib/apis/openai/index.ts
+@@ -261,11 +261,14 @@ export const getOpenAIModels = async (token: string, urlIdx?: number) => {
+ 		}
+ 	)
+ 		.then(async (res) => {
+-			if (!res.ok) throw await res.json();
++			if (!res.ok) {
++				const body = await res.json().catch(() => null);
++				throw body ?? { message: `HTTP ${res.status}` };
++			}
+ 			return res.json();
+ 		})
+ 		.catch((err) => {
+-			error = `OpenAI: ${err?.error?.message ?? 'Network Problem'}`;
++			error = `OpenAI: ${err?.error?.message ?? err?.message ?? 'Network Problem'}`;
+ 			return [];
+ 		});
+ 
+diff --git a/src/lib/components/admin/Settings/Connections.svelte b/src/lib/components/admin/Settings/Connections.svelte
+index 758709498..c1ff7380c 100644
+--- a/src/lib/components/admin/Settings/Connections.svelte
++++ b/src/lib/components/admin/Settings/Connections.svelte
+@@ -86,8 +86,10 @@
+ 				} catch (e) {
+ 					console.error('Failed to refresh models after OpenAI config update', e);
+ 				}
++				return true;
+ 			}
+ 		}
++		return false;
+ 	};
+ 
+ 	const updateOllamaHandler = async () => {
+@@ -110,8 +112,10 @@
+ 				} catch (e) {
+ 					console.error('Failed to refresh models after Ollama config update', e);
+ 				}
++				return true;
+ 			}
+ 		}
++		return false;
+ 	};
+ 
+ 	const updateConnectionsHandler = async () => {
+@@ -203,10 +207,14 @@
+ 	});
+ 
+ 	const submitHandler = async () => {
+-		updateOpenAIHandler();
+-		updateOllamaHandler();
++		const [openaiOk, ollamaOk] = await Promise.all([
++			updateOpenAIHandler(),
++			updateOllamaHandler()
++		]);
+ 
+-		dispatch('save');
++		if (openaiOk || ollamaOk) {
++			dispatch('save');
++		}
+ 
+ 		await config.set(await getBackendConfig());
+ 	};
+@@ -273,9 +281,7 @@
+ 											bind:key={OPENAI_API_KEYS[idx]}
+ 											bind:config={OPENAI_API_CONFIGS[idx]}
+ 											pipeline={pipelineUrls[url] ? true : false}
+-											onSubmit={() => {
+-												updateOpenAIHandler();
+-											}}
++										onSubmit={() => updateOpenAIHandler()}
+ 											onDelete={() => {
+ 												OPENAI_API_BASE_URLS = OPENAI_API_BASE_URLS.filter(
+ 													(url, urlIdx) => idx !== urlIdx
+@@ -337,9 +343,7 @@
+ 											bind:url={OLLAMA_BASE_URLS[idx]}
+ 											bind:config={OLLAMA_API_CONFIGS[idx]}
+ 											{idx}
+-											onSubmit={() => {
+-												updateOllamaHandler();
+-											}}
++											onSubmit={() => updateOllamaHandler()}
+ 											onDelete={() => {
+ 												OLLAMA_BASE_URLS = OLLAMA_BASE_URLS.filter((url, urlIdx) => idx !== urlIdx);
+ 
+diff --git a/src/lib/components/admin/Settings/Connections/OllamaConnection.svelte b/src/lib/components/admin/Settings/Connections/OllamaConnection.svelte
+index e4289dcf9..07e161e17 100644
+--- a/src/lib/components/admin/Settings/Connections/OllamaConnection.svelte
++++ b/src/lib/components/admin/Settings/Connections/OllamaConnection.svelte
+@@ -37,10 +37,10 @@
+ 	onDelete={() => {
+ 		showDeleteConfirmDialog = true;
+ 	}}
+-	onSubmit={(connection) => {
++	onSubmit={async (connection) => {
+ 		url = connection.url;
+ 		config = { ...connection.config, key: connection.key };
+-		onSubmit(connection);
++		await onSubmit(connection);
+ 	}}
+ />
+ 
+diff --git a/src/lib/components/admin/Settings/Connections/OpenAIConnection.svelte b/src/lib/components/admin/Settings/Connections/OpenAIConnection.svelte
+index da9038457..21fa8e3f5 100644
+--- a/src/lib/components/admin/Settings/Connections/OpenAIConnection.svelte
++++ b/src/lib/components/admin/Settings/Connections/OpenAIConnection.svelte
+@@ -42,11 +42,11 @@
+ 	onDelete={() => {
+ 		showDeleteConfirmDialog = true;
+ 	}}
+-	onSubmit={(connection) => {
++	onSubmit={async (connection) => {
+ 		url = connection.url;
+ 		key = connection.key;
+ 		config = connection.config;
+-		onSubmit(connection);
++		await onSubmit(connection);
+ 	}}
+ />
+ 
+-- 
+2.53.0
+
