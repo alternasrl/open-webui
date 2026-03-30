@@ -2909,18 +2909,32 @@ async def serve_cache_file(
     path: str,
     user=Depends(get_verified_user),
 ):
-    file_path = os.path.abspath(os.path.join(CACHE_DIR, path))
-    # prevent path traversal
-    if not file_path.startswith(os.path.abspath(CACHE_DIR)):
-        raise HTTPException(status_code=404, detail='File not found')
-    if not os.path.isfile(file_path):
-        raise HTTPException(status_code=404, detail='File not found')
+    from pathlib import Path
 
-    mime, _ = mimetypes.guess_type(file_path)
+    # Sanitize: reject any path containing traversal sequences or absolute paths
+    if ".." in path or path.startswith("/") or path.startswith("\\"):
+        raise HTTPException(status_code=400, detail="Invalid path")
+
+    # Use only the filename (last component) to prevent any directory traversal
+    safe_filename = Path(path).name
+    if not safe_filename or safe_filename in (".", ".."):
+        raise HTTPException(status_code=400, detail="Invalid path")
+
+    cache_dir = Path(CACHE_DIR).resolve()
+    file_path = (cache_dir / safe_filename).resolve()
+
+    # Verify the resolved path is strictly within CACHE_DIR
+    if cache_dir not in file_path.parents and file_path.parent != cache_dir:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    if not file_path.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    mime, _ = mimetypes.guess_type(str(file_path))
     inline_safe = mime and mime.split('/', 1)[0] in {'image', 'audio', 'video'}
     headers = {'X-Content-Type-Options': 'nosniff'}
     if not inline_safe:
-        headers['Content-Disposition'] = f'attachment; filename="{os.path.basename(file_path)}"'
+        headers['Content-Disposition'] = f'attachment; filename="{file_path.name}"'
     return FileResponse(file_path, headers=headers)
 
 

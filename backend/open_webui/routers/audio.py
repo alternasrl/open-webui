@@ -1309,8 +1309,15 @@ async def transcription(
         )
 
     try:
-        safe_name = os.path.basename(file.filename) if file.filename else ''
-        ext = safe_name.rsplit('.', 1)[-1].lower() if '.' in safe_name else ''
+        from pathlib import Path
+        import re
+
+        # Sanitize extension: extract only alphanumeric characters to prevent path traversal
+        raw_ext = Path(file.filename).suffix.lstrip(".") if file.filename else ""
+        # Allow only safe characters in extension (alphanumeric)
+        ext = re.sub(r"[^a-zA-Z0-9]", "", raw_ext).lower()
+        if not ext:
+            ext = "tmp"
 
         allowed_extensions = getattr(request.app.state.config, 'STT_ALLOWED_EXTENSIONS', [])
         if allowed_extensions and ext not in allowed_extensions:
@@ -1324,9 +1331,16 @@ async def transcription(
         filename = f'{id}.{ext}'
         contents = await file.read()
 
-        file_dir = os.path.join(CACHE_DIR, 'audio', 'transcriptions')
-        os.makedirs(file_dir, exist_ok=True)
-        file_path = os.path.join(file_dir, filename)
+        file_dir = Path(CACHE_DIR) / "audio" / "transcriptions"
+        file_dir.mkdir(parents=True, exist_ok=True)
+        file_path = file_dir / filename
+
+        # Verify the resolved path is within the expected directory
+        if file_dir.resolve() not in file_path.resolve().parents and file_path.resolve().parent != file_dir.resolve():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid file path",
+            )
 
         # Defense-in-depth: ensure resolved path stays within intended directory
         if not os.path.realpath(file_path).startswith(os.path.realpath(file_dir)):
