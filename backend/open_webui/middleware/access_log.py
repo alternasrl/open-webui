@@ -86,6 +86,7 @@ Log format example
 NIS2 Action Categories
 -----------------------
   AUTH_*       — Authentication & session lifecycle
+                 AUTH_OIDC_LOGIN       — OIDC/OAuth2 callback (success=302, fail=4xx → _FAIL)
   USER_*       — User account management
   GROUP_*      — Group & membership management
   CONFIG_*     — System configuration changes
@@ -192,6 +193,10 @@ def _compile_action_rules() -> list[tuple[re.Pattern, Optional[str], str]]:
         (rf"^/api/v1/auths/api_key$", "POST", "AUTH_API_KEY_CREATE"),
         (rf"^/api/v1/auths/api_key$", "DELETE", "AUTH_API_KEY_DELETE"),
         (rf"^/api/v1/auths/oauth/{_ID}/token/exchange$", "POST", "AUTH_OAUTH_TOKEN"),
+        # OIDC/OAuth2 callback endpoints (GET — browser redirect after IdP authentication)
+        (rf"^/oauth/{_ID}/login/callback$", "GET", "AUTH_OIDC_LOGIN"),
+        (rf"^/oauth/{_ID}/callback$", "GET", "AUTH_OIDC_LOGIN"),        # legacy path
+        (rf"^/oauth/clients/{_ID}/callback$", "GET", "AUTH_OIDC_LOGIN"), # dynamic OAuth clients
         (rf"^/api/v1/auths/admin/config/ldap/server$", "POST", "CONFIG_LDAP_SERVER"),
         (rf"^/api/v1/auths/admin/config/ldap$", "POST", "CONFIG_LDAP"),
         (rf"^/api/v1/auths/admin/config$", "POST", "CONFIG_AUTH"),
@@ -385,7 +390,7 @@ _NIS2_SECURITY_ACTIONS = frozenset({
     # Authentication
     "AUTH_LOGIN", "AUTH_LOGIN_LDAP", "AUTH_SIGNUP", "AUTH_LOGOUT",
     "AUTH_PASSWORD_CHANGE", "AUTH_API_KEY_CREATE", "AUTH_API_KEY_DELETE",
-    "AUTH_OAUTH_TOKEN",
+    "AUTH_OAUTH_TOKEN", "AUTH_OIDC_LOGIN",
     # User management
     "USER_CREATE", "USER_UPDATE", "USER_DELETE", "USER_PERMISSIONS_DEFAULT",
     # Group management
@@ -811,7 +816,8 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
         outcome = _outcome_from_status(status_code)
 
         # Detect failed auth attempts (NIS2 Art.21 — incident detection)
-        if action_type in ("AUTH_LOGIN", "AUTH_LOGIN_LDAP", "AUTH_SIGNUP") and status_code >= 400:
+        # AUTH_OIDC_LOGIN: success = 302 redirect to app; failure = 4xx
+        if action_type in ("AUTH_LOGIN", "AUTH_LOGIN_LDAP", "AUTH_SIGNUP", "AUTH_OIDC_LOGIN") and status_code >= 400:
             effective_action = f"{action_type}_FAIL"
             effective_nis2 = True
         else:
