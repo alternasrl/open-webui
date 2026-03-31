@@ -107,6 +107,7 @@ NIS2 Action Categories
 """
 
 import hashlib
+import json
 import re
 import uuid
 import logging
@@ -620,6 +621,30 @@ def _decode_id_token_claims(id_token_raw: str, user_hint: str = "") -> tuple[Opt
         return None, None
 
 
+# Claims to redact from the full token dump to avoid leaking opaque tokens
+# into the log (they add noise and may trigger WAF/DLP rules).
+_REDACTED_CLAIMS = frozenset({"at_hash", "c_hash", "nonce", "jti"})
+
+
+def _decode_full_id_token(id_token_raw: str) -> Optional[dict]:
+    """Decode all claims from an OIDC id_token for debug/audit logging.
+
+    Returns the full decoded payload dict, with a small set of opaque
+    internal claims redacted.  Returns None on any error.
+    """
+    if not id_token_raw or pyjwt is None:
+        return None
+    try:
+        decoded = pyjwt.decode(
+            id_token_raw,
+            options={"verify_signature": False},
+            algorithms=["RS256", "HS256", "ES256", "PS256", "EdDSA"],
+        )
+        return {k: v for k, v in decoded.items() if k not in _REDACTED_CLAIMS}
+    except Exception:
+        return None
+
+
 def _resolve_user_context(user_id: str) -> _UserContext:
     """Resolve email, oidc_sub, mfa_status and role for a user UUID.
 
@@ -797,11 +822,18 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
             # (not available in the request yet). After call_next we can parse it from the
             # Set-Cookie response headers so that oidc_sub and mfa are visible in the
             # AUTH_OIDC_LOGIN log line itself, not only in subsequent requests.
+            oidc_raw_id_token: Optional[str] = None
             if action_type == "AUTH_OIDC_LOGIN" and not oidc_sub:
                 resp_sub, resp_mfa = self._extract_oidc_from_response_cookies(response)
                 if resp_sub:
                     oidc_sub = resp_sub
                     mfa_status = resp_mfa
+                    # grab the raw token from response cookie for full-claims dump
+                    for hdr in response.headers.getlist("set-cookie"):
+                        m = re.search(r'(?:^|;\s*)oauth_id_token=([^;]+)', hdr, re.IGNORECASE)
+                        if m:
+                            oidc_raw_id_token = m.group(1).strip()
+                            break
                 else:
                     # Failure case: no cookie was issued. oauth.py stores the raw id_token
                     # in request.state after a successful token exchange so we can still
@@ -812,6 +844,7 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
                         if state_sub:
                             oidc_sub = state_sub
                             mfa_status = state_mfa
+                        oidc_raw_id_token = raw
 
         except Exception as e:
             # Log anche in caso di eccezione
@@ -860,6 +893,13 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
             f'"{request.method} {request.url.path}" {status_code} | '
             f"time={process_time:.3f}s"
         )
+
+        # For OIDC login events append the full decoded token claims for debug/audit.
+        # The raw id_token is decoded here (no signature verification) and the result
+        # is appended as a JSON field so that claim mapping issues are immediately visible.
+        if action_type == "AUTH_OIDC_LOGIN":
+            claims_dict = _decode_full_id_token(oidc_raw_id_token) if oidc_raw_id_token else None
+            log_msg += f" | claims={json.dumps(claims_dict, default=str) if claims_dict else '-'}"
 
         # Use WARNING level for NIS2 security-relevant actions to aid SIEM/alerting
         if effective_nis2:
