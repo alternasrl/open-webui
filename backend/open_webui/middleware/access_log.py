@@ -792,6 +792,17 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
         try:
             response = await call_next(request)
             status_code = response.status_code
+
+            # For OIDC callbacks the oauth_id_token cookie is written into the *response*
+            # (not available in the request yet). After call_next we can parse it from the
+            # Set-Cookie response headers so that oidc_sub and mfa are visible in the
+            # AUTH_OIDC_LOGIN log line itself, not only in subsequent requests.
+            if action_type == "AUTH_OIDC_LOGIN" and not oidc_sub:
+                resp_sub, resp_mfa = self._extract_oidc_from_response_cookies(response)
+                if resp_sub:
+                    oidc_sub = resp_sub
+                    mfa_status = resp_mfa
+
         except Exception as e:
             # Log anche in caso di eccezione
             process_time = time.time() - start_time
@@ -906,6 +917,21 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
             if oidc_sub or mfa_status:
                 return oidc_sub, mfa_status
 
+        return None, None
+
+    def _extract_oidc_from_response_cookies(self, response: Response) -> tuple[Optional[str], Optional[str]]:
+        """Extract OIDC sub + MFA from the oauth_id_token Set-Cookie response header.
+
+        Used for OIDC callback requests (AUTH_OIDC_LOGIN) where the id_token cookie
+        is written into the *response*, not available in the incoming request.
+        Parses all Set-Cookie headers looking for oauth_id_token=<JWT>.
+        Returns (None, None) when no matching cookie is found (e.g. failed login
+        where no cookie was issued).
+        """
+        for cookie_header in response.headers.getlist("set-cookie"):
+            m = re.search(r'(?:^|;\s*)oauth_id_token=([^;]+)', cookie_header, re.IGNORECASE)
+            if m:
+                return _decode_id_token_claims(m.group(1).strip())
         return None, None
 
     def _extract_user_uuid(self, request: Request) -> Optional[str]:
