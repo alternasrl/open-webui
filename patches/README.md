@@ -4,7 +4,7 @@ Questo directory contiene le patch custom applicate sopra la release upstream di
 Sono numerate progressivamente e vanno applicate in ordine con:
 
 ```bash
-git am patches/0001-*.patch patches/0002-*.patch ... patches/0024-*.patch
+git am patches/0001-*.patch patches/0002-*.patch ... patches/0025-*.patch
 # oppure in un colpo solo:
 git am patches/*.patch
 ```
@@ -36,6 +36,7 @@ Implementa un middleware di access log conforme alla direttiva NIS2 per la regis
 | 0022 | `feat-audit-OIDC-OAuth2-callback-track-AUTH_OIDC_LOGI...` | Aggiunge regole di azione per gli endpoint OIDC/OAuth2 callback (`/oauth/{provider}/login/callback`, `/oauth/{provider}/callback`, `/oauth/clients/{id}/callback`), mappandoli al nuovo tipo `AUTH_OIDC_LOGIN`. Il tipo viene aggiunto a `_NIS2_SECURITY_ACTIONS` (log a livello WARNING) e al blocco di rilevamento fallimenti: un HTTP 4xx sul callback produce `action=AUTH_OIDC_LOGIN_FAIL  nis2=Y`, abilitando il rilevamento brute-force nel SIEM Log360. Prima di questa fix un login OIDC fallito compariva con `action=-  nis2=N`. |
 | 0023 | `feat-extract-OIDC-claims-from-response-Set-Cookie-in...` | Nel callback OIDC il cookie `oauth_id_token` viene scritto nella *response*, non nella request. L'`AccessLogMiddleware` non riusciva quindi a leggere `oidc_sub` e `mfa` per la riga di log `AUTH_OIDC_LOGIN` (apparivano come `-`). Fix: dopo `call_next()`, per i soli path `AUTH_OIDC_LOGIN`, il middleware cerca `oauth_id_token` nei response `Set-Cookie` headers e lo decodifica in-place. Nessun overhead per le altre richieste. Sul login riuscito (307): `oidc_sub=<sub>  mfa=pwd`. Sul login fallito (4xx): `oidc_sub=-` perché l'IdP non ha emesso alcun cookie. |
 | 0024 | `feat-log-OIDC-claims-on-both-success-and-failed-logi...` | Estende la patch 0023: in caso di login fallito (dominio non consentito, ruolo mancante, signup disabilitato) l'IdP non emette cookie ma il token exchange può essere riuscito. `oauth.py` salva l'`id_token` grezzo in `request.state.oidc_raw_id_token` subito dopo lo scambio del codice. L'`AccessLogMiddleware` lo legge come fallback quando il percorso dei response cookies non trova nulla. Risultato: `oidc_sub` e `mfa` sono popolati nel log sia per login riusciti (307) che falliti (4xx). Unica eccezione: se il token exchange stesso fallisce, nessun `id_token` è disponibile. |
+| 0025 | `feat-log-full-OIDC-token-claims-in-AUTH_OIDC_LOGIN-a...` | Aggiunge il campo `claims=<json>` alla riga di log `AUTH_OIDC_LOGIN` (successo e fallimento) per rendere immediatamente visibili tutte le claim restituite dall'IdP — utile per debug di claim mapping errato (nome claim sbagliato, ruolo assente, dominio non consentito). Nuovo helper `_decode_full_id_token()` che decodifica il JWT senza verifica della firma e rimuove claim opachi (`at_hash`, `c_hash`, `nonce`, `jti`). Il campo `claims=` è aggiunto solo per eventi `AUTH_OIDC_LOGIN`, zero overhead per le altre richieste. |
 
 ---
 
