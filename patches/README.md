@@ -4,7 +4,7 @@ Questo directory contiene le patch custom applicate sopra la release upstream di
 Sono numerate progressivamente e vanno applicate in ordine con:
 
 ```bash
-git am patches/0001-*.patch patches/0002-*.patch ... patches/0022-*.patch
+git am patches/0001-*.patch patches/0002-*.patch ... patches/0023-*.patch
 # oppure in un colpo solo:
 git am patches/*.patch
 ```
@@ -34,6 +34,7 @@ Implementa un middleware di access log conforme alla direttiva NIS2 per la regis
 | 0006 | `feat-Enhance-NIS2-compliance-in-access-logging-middl...` | Classificazione dettagliata delle azioni (CREATE, READ, UPDATE, DELETE, LOGIN, …) tramite regex sul path, per la reportistica NIS2 / LOG360. |
 | 0007 | `Enhance-access-log-middleware-with-additional-regex...` | Estende il set di regex per coprire ulteriori endpoint (audio, retrieval, tools, functions, ecc.) e aggiunge nuovi tipi di azione. |
 | 0022 | `feat-audit-OIDC-OAuth2-callback-track-AUTH_OIDC_LOGI...` | Aggiunge regole di azione per gli endpoint OIDC/OAuth2 callback (`/oauth/{provider}/login/callback`, `/oauth/{provider}/callback`, `/oauth/clients/{id}/callback`), mappandoli al nuovo tipo `AUTH_OIDC_LOGIN`. Il tipo viene aggiunto a `_NIS2_SECURITY_ACTIONS` (log a livello WARNING) e al blocco di rilevamento fallimenti: un HTTP 4xx sul callback produce `action=AUTH_OIDC_LOGIN_FAIL  nis2=Y`, abilitando il rilevamento brute-force nel SIEM Log360. Prima di questa fix un login OIDC fallito compariva con `action=-  nis2=N`. |
+| 0023 | `feat-extract-OIDC-claims-from-response-Set-Cookie-in...` | Nel callback OIDC il cookie `oauth_id_token` viene scritto nella *response*, non nella request. L'`AccessLogMiddleware` non riusciva quindi a leggere `oidc_sub` e `mfa` per la riga di log `AUTH_OIDC_LOGIN` (apparivano come `-`). Fix: dopo `call_next()`, per i soli path `AUTH_OIDC_LOGIN`, il middleware cerca `oauth_id_token` nei response `Set-Cookie` headers e lo decodifica in-place. Nessun overhead per le altre richieste. Sul login riuscito (307): `oidc_sub=<sub>  mfa=pwd`. Sul login fallito (4xx): `oidc_sub=-` perché l'IdP non ha emesso alcun cookie. |
 
 ---
 
