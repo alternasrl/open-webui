@@ -1541,6 +1541,12 @@ class OAuthManager:
                 )
                 raise HTTPException(400, detail=ERROR_MESSAGES.INVALID_CRED)
 
+            # Store the raw id_token in request.state so the AccessLogMiddleware can
+            # log OIDC claims (sub, amr/acr) even when the login fails later
+            # (e.g. domain restriction, role mismatch, signup disabled).
+            if token.get('id_token'):
+                request.state.oidc_raw_id_token = token['id_token']
+
             # Try to get userinfo from the token first, some providers include it there
             user_data: UserInfo = token.get('userinfo')
             # Preserve extra claims from the ID token (e.g. roles, groups for

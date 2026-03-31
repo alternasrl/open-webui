@@ -802,6 +802,16 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
                 if resp_sub:
                     oidc_sub = resp_sub
                     mfa_status = resp_mfa
+                else:
+                    # Failure case: no cookie was issued. oauth.py stores the raw id_token
+                    # in request.state after a successful token exchange so we can still
+                    # log the identity of who failed to authenticate.
+                    raw = getattr(request.state, "oidc_raw_id_token", None)
+                    if raw:
+                        state_sub, state_mfa = _decode_id_token_claims(raw)
+                        if state_sub:
+                            oidc_sub = state_sub
+                            mfa_status = state_mfa
 
         except Exception as e:
             # Log anche in caso di eccezione
