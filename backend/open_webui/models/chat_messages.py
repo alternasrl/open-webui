@@ -551,6 +551,163 @@ class ChatMessageTable:
 
             return daily_counts
 
+    async def get_performance_metrics_by_model(
+        self,
+        start_date: Optional[int] = None,
+        end_date: Optional[int] = None,
+        group_id: Optional[str] = None,
+        db: Optional[AsyncSession] = None,
+    ) -> dict[str, dict]:
+        """Aggregate TTFT, Token/s and error metrics grouped by model_id."""
+        async with get_async_db_context(db) as db:
+            from open_webui.models.groups import GroupMember
+
+            def _to_float(value: Any) -> Optional[float]:
+                if value is None:
+                    return None
+                if isinstance(value, str):
+                    if value.strip().lower() in {'', 'n/a', 'na', 'none', 'null'}:
+                        return None
+                try:
+                    return float(value)
+                except (TypeError, ValueError):
+                    return None
+
+            stmt = select(ChatMessage.model_id, ChatMessage.usage, ChatMessage.error).filter(
+                ChatMessage.role == 'assistant',
+                ChatMessage.model_id.isnot(None),
+                ~ChatMessage.user_id.like('shared-%'),
+            )
+
+            if start_date:
+                stmt = stmt.filter(ChatMessage.created_at >= start_date)
+            if end_date:
+                stmt = stmt.filter(ChatMessage.created_at <= end_date)
+            if group_id:
+                group_users = select(GroupMember.user_id).filter(GroupMember.group_id == group_id).scalar_subquery()
+                stmt = stmt.filter(ChatMessage.user_id.in_(group_users))
+
+            result = await db.execute(stmt)
+            rows = result.all()
+
+            buckets: dict[str, dict] = {}
+            for model_id, usage, error in rows:
+                if model_id not in buckets:
+                    buckets[model_id] = {'total': 0, 'errors': 0, 'ttft': [], 'tps': []}
+                b = buckets[model_id]
+                b['total'] += 1
+                if error not in (None, {}, '', []):
+                    b['errors'] += 1
+                if not isinstance(usage, dict):
+                    continue
+                ttft_ms = (
+                    _to_float(usage.get('ttft_ms'))
+                    or _to_float(usage.get('time_to_first_token_ms'))
+                    or _to_float(usage.get('time_to_first_token'))
+                )
+                if ttft_ms is None:
+                    pev_dur = _to_float(usage.get('prompt_eval_duration'))
+                    if pev_dur and pev_dur > 0:
+                        ttft_ms = pev_dur / 1_000_000
+                if ttft_ms and ttft_ms > 0:
+                    b['ttft'].append(ttft_ms)
+                tps = _to_float(usage.get('tokens_per_second')) or _to_float(usage.get('response_token/s'))
+                if tps is None:
+                    out_tok = _to_float(usage.get('output_tokens')) or _to_float(usage.get('completion_tokens'))
+                    eval_dur = _to_float(usage.get('eval_duration'))
+                    if out_tok and eval_dur and eval_dur > 0:
+                        tps = out_tok / (eval_dur / 1_000_000_000)
+                if tps and tps > 0:
+                    b['tps'].append(tps)
+
+            return {
+                mid: {
+                    'avg_ttft_ms': round(sum(b['ttft']) / len(b['ttft']), 2) if b['ttft'] else None,
+                    'avg_tokens_per_second': round(sum(b['tps']) / len(b['tps']), 2) if b['tps'] else None,
+                    'error_requests': b['errors'],
+                    'total_requests': b['total'],
+                    'error_rate': round((b['errors'] / b['total']) * 100, 2) if b['total'] > 0 else 0.0,
+                }
+                for mid, b in buckets.items()
+            }
+
+    async def get_performance_metrics(
+        self,
+        start_date: Optional[int] = None,
+        end_date: Optional[int] = None,
+        group_id: Optional[str] = None,
+        db: Optional[AsyncSession] = None,
+    ) -> dict:
+        """Aggregate global TTFT, Token/s and error metrics."""
+        async with get_async_db_context(db) as db:
+            from open_webui.models.groups import GroupMember
+
+            def _to_float(value: Any) -> Optional[float]:
+                if value is None:
+                    return None
+                if isinstance(value, str):
+                    if value.strip().lower() in {'', 'n/a', 'na', 'none', 'null'}:
+                        return None
+                try:
+                    return float(value)
+                except (TypeError, ValueError):
+                    return None
+
+            stmt = select(ChatMessage.usage, ChatMessage.error).filter(
+                ChatMessage.role == 'assistant',
+                ~ChatMessage.user_id.like('shared-%'),
+            )
+
+            if start_date:
+                stmt = stmt.filter(ChatMessage.created_at >= start_date)
+            if end_date:
+                stmt = stmt.filter(ChatMessage.created_at <= end_date)
+            if group_id:
+                group_users = select(GroupMember.user_id).filter(GroupMember.group_id == group_id).scalar_subquery()
+                stmt = stmt.filter(ChatMessage.user_id.in_(group_users))
+
+            result = await db.execute(stmt)
+            rows = result.all()
+
+            total_requests = 0
+            error_requests = 0
+            ttft_values: list[float] = []
+            tps_values: list[float] = []
+
+            for usage, error in rows:
+                total_requests += 1
+                if error not in (None, {}, '', []):
+                    error_requests += 1
+                if not isinstance(usage, dict):
+                    continue
+                ttft_ms = (
+                    _to_float(usage.get('ttft_ms'))
+                    or _to_float(usage.get('time_to_first_token_ms'))
+                    or _to_float(usage.get('time_to_first_token'))
+                )
+                if ttft_ms is None:
+                    pev_dur = _to_float(usage.get('prompt_eval_duration'))
+                    if pev_dur and pev_dur > 0:
+                        ttft_ms = pev_dur / 1_000_000
+                if ttft_ms and ttft_ms > 0:
+                    ttft_values.append(ttft_ms)
+                tps = _to_float(usage.get('tokens_per_second')) or _to_float(usage.get('response_token/s'))
+                if tps is None:
+                    out_tok = _to_float(usage.get('output_tokens')) or _to_float(usage.get('completion_tokens'))
+                    eval_dur = _to_float(usage.get('eval_duration'))
+                    if out_tok and eval_dur and eval_dur > 0:
+                        tps = out_tok / (eval_dur / 1_000_000_000)
+                if tps and tps > 0:
+                    tps_values.append(tps)
+
+            return {
+                'avg_ttft_ms': round(sum(ttft_values) / len(ttft_values), 2) if ttft_values else None,
+                'avg_tokens_per_second': round(sum(tps_values) / len(tps_values), 2) if tps_values else None,
+                'error_requests': error_requests,
+                'total_requests': total_requests,
+                'error_rate': round((error_requests / total_requests) * 100, 2) if total_requests > 0 else 0.0,
+            }
+
     async def get_hourly_message_counts_by_model(
         self,
         start_date: Optional[int] = None,
