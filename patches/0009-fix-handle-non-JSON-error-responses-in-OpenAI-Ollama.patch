@@ -1,0 +1,46 @@
+From 8164217b89fa51c639a558bfe5b1cb31ec59a241 Mon Sep 17 00:00:00 2001
+From: Fabio Paracchini <fparacchini@alteanet.it>
+Date: Mon, 9 Mar 2026 22:18:35 +0100
+Subject: [PATCH 09/21] fix: handle non-JSON error responses in OpenAI/Ollama
+ config update
+
+---
+ src/lib/apis/ollama/index.ts | 5 ++++-
+ src/lib/apis/openai/index.ts | 5 ++++-
+ 2 files changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/src/lib/apis/ollama/index.ts b/src/lib/apis/ollama/index.ts
+index 4f6a3d2b0..468373465 100644
+--- a/src/lib/apis/ollama/index.ts
++++ b/src/lib/apis/ollama/index.ts
+@@ -83,7 +83,10 @@ export const updateOllamaConfig = async (token: string = '', config: OllamaConfi
+ 		})
+ 	})
+ 		.then(async (res) => {
+-			if (!res.ok) throw await res.json();
++			if (!res.ok) {
++				const body = await res.json().catch(() => null);
++				throw body ?? { detail: `HTTP ${res.status}` };
++			}
+ 			return res.json();
+ 		})
+ 		.catch((err) => {
+diff --git a/src/lib/apis/openai/index.ts b/src/lib/apis/openai/index.ts
+index acfdcf709..a50a68db3 100644
+--- a/src/lib/apis/openai/index.ts
++++ b/src/lib/apis/openai/index.ts
+@@ -54,7 +54,10 @@ export const updateOpenAIConfig = async (token: string = '', config: OpenAIConfi
+ 		})
+ 	})
+ 		.then(async (res) => {
+-			if (!res.ok) throw await res.json();
++			if (!res.ok) {
++				const body = await res.json().catch(() => null);
++				throw body ?? { detail: `HTTP ${res.status}` };
++			}
+ 			return res.json();
+ 		})
+ 		.catch((err) => {
+-- 
+2.53.0
+

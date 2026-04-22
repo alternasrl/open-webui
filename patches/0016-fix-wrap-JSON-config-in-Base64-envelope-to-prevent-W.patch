@@ -1,0 +1,80 @@
+From cb29a4d5be2fa484492c8cdbb78caa38dbf68887 Mon Sep 17 00:00:00 2001
+From: Fabio Paracchini <fparacchini@alteanet.it>
+Date: Tue, 17 Mar 2026 23:57:57 +0100
+Subject: [PATCH 16/21] fix: wrap JSON config in Base64 envelope to prevent WAF
+ false positives
+
+---
+ backend/open_webui/routers/retrieval.py | 21 ++++++++++++++++++++-
+ src/lib/apis/retrieval/index.ts         | 12 +++++++++---
+ 2 files changed, 29 insertions(+), 4 deletions(-)
+
+diff --git a/backend/open_webui/routers/retrieval.py b/backend/open_webui/routers/retrieval.py
+index 6c9e988dd..5b3af2313 100644
+--- a/backend/open_webui/routers/retrieval.py
++++ b/backend/open_webui/routers/retrieval.py
+@@ -1,3 +1,4 @@
++import base64
+ import json
+ import logging
+ import mimetypes
+@@ -339,8 +340,26 @@ def unload_embedding_model(request: Request):
+                 torch.cuda.empty_cache()
+ 
+ 
++def _decode_payload(raw: bytes, model_cls):
++    """Accept either a Base64-encoded envelope or plain JSON.
++
++    The frontend wraps the real JSON config inside ``{"data": "<base64>"}``
++    so that the WAF only sees an opaque string — no URLs, keys or patterns
++    that could trigger OWASP CRS rules (931 RFI, 942 SQLi, etc.).
++    For backward compatibility, plain JSON payloads are still accepted.
++    """
++    outer = json.loads(raw)
++    if isinstance(outer, dict) and 'data' in outer and len(outer) == 1:
++        inner_bytes = base64.b64decode(outer['data'])
++        outer = json.loads(inner_bytes)
++    return model_cls(**outer)
++
++
+ @router.post('/embedding/update')
+-async def update_embedding_config(request: Request, form_data: EmbeddingModelUpdateForm, user=Depends(get_admin_user)):
++async def update_embedding_config(
++    request: Request, user=Depends(get_admin_user)
++):
++    form_data = _decode_payload(await request.body(), EmbeddingModelUpdateForm)
+     log.info(
+         f'Updating embedding model: {request.app.state.config.RAG_EMBEDDING_MODEL} to {form_data.RAG_EMBEDDING_MODEL}'
+     )
+diff --git a/src/lib/apis/retrieval/index.ts b/src/lib/apis/retrieval/index.ts
+index a84e7b682..317a08e45 100644
+--- a/src/lib/apis/retrieval/index.ts
++++ b/src/lib/apis/retrieval/index.ts
+@@ -202,15 +202,21 @@ type EmbeddingModelUpdateForm = {
+ export const updateEmbeddingConfig = async (token: string, payload: EmbeddingModelUpdateForm) => {
+ 	let error = null;
+ 
++	// Wrap the actual JSON config inside a Base64 envelope so that the HTTP
++	// body contains only an opaque string.  This prevents Azure Application
++	// Gateway WAF (OWASP CRS) from flagging URLs, keys or other patterns
++	// inside the config as potential injection attacks (rules 931, 942, etc.).
++	const encodedPayload = JSON.stringify({
++		data: btoa(unescape(encodeURIComponent(JSON.stringify(payload))))
++	});
++
+ 	const res = await fetch(`${RETRIEVAL_API_BASE_URL}/embedding/update`, {
+ 		method: 'POST',
+ 		headers: {
+ 			'Content-Type': 'application/json',
+ 			Authorization: `Bearer ${token}`
+ 		},
+-		body: JSON.stringify({
+-			...payload
+-		})
++		body: encodedPayload
+ 	})
+ 		.then(async (res) => {
+ 			if (!res.ok) throw await res.json();
+-- 
+2.53.0
+

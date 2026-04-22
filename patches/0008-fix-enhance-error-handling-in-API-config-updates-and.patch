@@ -1,0 +1,211 @@
+From f9ddb6bde39d896e3523d45825e3d90b0b1d8b83 Mon Sep 17 00:00:00 2001
+From: Fabio Paracchini <fparacchini@alteanet.it>
+Date: Mon, 9 Mar 2026 19:19:07 +0100
+Subject: [PATCH 08/21] fix: enhance error handling in API config updates and
+ model refresh
+
+---
+ backend/open_webui/routers/ollama.py          | 39 +++++++-----
+ backend/open_webui/routers/openai.py          | 63 +++++++++++--------
+ src/lib/apis/ollama/index.ts                  |  4 +-
+ src/lib/apis/openai/index.ts                  |  4 +-
+ .../admin/Settings/Connections.svelte         | 12 +++-
+ 5 files changed, 75 insertions(+), 47 deletions(-)
+
+diff --git a/backend/open_webui/routers/ollama.py b/backend/open_webui/routers/ollama.py
+index d03c37ae1..6a0e8b6e8 100644
+--- a/backend/open_webui/routers/ollama.py
++++ b/backend/open_webui/routers/ollama.py
+@@ -267,23 +267,34 @@ class OllamaConfigForm(BaseModel):
+ 
+ 
+ @router.post('/config/update')
+-async def update_config(request: Request, form_data: OllamaConfigForm, user=Depends(get_admin_user)):
+-    request.app.state.config.ENABLE_OLLAMA_API = form_data.ENABLE_OLLAMA_API
++async def update_config(
++    request: Request, form_data: OllamaConfigForm, user=Depends(get_admin_user)
++):
++    try:
++        request.app.state.config.ENABLE_OLLAMA_API = form_data.ENABLE_OLLAMA_API
+ 
+-    request.app.state.config.OLLAMA_BASE_URLS = form_data.OLLAMA_BASE_URLS
+-    request.app.state.config.OLLAMA_API_CONFIGS = form_data.OLLAMA_API_CONFIGS
++        request.app.state.config.OLLAMA_BASE_URLS = form_data.OLLAMA_BASE_URLS
++        request.app.state.config.OLLAMA_API_CONFIGS = form_data.OLLAMA_API_CONFIGS
+ 
+-    # Remove the API configs that are not in the API URLS
+-    keys = list(map(str, range(len(request.app.state.config.OLLAMA_BASE_URLS))))
+-    request.app.state.config.OLLAMA_API_CONFIGS = {
+-        key: value for key, value in request.app.state.config.OLLAMA_API_CONFIGS.items() if key in keys
+-    }
++        # Remove the API configs that are not in the API URLS
++        keys = list(map(str, range(len(request.app.state.config.OLLAMA_BASE_URLS))))
++        request.app.state.config.OLLAMA_API_CONFIGS = {
++            key: value
++            for key, value in request.app.state.config.OLLAMA_API_CONFIGS.items()
++            if key in keys
++        }
+ 
+-    return {
+-        'ENABLE_OLLAMA_API': request.app.state.config.ENABLE_OLLAMA_API,
+-        'OLLAMA_BASE_URLS': request.app.state.config.OLLAMA_BASE_URLS,
+-        'OLLAMA_API_CONFIGS': request.app.state.config.OLLAMA_API_CONFIGS,
+-    }
++        return {
++            'ENABLE_OLLAMA_API': request.app.state.config.ENABLE_OLLAMA_API,
++            'OLLAMA_BASE_URLS': request.app.state.config.OLLAMA_BASE_URLS,
++            'OLLAMA_API_CONFIGS': request.app.state.config.OLLAMA_API_CONFIGS,
++        }
++    except Exception as e:
++        log.exception('Failed to update Ollama config')
++        raise HTTPException(
++            status_code=500,
++            detail=f'Failed to save Ollama config: {str(e)}',
++        )
+ 
+ 
+ def merge_ollama_models_lists(model_lists):
+diff --git a/backend/open_webui/routers/openai.py b/backend/open_webui/routers/openai.py
+index 0e7c67c1f..f35cddd77 100644
+--- a/backend/open_webui/routers/openai.py
++++ b/backend/open_webui/routers/openai.py
+@@ -246,36 +246,45 @@ class OpenAIConfigForm(BaseModel):
+ 
+ 
+ @router.post('/config/update')
+-async def update_config(request: Request, form_data: OpenAIConfigForm, user=Depends(get_admin_user)):
+-    request.app.state.config.ENABLE_OPENAI_API = form_data.ENABLE_OPENAI_API
+-    request.app.state.config.OPENAI_API_BASE_URLS = form_data.OPENAI_API_BASE_URLS
+-    request.app.state.config.OPENAI_API_KEYS = form_data.OPENAI_API_KEYS
+-
+-    # Check if API KEYS length is same than API URLS length
+-    if len(request.app.state.config.OPENAI_API_KEYS) != len(request.app.state.config.OPENAI_API_BASE_URLS):
+-        if len(request.app.state.config.OPENAI_API_KEYS) > len(request.app.state.config.OPENAI_API_BASE_URLS):
+-            request.app.state.config.OPENAI_API_KEYS = request.app.state.config.OPENAI_API_KEYS[
+-                : len(request.app.state.config.OPENAI_API_BASE_URLS)
+-            ]
+-        else:
+-            request.app.state.config.OPENAI_API_KEYS += [''] * (
+-                len(request.app.state.config.OPENAI_API_BASE_URLS) - len(request.app.state.config.OPENAI_API_KEYS)
+-            )
++async def update_config(
++    request: Request, form_data: OpenAIConfigForm, user=Depends(get_admin_user)
++):
++    try:
++        request.app.state.config.ENABLE_OPENAI_API = form_data.ENABLE_OPENAI_API
++        request.app.state.config.OPENAI_API_BASE_URLS = form_data.OPENAI_API_BASE_URLS
++        request.app.state.config.OPENAI_API_KEYS = form_data.OPENAI_API_KEYS
++
++        # Check if API KEYS length is same than API URLS length
++        if len(request.app.state.config.OPENAI_API_KEYS) != len(request.app.state.config.OPENAI_API_BASE_URLS):
++            if len(request.app.state.config.OPENAI_API_KEYS) > len(request.app.state.config.OPENAI_API_BASE_URLS):
++                request.app.state.config.OPENAI_API_KEYS = request.app.state.config.OPENAI_API_KEYS[
++                    : len(request.app.state.config.OPENAI_API_BASE_URLS)
++                ]
++            else:
++                request.app.state.config.OPENAI_API_KEYS += [''] * (
++                    len(request.app.state.config.OPENAI_API_BASE_URLS) - len(request.app.state.config.OPENAI_API_KEYS)
++                )
+ 
+-    request.app.state.config.OPENAI_API_CONFIGS = form_data.OPENAI_API_CONFIGS
++        request.app.state.config.OPENAI_API_CONFIGS = form_data.OPENAI_API_CONFIGS
+ 
+-    # Remove the API configs that are not in the API URLS
+-    keys = list(map(str, range(len(request.app.state.config.OPENAI_API_BASE_URLS))))
+-    request.app.state.config.OPENAI_API_CONFIGS = {
+-        key: value for key, value in request.app.state.config.OPENAI_API_CONFIGS.items() if key in keys
+-    }
++        # Remove the API configs that are not in the API URLS
++        keys = list(map(str, range(len(request.app.state.config.OPENAI_API_BASE_URLS))))
++        request.app.state.config.OPENAI_API_CONFIGS = {
++            key: value for key, value in request.app.state.config.OPENAI_API_CONFIGS.items() if key in keys
++        }
+ 
+-    return {
+-        'ENABLE_OPENAI_API': request.app.state.config.ENABLE_OPENAI_API,
+-        'OPENAI_API_BASE_URLS': request.app.state.config.OPENAI_API_BASE_URLS,
+-        'OPENAI_API_KEYS': request.app.state.config.OPENAI_API_KEYS,
+-        'OPENAI_API_CONFIGS': request.app.state.config.OPENAI_API_CONFIGS,
+-    }
++        return {
++            'ENABLE_OPENAI_API': request.app.state.config.ENABLE_OPENAI_API,
++            'OPENAI_API_BASE_URLS': request.app.state.config.OPENAI_API_BASE_URLS,
++            'OPENAI_API_KEYS': request.app.state.config.OPENAI_API_KEYS,
++            'OPENAI_API_CONFIGS': request.app.state.config.OPENAI_API_CONFIGS,
++        }
++    except Exception as e:
++        log.exception('Failed to update OpenAI config')
++        raise HTTPException(
++            status_code=500,
++            detail=f'Failed to save OpenAI config: {str(e)}',
++        )
+ 
+ 
+ @router.post('/audio/speech')
+diff --git a/src/lib/apis/ollama/index.ts b/src/lib/apis/ollama/index.ts
+index a0f670d5e..4f6a3d2b0 100644
+--- a/src/lib/apis/ollama/index.ts
++++ b/src/lib/apis/ollama/index.ts
+@@ -88,10 +88,10 @@ export const updateOllamaConfig = async (token: string = '', config: OllamaConfi
+ 		})
+ 		.catch((err) => {
+ 			console.error(err);
+-			if ('detail' in err) {
++			if (err !== null && typeof err === 'object' && 'detail' in err) {
+ 				error = err.detail;
+ 			} else {
+-				error = 'Server connection failed';
++				error = `Ollama: ${err?.message ?? 'Server connection failed'}`;
+ 			}
+ 			return null;
+ 		});
+diff --git a/src/lib/apis/openai/index.ts b/src/lib/apis/openai/index.ts
+index 8cf7438ad..acfdcf709 100644
+--- a/src/lib/apis/openai/index.ts
++++ b/src/lib/apis/openai/index.ts
+@@ -59,10 +59,10 @@ export const updateOpenAIConfig = async (token: string = '', config: OpenAIConfi
+ 		})
+ 		.catch((err) => {
+ 			console.error(err);
+-			if ('detail' in err) {
++			if (err !== null && typeof err === 'object' && 'detail' in err) {
+ 				error = err.detail;
+ 			} else {
+-				error = 'Server connection failed';
++				error = `OpenAI: ${err?.message ?? 'Server connection failed'}`;
+ 			}
+ 			return null;
+ 		});
+diff --git a/src/lib/components/admin/Settings/Connections.svelte b/src/lib/components/admin/Settings/Connections.svelte
+index 32276ce93..758709498 100644
+--- a/src/lib/components/admin/Settings/Connections.svelte
++++ b/src/lib/components/admin/Settings/Connections.svelte
+@@ -81,7 +81,11 @@
+ 
+ 			if (res) {
+ 				toast.success($i18n.t('OpenAI API settings updated'));
+-				await models.set(await getModels());
++				try {
++					await models.set(await getModels());
++				} catch (e) {
++					console.error('Failed to refresh models after OpenAI config update', e);
++				}
+ 			}
+ 		}
+ 	};
+@@ -101,7 +105,11 @@
+ 
+ 			if (res) {
+ 				toast.success($i18n.t('Ollama API settings updated'));
+-				await models.set(await getModels());
++				try {
++					await models.set(await getModels());
++				} catch (e) {
++					console.error('Failed to refresh models after Ollama config update', e);
++				}
+ 			}
+ 		}
+ 	};
+-- 
+2.53.0
+

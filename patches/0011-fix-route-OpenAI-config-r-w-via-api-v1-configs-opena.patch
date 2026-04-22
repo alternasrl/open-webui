@@ -1,0 +1,159 @@
+From b4071ae59fb75a9dae1d22ed898edb612bb5f8ab Mon Sep 17 00:00:00 2001
+From: Fabio Paracchini <fparacchini@alteanet.it>
+Date: Tue, 10 Mar 2026 22:19:52 +0100
+Subject: [PATCH 11/21] fix: route OpenAI config r/w via /api/v1/configs/openai
+ to bypass WAF on /openai/*
+
+Add alias endpoints GET/POST /api/v1/configs/openai in configs.py that
+mirror the existing /openai/config and /openai/config/update endpoints.
+Frontend getOpenAIConfig and updateOpenAIConfig now call these alias paths
+so Azure Application Gateway WAF rules blocking POST /openai/* no longer
+prevent admins from adding, editing or deleting connections.
+
+Also improve updateOpenAIConfig error handling:
+- falls back to reading response as text when JSON parse fails (WAF HTML page)
+- shows a 200-char preview of non-JSON error bodies in the toast
+- properly flattens Pydantic v2 array-style validation error details
+---
+ backend/open_webui/routers/configs.py | 72 +++++++++++++++++++++++++--
+ src/lib/apis/openai/index.ts          | 18 +++++--
+ 2 files changed, 82 insertions(+), 8 deletions(-)
+
+diff --git a/backend/open_webui/routers/configs.py b/backend/open_webui/routers/configs.py
+index 041c4ad93..ba29a96f1 100644
+--- a/backend/open_webui/routers/configs.py
++++ b/backend/open_webui/routers/configs.py
+@@ -37,12 +37,78 @@ log = logging.getLogger(__name__)
+ 
+ 
+ ############################
+-# ImportConfig
+-# Thy configuration come, thy settings be done,
+-# in production as it is in development.
++# OpenAI Config alias
++# Mirrors /openai/config/update so WAF rules on /openai/* do not block
++# admin config management operations.
+ ############################
+ 
+ 
++@router.get("/openai")
++async def get_openai_config_alias(request: Request, user=Depends(get_admin_user)):
++    """Alias for GET /openai/config — bypasses /openai WAF rules."""
++    return {
++        "ENABLE_OPENAI_API": request.app.state.config.ENABLE_OPENAI_API,
++        "OPENAI_API_BASE_URLS": request.app.state.config.OPENAI_API_BASE_URLS,
++        "OPENAI_API_KEYS": request.app.state.config.OPENAI_API_KEYS,
++        "OPENAI_API_CONFIGS": request.app.state.config.OPENAI_API_CONFIGS,
++    }
++
++
++class OpenAIConfigAliasForm(BaseModel):
++    model_config = ConfigDict(extra="allow")
++    ENABLE_OPENAI_API: Optional[bool] = None
++    OPENAI_API_BASE_URLS: list[str]
++    OPENAI_API_KEYS: list[str]
++    OPENAI_API_CONFIGS: dict
++
++
++@router.post("/openai")
++async def update_openai_config_alias(
++    request: Request,
++    form_data: OpenAIConfigAliasForm,
++    user=Depends(get_admin_user),
++):
++    """Alias for POST /openai/config/update — bypasses /openai WAF rules."""
++    try:
++        request.app.state.config.ENABLE_OPENAI_API = form_data.ENABLE_OPENAI_API
++        request.app.state.config.OPENAI_API_BASE_URLS = form_data.OPENAI_API_BASE_URLS
++        request.app.state.config.OPENAI_API_KEYS = form_data.OPENAI_API_KEYS
++
++        num_urls = len(request.app.state.config.OPENAI_API_BASE_URLS)
++        num_keys = len(request.app.state.config.OPENAI_API_KEYS)
++        if num_keys != num_urls:
++            if num_keys > num_urls:
++                request.app.state.config.OPENAI_API_KEYS = (
++                    request.app.state.config.OPENAI_API_KEYS[:num_urls]
++                )
++            else:
++                request.app.state.config.OPENAI_API_KEYS += [""] * (num_urls - num_keys)
++
++        request.app.state.config.OPENAI_API_CONFIGS = form_data.OPENAI_API_CONFIGS
++        keys = list(map(str, range(len(request.app.state.config.OPENAI_API_BASE_URLS))))
++        request.app.state.config.OPENAI_API_CONFIGS = {
++            k: v
++            for k, v in request.app.state.config.OPENAI_API_CONFIGS.items()
++            if k in keys
++        }
++
++        return {
++            "ENABLE_OPENAI_API": request.app.state.config.ENABLE_OPENAI_API,
++            "OPENAI_API_BASE_URLS": request.app.state.config.OPENAI_API_BASE_URLS,
++            "OPENAI_API_KEYS": request.app.state.config.OPENAI_API_KEYS,
++            "OPENAI_API_CONFIGS": request.app.state.config.OPENAI_API_CONFIGS,
++        }
++    except Exception as e:
++        log.exception("Failed to update OpenAI config (alias endpoint)")
++        raise HTTPException(
++            status_code=500,
++            detail=f"Failed to save OpenAI config: {str(e)}",
++        )
++
++
++
++
++
+ class ImportConfigForm(BaseModel):
+     config: dict
+ 
+diff --git a/src/lib/apis/openai/index.ts b/src/lib/apis/openai/index.ts
+index a50a68db3..90032fdfc 100644
+--- a/src/lib/apis/openai/index.ts
++++ b/src/lib/apis/openai/index.ts
+@@ -3,7 +3,7 @@ import { OPENAI_API_BASE_URL, WEBUI_API_BASE_URL, WEBUI_BASE_URL } from '$lib/co
+ export const getOpenAIConfig = async (token: string = '') => {
+ 	let error = null;
+ 
+-	const res = await fetch(`${OPENAI_API_BASE_URL}/config`, {
++	const res = await fetch(`${WEBUI_API_BASE_URL}/configs/openai`, {
+ 		method: 'GET',
+ 		headers: {
+ 			Accept: 'application/json',
+@@ -42,7 +42,7 @@ type OpenAIConfig = {
+ export const updateOpenAIConfig = async (token: string = '', config: OpenAIConfig) => {
+ 	let error = null;
+ 
+-	const res = await fetch(`${OPENAI_API_BASE_URL}/config/update`, {
++	const res = await fetch(`${WEBUI_API_BASE_URL}/configs/openai`, {
+ 		method: 'POST',
+ 		headers: {
+ 			Accept: 'application/json',
+@@ -55,15 +55,23 @@ export const updateOpenAIConfig = async (token: string = '', config: OpenAIConfi
+ 	})
+ 		.then(async (res) => {
+ 			if (!res.ok) {
+-				const body = await res.json().catch(() => null);
+-				throw body ?? { detail: `HTTP ${res.status}` };
++				const body = await res.json().catch(async () => {
++					// Non-JSON response (e.g. WAF/proxy HTML error page)
++					const text = await res.text().catch(() => '');
++					const preview = text.slice(0, 200).replace(/\s+/g, ' ').trim();
++					return { detail: `HTTP ${res.status}${preview ? ': ' + preview : ''}` };
++				});
++				throw body;
+ 			}
+ 			return res.json();
+ 		})
+ 		.catch((err) => {
+ 			console.error(err);
+ 			if (err !== null && typeof err === 'object' && 'detail' in err) {
+-				error = err.detail;
++				const detail = err.detail;
++				error = Array.isArray(detail)
++					? detail.map((d: any) => d?.msg ?? JSON.stringify(d)).join('; ')
++					: String(detail);
+ 			} else {
+ 				error = `OpenAI: ${err?.message ?? 'Server connection failed'}`;
+ 			}
+-- 
+2.53.0
+

@@ -1,0 +1,79 @@
+From b9dc4d9ac92476c55c49f228743a5c2706af0b3f Mon Sep 17 00:00:00 2001
+From: Fabio Paracchini <fparacchini@alteanet.it>
+Date: Tue, 31 Mar 2026 23:47:02 +0200
+Subject: [PATCH] feat: extract OIDC claims from response Set-Cookie in
+ AUTH_OIDC_LOGIN log
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The AccessLogMiddleware reads oidc_sub and mfa from the *request* cookies,
+but during the OIDC callback the oauth_id_token cookie is set in the
+*response* — so oidc_sub/mfa always appeared as '-' in the AUTH_OIDC_LOGIN
+log line (both on success and failure).
+
+Fix: after call_next(), for AUTH_OIDC_LOGIN requests where oidc_sub is
+still unresolved, parse the response Set-Cookie headers for oauth_id_token
+and decode it in-place via _decode_id_token_claims().
+
+New _extract_oidc_from_response_cookies(response) method added to
+AccessLogMiddleware.  Only invoked for OIDC callback paths; zero overhead
+for all other requests.
+
+Behaviour after fix:
+  Success (307):  oidc_sub=fparacchini@alteanet.it  mfa=pwd   nis2=Y
+  Failure (4xx):  oidc_sub=-  mfa=-  (no cookie issued by IdP on error —
+                  claims visible in oauth.py WARNING 'OAuth callback failed')
+
+Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>
+---
+ backend/open_webui/middleware/access_log.py | 26 +++++++++++++++++++++
+ 1 file changed, 26 insertions(+)
+
+diff --git a/backend/open_webui/middleware/access_log.py b/backend/open_webui/middleware/access_log.py
+index b4f929664..b92a1c184 100644
+--- a/backend/open_webui/middleware/access_log.py
++++ b/backend/open_webui/middleware/access_log.py
+@@ -792,6 +792,17 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
+         try:
+             response = await call_next(request)
+             status_code = response.status_code
++
++            # For OIDC callbacks the oauth_id_token cookie is written into the *response*
++            # (not available in the request yet). After call_next we can parse it from the
++            # Set-Cookie response headers so that oidc_sub and mfa are visible in the
++            # AUTH_OIDC_LOGIN log line itself, not only in subsequent requests.
++            if action_type == "AUTH_OIDC_LOGIN" and not oidc_sub:
++                resp_sub, resp_mfa = self._extract_oidc_from_response_cookies(response)
++                if resp_sub:
++                    oidc_sub = resp_sub
++                    mfa_status = resp_mfa
++
+         except Exception as e:
+             # Log anche in caso di eccezione
+             process_time = time.time() - start_time
+@@ -908,6 +919,21 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
+ 
+         return None, None
+ 
++    def _extract_oidc_from_response_cookies(self, response: Response) -> tuple[Optional[str], Optional[str]]:
++        """Extract OIDC sub + MFA from the oauth_id_token Set-Cookie response header.
++
++        Used for OIDC callback requests (AUTH_OIDC_LOGIN) where the id_token cookie
++        is written into the *response*, not available in the incoming request.
++        Parses all Set-Cookie headers looking for oauth_id_token=<JWT>.
++        Returns (None, None) when no matching cookie is found (e.g. failed login
++        where no cookie was issued).
++        """
++        for cookie_header in response.headers.getlist("set-cookie"):
++            m = re.search(r'(?:^|;\s*)oauth_id_token=([^;]+)', cookie_header, re.IGNORECASE)
++            if m:
++                return _decode_id_token_claims(m.group(1).strip())
++        return None, None
++
+     def _extract_user_uuid(self, request: Request) -> Optional[str]:
+         """Extract the user UUID from request.state.user or from the session JWT cookie.
+ 
+-- 
+2.53.0
+
