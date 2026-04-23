@@ -1,7 +1,7 @@
-From 4003168910dfaaec781d7845c72a7890be88fb8d Mon Sep 17 00:00:00 2001
+From 9c2e30fbcc2cbd993981ff1ae65ce2cfce07dae7 Mon Sep 17 00:00:00 2001
 From: Fabio Paracchini <fparacchini@alteanet.it>
 Date: Wed, 11 Mar 2026 01:07:38 +0100
-Subject: [PATCH 15/21] fix: Base64-encode OpenAI config payload to bypass WAF
+Subject: [PATCH 12/24] fix: Base64-encode OpenAI config payload to bypass WAF
  body inspection
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -23,7 +23,7 @@ with backward compatibility for plain JSON payloads.
  2 files changed, 28 insertions(+), 5 deletions(-)
 
 diff --git a/backend/open_webui/routers/configs.py b/backend/open_webui/routers/configs.py
-index d36dc4c3b..ae7c9437e 100644
+index f9f9680f3..fc66a2a70 100644
 --- a/backend/open_webui/routers/configs.py
 +++ b/backend/open_webui/routers/configs.py
 @@ -1,6 +1,8 @@
@@ -36,7 +36,7 @@ index d36dc4c3b..ae7c9437e 100644
  from pydantic import BaseModel, ConfigDict
  import aiohttp
  
-@@ -68,13 +70,28 @@ class OpenAIConfigAliasForm(BaseModel):
+@@ -69,13 +71,28 @@ class OpenAIConfigAliasForm(BaseModel):
      OPENAI_API_CONFIGS: dict
  
  
@@ -96,6 +96,3 @@ index 3d0235743..99e7b1b1c 100644
  	})
  		.then(async (res) => {
  			if (!res.ok) {
--- 
-2.53.0
-

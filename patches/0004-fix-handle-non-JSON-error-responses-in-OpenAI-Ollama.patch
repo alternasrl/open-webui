@@ -1,7 +1,7 @@
-From 8164217b89fa51c639a558bfe5b1cb31ec59a241 Mon Sep 17 00:00:00 2001
+From 30399611d969065d1ecdd9e2fd706c5a402b33eb Mon Sep 17 00:00:00 2001
 From: Fabio Paracchini <fparacchini@alteanet.it>
 Date: Mon, 9 Mar 2026 22:18:35 +0100
-Subject: [PATCH 09/21] fix: handle non-JSON error responses in OpenAI/Ollama
+Subject: [PATCH 04/24] fix: handle non-JSON error responses in OpenAI/Ollama
  config update
 
 ---
@@ -41,6 +41,3 @@ index acfdcf709..a50a68db3 100644
  			return res.json();
  		})
  		.catch((err) => {
--- 
-2.53.0
-

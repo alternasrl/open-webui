@@ -1,7 +1,7 @@
-From afc387fdd1236d47a79878d241f066ad4f3805e7 Mon Sep 17 00:00:00 2001
+From e5be1dfa2fb74299d197b3033ad6aad784400b99 Mon Sep 17 00:00:00 2001
 From: Fabio Paracchini <fparacchini@alteanet.it>
 Date: Wed, 11 Mar 2026 00:09:05 +0100
-Subject: [PATCH 14/21] fix: mask OpenAI API keys in configs.py alias endpoints
+Subject: [PATCH 11/24] fix: mask OpenAI API keys in configs.py alias endpoints
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -20,10 +20,10 @@ Apply the same __MASKED__ pattern to configs.py:
  1 file changed, 20 insertions(+), 3 deletions(-)
 
 diff --git a/backend/open_webui/routers/configs.py b/backend/open_webui/routers/configs.py
-index ba29a96f1..d36dc4c3b 100644
+index 2e0161ab9..f9f9680f3 100644
 --- a/backend/open_webui/routers/configs.py
 +++ b/backend/open_webui/routers/configs.py
-@@ -35,6 +35,7 @@ router = APIRouter()
+@@ -36,6 +36,7 @@ router = APIRouter()
  
  log = logging.getLogger(__name__)
  
@@ -31,7 +31,7 @@ index ba29a96f1..d36dc4c3b 100644
  
  ############################
  # OpenAI Config alias
-@@ -49,7 +50,12 @@ async def get_openai_config_alias(request: Request, user=Depends(get_admin_user)
+@@ -50,7 +51,12 @@ async def get_openai_config_alias(request: Request, user=Depends(get_admin_user)
      return {
          "ENABLE_OPENAI_API": request.app.state.config.ENABLE_OPENAI_API,
          "OPENAI_API_BASE_URLS": request.app.state.config.OPENAI_API_BASE_URLS,
@@ -45,7 +45,7 @@ index ba29a96f1..d36dc4c3b 100644
          "OPENAI_API_CONFIGS": request.app.state.config.OPENAI_API_CONFIGS,
      }
  
-@@ -72,7 +78,14 @@ async def update_openai_config_alias(
+@@ -73,7 +79,14 @@ async def update_openai_config_alias(
      try:
          request.app.state.config.ENABLE_OPENAI_API = form_data.ENABLE_OPENAI_API
          request.app.state.config.OPENAI_API_BASE_URLS = form_data.OPENAI_API_BASE_URLS
@@ -61,7 +61,7 @@ index ba29a96f1..d36dc4c3b 100644
  
          num_urls = len(request.app.state.config.OPENAI_API_BASE_URLS)
          num_keys = len(request.app.state.config.OPENAI_API_KEYS)
-@@ -95,7 +108,11 @@ async def update_openai_config_alias(
+@@ -96,7 +109,11 @@ async def update_openai_config_alias(
          return {
              "ENABLE_OPENAI_API": request.app.state.config.ENABLE_OPENAI_API,
              "OPENAI_API_BASE_URLS": request.app.state.config.OPENAI_API_BASE_URLS,
@@ -74,6 +74,3 @@ index ba29a96f1..d36dc4c3b 100644
              "OPENAI_API_CONFIGS": request.app.state.config.OPENAI_API_CONFIGS,
          }
      except Exception as e:
--- 
-2.53.0
-

@@ -1,7 +1,7 @@
-From eea61510f6d183491e22d11cffcee2f19cb36183 Mon Sep 17 00:00:00 2001
+From 0e760955218e7ccd37e9921f06de46e3845a50cc Mon Sep 17 00:00:00 2001
 From: Fabio Paracchini <fparacchini@alteanet.it>
 Date: Tue, 10 Mar 2026 23:36:18 +0100
-Subject: [PATCH 13/21] fix: mask API keys in config responses to prevent WAF
+Subject: [PATCH 07/24] fix: mask API keys in config responses to prevent WAF
  false-positive blocks
 
 Return __MASKED__ placeholder for any non-empty stored key on GET /config
@@ -20,10 +20,10 @@ encoded API keys such as Azure Cognitive / OpenAI service keys.
  2 files changed, 75 insertions(+), 9 deletions(-)
 
 diff --git a/backend/open_webui/routers/ollama.py b/backend/open_webui/routers/ollama.py
-index 6a0e8b6e8..cdeecdffc 100644
+index cfc55d458..781f9c2dc 100644
 --- a/backend/open_webui/routers/ollama.py
 +++ b/backend/open_webui/routers/ollama.py
-@@ -190,6 +190,9 @@ def get_api_key(idx, url, configs):
+@@ -197,6 +197,9 @@ def get_api_key(idx, url, configs):
      return configs.get(str(idx), configs.get(base_url, {})).get('key', None)  # Legacy support
  
  
@@ -33,7 +33,7 @@ index 6a0e8b6e8..cdeecdffc 100644
  ##########################################
  #
  # API routes
-@@ -211,9 +214,22 @@ class ConnectionVerificationForm(BaseModel):
+@@ -218,9 +221,22 @@ class ConnectionVerificationForm(BaseModel):
  
  
  @router.post('/verify')
@@ -58,7 +58,7 @@ index 6a0e8b6e8..cdeecdffc 100644
  
      async with aiohttp.ClientSession(
          trust_env=True,
-@@ -253,10 +269,17 @@ async def verify_connection(form_data: ConnectionVerificationForm, user=Depends(
+@@ -260,10 +276,17 @@ async def verify_connection(form_data: ConnectionVerificationForm, user=Depends(
  
  @router.get('/config')
  async def get_config(request: Request, user=Depends(get_admin_user)):
@@ -77,7 +77,7 @@ index 6a0e8b6e8..cdeecdffc 100644
      }
  
  
-@@ -274,7 +297,17 @@ async def update_config(
+@@ -281,7 +304,17 @@ async def update_config(
          request.app.state.config.ENABLE_OLLAMA_API = form_data.ENABLE_OLLAMA_API
  
          request.app.state.config.OLLAMA_BASE_URLS = form_data.OLLAMA_BASE_URLS
@@ -96,7 +96,7 @@ index 6a0e8b6e8..cdeecdffc 100644
  
          # Remove the API configs that are not in the API URLS
          keys = list(map(str, range(len(request.app.state.config.OLLAMA_BASE_URLS))))
-@@ -287,7 +320,11 @@ async def update_config(
+@@ -294,7 +327,11 @@ async def update_config(
          return {
              'ENABLE_OLLAMA_API': request.app.state.config.ENABLE_OLLAMA_API,
              'OLLAMA_BASE_URLS': request.app.state.config.OLLAMA_BASE_URLS,
@@ -110,10 +110,10 @@ index 6a0e8b6e8..cdeecdffc 100644
      except Exception as e:
          log.exception('Failed to update Ollama config')
 diff --git a/backend/open_webui/routers/openai.py b/backend/open_webui/routers/openai.py
-index 6df34c97e..5c7b7ae54 100644
+index 087c2d3c2..3eb7ed872 100644
 --- a/backend/open_webui/routers/openai.py
 +++ b/backend/open_webui/routers/openai.py
-@@ -228,12 +228,21 @@ def get_microsoft_entra_id_access_token():
+@@ -233,12 +233,21 @@ def get_microsoft_entra_id_access_token():
  router = APIRouter()
  
  
@@ -136,7 +136,7 @@ index 6df34c97e..5c7b7ae54 100644
          'OPENAI_API_CONFIGS': request.app.state.config.OPENAI_API_CONFIGS,
      }
  
-@@ -252,7 +261,14 @@ async def update_config(
+@@ -257,7 +266,14 @@ async def update_config(
      try:
          request.app.state.config.ENABLE_OPENAI_API = form_data.ENABLE_OPENAI_API
          request.app.state.config.OPENAI_API_BASE_URLS = form_data.OPENAI_API_BASE_URLS
@@ -152,7 +152,7 @@ index 6df34c97e..5c7b7ae54 100644
  
          # Check if API KEYS length is same than API URLS length
          if len(request.app.state.config.OPENAI_API_KEYS) != len(request.app.state.config.OPENAI_API_BASE_URLS):
-@@ -276,7 +292,11 @@ async def update_config(
+@@ -281,7 +297,11 @@ async def update_config(
          return {
              'ENABLE_OPENAI_API': request.app.state.config.ENABLE_OPENAI_API,
              'OPENAI_API_BASE_URLS': request.app.state.config.OPENAI_API_BASE_URLS,
@@ -165,7 +165,7 @@ index 6df34c97e..5c7b7ae54 100644
              'OPENAI_API_CONFIGS': request.app.state.config.OPENAI_API_CONFIGS,
          }
      except Exception as e:
-@@ -656,7 +676,16 @@ async def verify_connection(
+@@ -662,7 +682,16 @@ async def verify_connection(
      user=Depends(get_admin_user),
  ):
      url = form_data.url
@@ -183,6 +183,3 @@ index 6df34c97e..5c7b7ae54 100644
  
      api_config = form_data.config or {}
  
--- 
-2.53.0
-

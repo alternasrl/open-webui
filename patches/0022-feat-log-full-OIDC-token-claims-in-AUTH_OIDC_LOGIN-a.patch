@@ -1,8 +1,8 @@
-From 50346680d817cb97b9df9ab94c4c4574dd8f969b Mon Sep 17 00:00:00 2001
+From fd7238229d8df02894359ad6459f4be5ae5167cd Mon Sep 17 00:00:00 2001
 From: Fabio Paracchini <fparacchini@alteanet.it>
 Date: Tue, 31 Mar 2026 23:55:11 +0200
-Subject: [PATCH] feat: log full OIDC token claims in AUTH_OIDC_LOGIN access
- log line
+Subject: [PATCH 22/24] feat: log full OIDC token claims in AUTH_OIDC_LOGIN
+ access log line
 
 Add a 'claims=' JSON field to the ACCESS log line for AUTH_OIDC_LOGIN
 events (success and failure) so that claim mapping issues (wrong role
@@ -118,6 +118,3 @@ index cd3904f09..f4fb4fa8f 100644
          # Use WARNING level for NIS2 security-relevant actions to aid SIEM/alerting
          if effective_nis2:
              self.logger.warning(log_msg)
--- 
-2.53.0
-

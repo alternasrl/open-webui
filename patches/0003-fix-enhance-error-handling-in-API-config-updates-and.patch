@@ -1,7 +1,7 @@
-From f9ddb6bde39d896e3523d45825e3d90b0b1d8b83 Mon Sep 17 00:00:00 2001
+From 6e5d81d7cd5e976fca1ac827867a78f3af655d69 Mon Sep 17 00:00:00 2001
 From: Fabio Paracchini <fparacchini@alteanet.it>
 Date: Mon, 9 Mar 2026 19:19:07 +0100
-Subject: [PATCH 08/21] fix: enhance error handling in API config updates and
+Subject: [PATCH 03/24] fix: enhance error handling in API config updates and
  model refresh
 
 ---
@@ -13,10 +13,10 @@ Subject: [PATCH 08/21] fix: enhance error handling in API config updates and
  5 files changed, 75 insertions(+), 47 deletions(-)
 
 diff --git a/backend/open_webui/routers/ollama.py b/backend/open_webui/routers/ollama.py
-index d03c37ae1..6a0e8b6e8 100644
+index b957310b5..cfc55d458 100644
 --- a/backend/open_webui/routers/ollama.py
 +++ b/backend/open_webui/routers/ollama.py
-@@ -267,23 +267,34 @@ class OllamaConfigForm(BaseModel):
+@@ -274,23 +274,34 @@ class OllamaConfigForm(BaseModel):
  
  
  @router.post('/config/update')
@@ -66,10 +66,10 @@ index d03c37ae1..6a0e8b6e8 100644
  
  def merge_ollama_models_lists(model_lists):
 diff --git a/backend/open_webui/routers/openai.py b/backend/open_webui/routers/openai.py
-index 0e7c67c1f..f35cddd77 100644
+index 8a7c3aca7..a8accfe03 100644
 --- a/backend/open_webui/routers/openai.py
 +++ b/backend/open_webui/routers/openai.py
-@@ -246,36 +246,45 @@ class OpenAIConfigForm(BaseModel):
+@@ -251,36 +251,45 @@ class OpenAIConfigForm(BaseModel):
  
  
  @router.post('/config/update')
@@ -206,6 +206,3 @@ index 32276ce93..758709498 100644
  			}
  		}
  	};
--- 
-2.53.0
-

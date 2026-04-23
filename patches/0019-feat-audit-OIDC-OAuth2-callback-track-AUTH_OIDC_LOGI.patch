@@ -1,7 +1,7 @@
-From 136db1eea933b0219ac37c06e7b46dbc0b3b74aa Mon Sep 17 00:00:00 2001
+From a4fd43277d8f8fdd554e48e3a228bb40280b3e7d Mon Sep 17 00:00:00 2001
 From: Fabio Paracchini <fparacchini@alteanet.it>
 Date: Tue, 31 Mar 2026 21:30:12 +0200
-Subject: [PATCH] =?UTF-8?q?feat:=20audit=20OIDC/OAuth2=20callback=20?=
+Subject: [PATCH 19/24] =?UTF-8?q?feat:=20audit=20OIDC/OAuth2=20callback=20?=
  =?UTF-8?q?=E2=80=94=20track=20AUTH=5FOIDC=5FLOGIN=20and=20=5FFAIL=20in=20?=
  =?UTF-8?q?NIS2=20access=20log?=
 MIME-Version: 1.0
@@ -80,6 +80,3 @@ index e9ae765af..b4f929664 100644
              effective_action = f"{action_type}_FAIL"
              effective_nis2 = True
          else:
--- 
-2.53.0
-

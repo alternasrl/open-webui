@@ -1,7 +1,7 @@
-From 0362561c527c0e642cb4587842f78d00818eb6b3 Mon Sep 17 00:00:00 2001
+From e36c1ea4fcef1402139221f949800bc75d9850a4 Mon Sep 17 00:00:00 2001
 From: Fabio Paracchini <fparacchini@alteanet.it>
 Date: Sun, 8 Mar 2026 20:01:09 +0100
-Subject: [PATCH 07/21] Enhance access log middleware with additional regex
+Subject: [PATCH 18/24] Enhance access log middleware with additional regex
  rules and action types
 
 ---
@@ -184,6 +184,3 @@ index 76744603e..e9ae765af 100644
      ]
  
      return [(re.compile(p, re.IGNORECASE), obj_type) for p, obj_type in raw]
--- 
-2.53.0
-

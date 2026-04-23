@@ -1,8 +1,8 @@
-From 2308eba76df00ebf84c872962343a5dfce653f1d Mon Sep 17 00:00:00 2001
+From 91ba266a2cc67b7672be77c5fc6a53f7cdacd1d0 Mon Sep 17 00:00:00 2001
 From: Fabio Paracchini <fparacchini@alteanet.it>
 Date: Tue, 31 Mar 2026 23:51:20 +0200
-Subject: [PATCH] feat: log OIDC claims on both success and failed login in
- AccessLogMiddleware
+Subject: [PATCH 21/24] feat: log OIDC claims on both success and failed login
+ in AccessLogMiddleware
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -56,10 +56,10 @@ index b92a1c184..cd3904f09 100644
          except Exception as e:
              # Log anche in caso di eccezione
 diff --git a/backend/open_webui/utils/oauth.py b/backend/open_webui/utils/oauth.py
-index 89cb29d2e..6764d9a03 100644
+index 511c14599..87b14284c 100644
 --- a/backend/open_webui/utils/oauth.py
 +++ b/backend/open_webui/utils/oauth.py
-@@ -1401,6 +1401,12 @@ class OAuthManager:
+@@ -1480,6 +1480,12 @@ class OAuthManager:
                  )
                  raise HTTPException(400, detail=ERROR_MESSAGES.INVALID_CRED)
  
@@ -72,6 +72,3 @@ index 89cb29d2e..6764d9a03 100644
              # Try to get userinfo from the token first, some providers include it there
              user_data: UserInfo = token.get('userinfo')
              # Preserve extra claims from the ID token (e.g. roles, groups for
--- 
-2.53.0
-

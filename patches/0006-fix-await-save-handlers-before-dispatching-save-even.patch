@@ -1,7 +1,7 @@
-From becc1438bbc7577f6e7ca5f6c6e95bab5f900915 Mon Sep 17 00:00:00 2001
+From 4aa8990e5bf39439ca5b8b1e6d5d9cd208b4ce17 Mon Sep 17 00:00:00 2001
 From: Fabio Paracchini <fparacchini@alteanet.it>
 Date: Tue, 10 Mar 2026 22:57:29 +0100
-Subject: [PATCH 12/21] fix: await save handlers before dispatching save event;
+Subject: [PATCH 06/24] fix: await save handlers before dispatching save event;
  propagate async through connection modal chain
 
 ---
@@ -12,10 +12,10 @@ Subject: [PATCH 12/21] fix: await save handlers before dispatching save event;
  4 files changed, 22 insertions(+), 15 deletions(-)
 
 diff --git a/src/lib/apis/openai/index.ts b/src/lib/apis/openai/index.ts
-index 90032fdfc..3d0235743 100644
+index a50a68db3..9d055c3ef 100644
 --- a/src/lib/apis/openai/index.ts
 +++ b/src/lib/apis/openai/index.ts
-@@ -261,11 +261,14 @@ export const getOpenAIModels = async (token: string, urlIdx?: number) => {
+@@ -253,11 +253,14 @@ export const getOpenAIModels = async (token: string, urlIdx?: number) => {
  		}
  	)
  		.then(async (res) => {
@@ -133,6 +133,3 @@ index da9038457..21fa8e3f5 100644
  	}}
  />
  
--- 
-2.53.0
-

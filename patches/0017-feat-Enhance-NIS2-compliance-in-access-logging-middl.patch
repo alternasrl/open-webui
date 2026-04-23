@@ -1,7 +1,7 @@
-From d5bdebd88764439f5d6eec757ee1cd1d7c44cead Mon Sep 17 00:00:00 2001
+From d8a8f09274d2119fd5e512968bb584d0fc84b496 Mon Sep 17 00:00:00 2001
 From: Fabio Paracchini <fparacchini@alteanet.it>
 Date: Sun, 15 Feb 2026 17:07:31 +0100
-Subject: [PATCH 06/21] feat: Enhance NIS2 compliance in access logging
+Subject: [PATCH 17/24] feat: Enhance NIS2 compliance in access logging
  middleware with detailed action classification and user context resolution,
  LOG360 friendly
 
@@ -601,6 +601,3 @@ index 533a81d0e..76744603e 100644
          
          # Aggiungi header alla risposta (opzionale)
          response.headers["X-Session-ID"] = session_id
--- 
-2.53.0
-

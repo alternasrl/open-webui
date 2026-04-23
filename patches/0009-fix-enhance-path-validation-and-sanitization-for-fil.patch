@@ -1,7 +1,7 @@
-From 7d9ec545ec97d08764274ef6ec52f0dc310aaa90 Mon Sep 17 00:00:00 2001
+From 1d65023f9343661e6f0a7b02160512afb02fdc4a Mon Sep 17 00:00:00 2001
 From: Fabio Paracchini <fparacchini@alteanet.it>
 Date: Mon, 30 Mar 2026 13:02:22 +0200
-Subject: [PATCH 01/21] fix: enhance path validation and sanitization for file
+Subject: [PATCH 09/24] fix: enhance path validation and sanitization for file
  handling
 
 Co-authored-by: Francesco De Simone <fdesimone@alteanet.it>
@@ -12,10 +12,10 @@ Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>
  2 files changed, 39 insertions(+), 11 deletions(-)
 
 diff --git a/backend/open_webui/main.py b/backend/open_webui/main.py
-index 008178806..6ffee8813 100644
+index ba7f74c83..d59673ace 100644
 --- a/backend/open_webui/main.py
 +++ b/backend/open_webui/main.py
-@@ -2561,12 +2561,26 @@ async def serve_cache_file(
+@@ -2750,12 +2750,26 @@ async def serve_cache_file(
      path: str,
      user=Depends(get_verified_user),
  ):
@@ -49,10 +49,10 @@ index 008178806..6ffee8813 100644
  
  
 diff --git a/backend/open_webui/routers/audio.py b/backend/open_webui/routers/audio.py
-index 8e14387a7..06fd4f90d 100644
+index 5260bd873..90cea225a 100644
 --- a/backend/open_webui/routers/audio.py
 +++ b/backend/open_webui/routers/audio.py
-@@ -1151,17 +1151,31 @@ def transcription(
+@@ -1241,17 +1241,31 @@ async def transcription(
          )
  
      try:
@@ -73,9 +73,9 @@ index 8e14387a7..06fd4f90d 100644
          filename = f'{id}.{ext}'
          contents = file.file.read()
  
--        file_dir = f'{CACHE_DIR}/audio/transcriptions'
+-        file_dir = os.path.join(CACHE_DIR, 'audio', 'transcriptions')
 -        os.makedirs(file_dir, exist_ok=True)
--        file_path = f'{file_dir}/{filename}'
+-        file_path = os.path.join(file_dir, filename)
 +        file_dir = Path(CACHE_DIR) / "audio" / "transcriptions"
 +        file_dir.mkdir(parents=True, exist_ok=True)
 +        file_path = file_dir / filename
@@ -89,6 +89,3 @@ index 8e14387a7..06fd4f90d 100644
  
          # Defense-in-depth: ensure resolved path stays within intended directory
          if not os.path.realpath(file_path).startswith(os.path.realpath(file_dir)):
--- 
-2.53.0
-

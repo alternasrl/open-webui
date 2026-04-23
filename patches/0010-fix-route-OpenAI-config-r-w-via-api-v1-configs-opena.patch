@@ -1,7 +1,7 @@
-From b4071ae59fb75a9dae1d22ed898edb612bb5f8ab Mon Sep 17 00:00:00 2001
+From 4b9ea9a80ba286e77709e06cfa3fa6ea97b751e5 Mon Sep 17 00:00:00 2001
 From: Fabio Paracchini <fparacchini@alteanet.it>
 Date: Tue, 10 Mar 2026 22:19:52 +0100
-Subject: [PATCH 11/21] fix: route OpenAI config r/w via /api/v1/configs/openai
+Subject: [PATCH 10/24] fix: route OpenAI config r/w via /api/v1/configs/openai
  to bypass WAF on /openai/*
 
 Add alias endpoints GET/POST /api/v1/configs/openai in configs.py that
@@ -20,10 +20,10 @@ Also improve updateOpenAIConfig error handling:
  2 files changed, 82 insertions(+), 8 deletions(-)
 
 diff --git a/backend/open_webui/routers/configs.py b/backend/open_webui/routers/configs.py
-index 041c4ad93..ba29a96f1 100644
+index 02b16d8e5..2e0161ab9 100644
 --- a/backend/open_webui/routers/configs.py
 +++ b/backend/open_webui/routers/configs.py
-@@ -37,12 +37,78 @@ log = logging.getLogger(__name__)
+@@ -38,12 +38,78 @@ log = logging.getLogger(__name__)
  
  
  ############################
@@ -106,7 +106,7 @@ index 041c4ad93..ba29a96f1 100644
      config: dict
  
 diff --git a/src/lib/apis/openai/index.ts b/src/lib/apis/openai/index.ts
-index a50a68db3..90032fdfc 100644
+index 9d055c3ef..3d0235743 100644
 --- a/src/lib/apis/openai/index.ts
 +++ b/src/lib/apis/openai/index.ts
 @@ -3,7 +3,7 @@ import { OPENAI_API_BASE_URL, WEBUI_API_BASE_URL, WEBUI_BASE_URL } from '$lib/co
@@ -154,6 +154,3 @@ index a50a68db3..90032fdfc 100644
  			} else {
  				error = `OpenAI: ${err?.message ?? 'Server connection failed'}`;
  			}
--- 
-2.53.0
-

@@ -1,7 +1,7 @@
-From 413cc27c06c596c9a0747294a5db5ebc56bb4f20 Mon Sep 17 00:00:00 2001
+From 91546d82ea422f76a24238b756ebaefd98a3dfa6 Mon Sep 17 00:00:00 2001
 From: Fabio Paracchini <fparacchini@alteanet.it>
 Date: Sun, 15 Feb 2026 01:01:41 +0100
-Subject: [PATCH 03/21] feat: Enhance NIS2 compliance in access logging and
+Subject: [PATCH 14/24] feat: Enhance NIS2 compliance in access logging and
  audit utilities
 
 - Added correlation ID and OIDC claims extraction to AccessLogMiddleware.
@@ -271,7 +271,7 @@ index 28325b75a..f4b5ca610 100644
      
      # Formato semplice e leggibile
 diff --git a/backend/open_webui/utils/audit.py b/backend/open_webui/utils/audit.py
-index 1200d813a..5ffebc5c2 100644
+index 5686c88d5..502913370 100644
 --- a/backend/open_webui/utils/audit.py
 +++ b/backend/open_webui/utils/audit.py
 @@ -1,5 +1,5 @@
@@ -316,7 +316,7 @@ index 1200d813a..5ffebc5c2 100644
      user_agent: Optional[str] = None
      source_ip: Optional[str] = None
      # `Request` audit level properties
-@@ -201,6 +215,115 @@ class AuditLoggingMiddleware:
+@@ -205,6 +219,115 @@ class AuditLoggingMiddleware:
  
          return None
  
@@ -430,9 +430,9 @@ index 1200d813a..5ffebc5c2 100644
 +        return None
 +
      def _should_skip_auditing(self, request: Request) -> bool:
-         if request.method not in {'POST', 'PUT', 'PATCH', 'DELETE'} or AUDIT_LOG_LEVEL == 'NONE':
+         if AUDIT_LOG_LEVEL == 'NONE':
              return True
-@@ -253,6 +376,10 @@ class AuditLoggingMiddleware:
+@@ -260,6 +383,10 @@ class AuditLoggingMiddleware:
  
              user = user.model_dump(include={'id', 'name', 'email', 'role'}) if user else {}
  
@@ -443,7 +443,7 @@ index 1200d813a..5ffebc5c2 100644
              request_body = context.request_body.decode('utf-8', errors='replace')
              response_body = context.response_body.decode('utf-8', errors='replace')
  
-@@ -270,8 +397,10 @@ class AuditLoggingMiddleware:
+@@ -277,8 +404,10 @@ class AuditLoggingMiddleware:
                  audit_level=self.audit_level.value,
                  verb=request.method,
                  request_uri=str(request.url),
@@ -456,10 +456,10 @@ index 1200d813a..5ffebc5c2 100644
                  request_object=request_body,
                  response_object=response_body,
 diff --git a/backend/open_webui/utils/logger.py b/backend/open_webui/utils/logger.py
-index 49b7973c5..935d98ac5 100644
+index fa4e77f53..0c1ccfcc4 100644
 --- a/backend/open_webui/utils/logger.py
 +++ b/backend/open_webui/utils/logger.py
-@@ -128,6 +128,9 @@ def file_format(record: 'Record'):
+@@ -130,6 +130,9 @@ def file_format(record: 'Record'):
          'response_status_code': record['extra'].get('response_status_code', 0),
          'source_ip': record['extra'].get('source_ip', ''),
          'user_agent': record['extra'].get('user_agent', ''),
@@ -486,6 +486,3 @@ index 349734a93..14a92a5db 100644
      extra_hosts:
        - host.docker.internal:host-gateway
      restart: unless-stopped
--- 
-2.53.0
-

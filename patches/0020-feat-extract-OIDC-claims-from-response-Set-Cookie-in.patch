@@ -1,7 +1,7 @@
-From b9dc4d9ac92476c55c49f228743a5c2706af0b3f Mon Sep 17 00:00:00 2001
+From 1dec70c2382b61cbb52025b3728d1e056ae9b51d Mon Sep 17 00:00:00 2001
 From: Fabio Paracchini <fparacchini@alteanet.it>
 Date: Tue, 31 Mar 2026 23:47:02 +0200
-Subject: [PATCH] feat: extract OIDC claims from response Set-Cookie in
+Subject: [PATCH 20/24] feat: extract OIDC claims from response Set-Cookie in
  AUTH_OIDC_LOGIN log
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -74,6 +74,3 @@ index b4f929664..b92a1c184 100644
      def _extract_user_uuid(self, request: Request) -> Optional[str]:
          """Extract the user UUID from request.state.user or from the session JWT cookie.
  
--- 
-2.53.0
-

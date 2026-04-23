@@ -1,7 +1,7 @@
-From 09b1a09000337cb863502e30ac546c6f9f05ce01 Mon Sep 17 00:00:00 2001
+From a7dc5945fa108e979f48a44dab0b94b914b83cab Mon Sep 17 00:00:00 2001
 From: Fabio Paracchini <fparacchini@alteanet.it>
 Date: Sun, 15 Feb 2026 16:00:45 +0100
-Subject: [PATCH 05/21] feat: Invalidate access-log cache on OAuth session
+Subject: [PATCH 16/24] feat: Invalidate access-log cache on OAuth session
  updates to ensure NIS2 compliance, add warnings for missing token data
 
 ---
@@ -180,10 +180,10 @@ index 88c181140..533a81d0e 100644
              f"time={process_time:.3f}s"
          )
 diff --git a/backend/open_webui/utils/oauth.py b/backend/open_webui/utils/oauth.py
-index e4a97327a..89cb29d2e 100644
+index 47302e753..511c14599 100644
 --- a/backend/open_webui/utils/oauth.py
 +++ b/backend/open_webui/utils/oauth.py
-@@ -893,6 +893,12 @@ class OAuthClientManager:
+@@ -949,6 +949,12 @@ class OAuthClientManager:
                          token=token,
                      )
                      log.info(f'Stored OAuth session server-side for user {user_id}, client_id {client_id}')
@@ -196,7 +196,7 @@ index e4a97327a..89cb29d2e 100644
                  except Exception as e:
                      error_message = 'Failed to store OAuth session server-side'
                      log.error(f'Failed to store OAuth session server-side: {e}')
-@@ -1687,6 +1693,12 @@ class OAuthManager:
+@@ -1771,6 +1777,12 @@ class OAuthManager:
                  )
  
                  log.info(f'Stored OAuth session server-side for user {user.id}, provider {provider}')
@@ -209,6 +209,3 @@ index e4a97327a..89cb29d2e 100644
              else:
                  log.warning(f'Failed to create OAuth session for user {user.id}, provider {provider}')
          except Exception as e:
--- 
-2.53.0
-
