@@ -1,0 +1,74 @@
+From 493414d41f305067d2eb11b895a67db9b18c402c Mon Sep 17 00:00:00 2001
+From: Fabio Paracchini <fparacchini@alteanet.it>
+Date: Tue, 31 Mar 2026 23:51:20 +0200
+Subject: [PATCH 13/16] feat: log OIDC claims on both success and failed login
+ in AccessLogMiddleware
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+On success the oauth_id_token cookie is already extracted from the
+response Set-Cookie headers (patch 0023).
+
+For failures (domain restriction, role mismatch, signup disabled, …)
+the cookie is never set.  The token exchange with the IdP may still have
+succeeded, so the id_token containing the user's identity is available
+inside oauth.py but invisible to the middleware.
+
+Fix (two-file, minimal coupling):
+- oauth.py: after a successful authorize_access_token(), store
+  token['id_token'] in request.state.oidc_raw_id_token (4 lines).
+  This runs unconditionally before any validation that may raise 403/400.
+- AccessLogMiddleware: when the response-cookie path returns nothing
+  (failure case), fall back to request.state.oidc_raw_id_token and
+  decode it with the existing _decode_id_token_claims() helper.
+
+Coverage after fix:
+  Success (307):  oidc_sub=<sub>  mfa=pwd   (from response Set-Cookie)
+  Failure (4xx):  oidc_sub=<sub>  mfa=pwd   (from request.state)
+  Token exch err: oidc_sub=-  mfa=-          (no id_token available)
+
+Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>
+---
+ backend/open_webui/middleware/access_log.py | 10 ++++++++++
+ backend/open_webui/utils/oauth.py           |  6 ++++++
+ 2 files changed, 16 insertions(+)
+
+diff --git a/backend/open_webui/middleware/access_log.py b/backend/open_webui/middleware/access_log.py
+index b92a1c184..cd3904f09 100644
+--- a/backend/open_webui/middleware/access_log.py
++++ b/backend/open_webui/middleware/access_log.py
+@@ -802,6 +802,16 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
+                 if resp_sub:
+                     oidc_sub = resp_sub
+                     mfa_status = resp_mfa
++                else:
++                    # Failure case: no cookie was issued. oauth.py stores the raw id_token
++                    # in request.state after a successful token exchange so we can still
++                    # log the identity of who failed to authenticate.
++                    raw = getattr(request.state, "oidc_raw_id_token", None)
++                    if raw:
++                        state_sub, state_mfa = _decode_id_token_claims(raw)
++                        if state_sub:
++                            oidc_sub = state_sub
++                            mfa_status = state_mfa
+ 
+         except Exception as e:
+             # Log anche in caso di eccezione
+diff --git a/backend/open_webui/utils/oauth.py b/backend/open_webui/utils/oauth.py
+index d3336f2d3..8967d3d18 100644
+--- a/backend/open_webui/utils/oauth.py
++++ b/backend/open_webui/utils/oauth.py
+@@ -1496,6 +1496,12 @@ class OAuthManager:
+                 )
+                 raise HTTPException(400, detail=ERROR_MESSAGES.INVALID_CRED)
+ 
++            # Store the raw id_token in request.state so the AccessLogMiddleware can
++            # log OIDC claims (sub, amr/acr) even when the login fails later
++            # (e.g. domain restriction, role mismatch, signup disabled).
++            if token.get('id_token'):
++                request.state.oidc_raw_id_token = token['id_token']
++
+             # Try to get userinfo from the token first, some providers include it there
+             user_data: UserInfo = token.get('userinfo')
+             # Preserve extra claims from the ID token (e.g. roles, groups for

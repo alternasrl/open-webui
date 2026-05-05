@@ -1,0 +1,114 @@
+From f39cd2492de22450aa3db809d9818f05636583d2 Mon Sep 17 00:00:00 2001
+From: Fabio Paracchini <fparacchini@alteanet.it>
+Date: Wed, 22 Apr 2026 16:13:34 +0200
+Subject: [PATCH 16/16] docs(nis2): update access_log.py module docstring for
+ v0.9.x coverage
+
+---
+ backend/open_webui/middleware/access_log.py | 36 +++++++++++++++++----
+ 1 file changed, 30 insertions(+), 6 deletions(-)
+
+diff --git a/backend/open_webui/middleware/access_log.py b/backend/open_webui/middleware/access_log.py
+index 898d2d97a..ade155af2 100644
+--- a/backend/open_webui/middleware/access_log.py
++++ b/backend/open_webui/middleware/access_log.py
+@@ -9,7 +9,7 @@ Overview
+ --------
+ The middleware intercepts every inbound request, extracts identity
+ and context from JWT cookies / OIDC tokens / DB lookups, classifies
+-the action as one of ~80 NIS2-relevant types, then emits a single
++the action as one of ~130 NIS2-relevant types, then emits a single
+ pipe-delimited log line to stdout.  Security-relevant actions are
+ logged at WARNING level so SIEM systems can filter on severity.
+ 
+@@ -17,7 +17,7 @@ Key features:
+   • User identity resolved via JWT cookie → DB (email, role).
+   • OIDC subject (``sub``) and MFA status (``amr``/``acr``)
+     extracted from server-side OAuth sessions (id_token).
+-  • ~110 regex rules classify every API route into a semantic
++  • ~130 regex rules classify every API route into a semantic
+     action type (AUTH_LOGIN, GROUP_MEMBER_ADD, CONFIG_IMPORT, …).
+   • Failed authentication attempts auto-detected (status ≥ 400
+     on AUTH_LOGIN* → AUTH_LOGIN_FAIL with nis2=Y).
+@@ -27,6 +27,19 @@ Key features:
+     repeated DB hits; short TTL (10 s) for entries missing
+     OIDC claims (login race window).
+ 
++Compatibility
++-------------
++Targets Open WebUI v0.9.x+.  New API surfaces added in v0.9.0 and
++covered by this middleware:
++
++  • ``/api/v1/automations/*``        — Automation CRUD + run (code exec)
++  • ``/api/v1/calendars/*``          — Calendar & event management
++  • ``/oauth/clients/{id}/authorize`` — MCP OAuth 2.1 authorization flow
++  • ``/oauth/backchannel-logout``     — IdP-initiated back-channel logout
++  • ``/api/v1/configs/terminal_servers/verify``  — Terminal server verify
++  • ``/api/v1/configs/terminal_servers/policy``  — Terminal execution policy
++  • ``/api/v1/configs/oauth/clients/register``   — Dynamic OAuth client reg.
++
+ Azure WAF / Front Door Integration
+ -----------------------------------
+ When deployed behind Azure WAF, Application Gateway, or Front Door
+@@ -62,7 +75,7 @@ and index automatically:
+   | outcome         | outcome                   | success/failure (brute-force det.) |
+   | nis2            | cs10                      | NIS2 relevance flag (Y/N)          |
+   | object          | cs4 (id) + cs5 (type)     | Target resource for audit trail    |
+-  | ua              | requestClientApplication  | User-Agent (UEBA anomaly det.)    |
++  | ua              | requestClientApplication  | User-Agent (UEBA anomaly det.)     |
+   | client IP       | src                       | Source IP address                  |
+   | HTTP method+path| request                   | Request URL                        |
+   | status code     | cs6                       | HTTP response status               |
+@@ -86,24 +99,29 @@ Log format example
+ NIS2 Action Categories
+ -----------------------
+   AUTH_*       — Authentication & session lifecycle
+-                 AUTH_OIDC_LOGIN       — OIDC/OAuth2 callback (success=302, fail=4xx → _FAIL)
++                 AUTH_OIDC_LOGIN         — OIDC/OAuth2 callback (success=302, fail=4xx → _FAIL)
++                 AUTH_OAUTH_AUTHORIZE    — MCP OAuth 2.1 authorization initiation (v0.9.x)
+   USER_*       — User account management
+   GROUP_*      — Group & membership management
+   CONFIG_*     — System configuration changes
++                 CONFIG_OAUTH_CLIENT           — Dynamic OAuth client registration (v0.9.x)
++                 CONFIG_TERMINAL_SERVERS_VERIFY — Terminal server connectivity check (v0.9.x)
++                 CONFIG_TERMINAL_SERVERS_POLICY — Terminal execution policy update (v0.9.x)
+   ACCESS_*     — Access control & sharing changes
+   CHAT_*       — Chat lifecycle (create, delete, archive)
+   NOTE_*       — Note management
+   FILE_*       — File upload/deletion
+   KNOWLEDGE_*  — Knowledge base management
+-  RESOURCE_*   — Tools, functions, models, prompts management
++  RESOURCE_*   — Tools, functions, models, prompts, automations management
++                 RESOURCE_RUN_AUTOMATION  — Server-side automation execution (v0.9.x, NIS2=Y)
+   CHANNEL_*    — Channel & webhook management
++  CALENDAR_*   — Calendar & event management (v0.9.x)
+   SCIM_*       — SCIM 2.0 identity provisioning (IdP sync)
+   PIPELINE_*   — Pipeline upload/management (code execution)
+   MEMORY_*     — User memory management
+   FOLDER_*     — Folder organisation
+   EVAL_*       — Evaluation & feedback management
+   DATA_*       — Data export/import
+-  CALENDAR_*   — Calendar & event management
+   READ         — Read-only operations (lower severity)
+ """
+ 
+@@ -166,6 +184,7 @@ _log = logging.getLogger(__name__)
+ #   FOLDER_*     — Folder organisation
+ #   EVAL_*       — Evaluation & feedback management
+ #   DATA_*       — Data export/import
++#   CALENDAR_*   — Calendar & event management (v0.9.x)
+ #   READ         — Read-only operations (lower severity)
+ # ---------------------------------------------------------------------------
+ 
+@@ -180,6 +199,11 @@ def _compile_action_rules() -> list[tuple[re.Pattern, Optional[str], str]]:
+ 
+     Called once at module load time. Each rule is:
+         (path_regex, http_method | None, action_type)
++
++    Compatible with Open WebUI v0.9.x+.  Covers ~130 route patterns
++    across all registered API routers including the v0.9.x additions:
++    automations, calendars, MCP OAuth 2.1 authorize/callback, and
++    IdP back-channel logout.
+     """
+     _ID = r"[^/]+"  # matches a path segment (UUID, slug, etc.)
+ 

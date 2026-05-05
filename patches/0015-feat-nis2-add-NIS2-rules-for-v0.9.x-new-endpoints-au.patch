@@ -1,0 +1,96 @@
+From 98185ee43c42366f3b208b86bb3c9323d72a5380 Mon Sep 17 00:00:00 2001
+From: Fabio Paracchini <fparacchini@alteanet.it>
+Date: Wed, 22 Apr 2026 16:09:10 +0200
+Subject: [PATCH 15/16] feat(nis2): add NIS2 rules for v0.9.x new endpoints
+ (automations, calendar, OAuth MCP, terminal policy)
+
+---
+ backend/open_webui/middleware/access_log.py | 40 +++++++++++++++++++--
+ 1 file changed, 38 insertions(+), 2 deletions(-)
+
+diff --git a/backend/open_webui/middleware/access_log.py b/backend/open_webui/middleware/access_log.py
+index f4fb4fa8f..898d2d97a 100644
+--- a/backend/open_webui/middleware/access_log.py
++++ b/backend/open_webui/middleware/access_log.py
+@@ -103,6 +103,7 @@ NIS2 Action Categories
+   FOLDER_*     — Folder organisation
+   EVAL_*       — Evaluation & feedback management
+   DATA_*       — Data export/import
++  CALENDAR_*   — Calendar & event management
+   READ         — Read-only operations (lower severity)
+ """
+ 
+@@ -196,8 +197,12 @@ def _compile_action_rules() -> list[tuple[re.Pattern, Optional[str], str]]:
+         (rf"^/api/v1/auths/oauth/{_ID}/token/exchange$", "POST", "AUTH_OAUTH_TOKEN"),
+         # OIDC/OAuth2 callback endpoints (GET — browser redirect after IdP authentication)
+         (rf"^/oauth/{_ID}/login/callback$", "GET", "AUTH_OIDC_LOGIN"),
+-        (rf"^/oauth/{_ID}/callback$", "GET", "AUTH_OIDC_LOGIN"),        # legacy path
+-        (rf"^/oauth/clients/{_ID}/callback$", "GET", "AUTH_OIDC_LOGIN"), # dynamic OAuth clients
++        (rf"^/oauth/{_ID}/callback$", "GET", "AUTH_OIDC_LOGIN"),         # legacy path
++        (rf"^/oauth/clients/{_ID}/callback$", "GET", "AUTH_OIDC_LOGIN"),  # dynamic OAuth clients
++        # MCP OAuth 2.1: client initiates authorization flow
++        (rf"^/oauth/clients/{_ID}/authorize$", "GET", "AUTH_OAUTH_AUTHORIZE"),
++        # IdP-initiated back-channel logout (RFC 7009 / OpenID Connect Back-Channel Logout)
++        (rf"^/oauth/backchannel-logout$", "POST", "AUTH_LOGOUT"),
+         (rf"^/api/v1/auths/admin/config/ldap/server$", "POST", "CONFIG_LDAP_SERVER"),
+         (rf"^/api/v1/auths/admin/config/ldap$", "POST", "CONFIG_LDAP"),
+         (rf"^/api/v1/auths/admin/config$", "POST", "CONFIG_AUTH"),
+@@ -227,6 +232,8 @@ def _compile_action_rules() -> list[tuple[re.Pattern, Optional[str], str]]:
+         (rf"^/api/v1/configs/oauth/clients/register$", "POST", "CONFIG_OAUTH_CLIENT"),
+         (rf"^/api/v1/configs/tool_servers/verify$", "POST", "CONFIG_TOOL_SERVERS_VERIFY"),
+         (rf"^/api/v1/configs/tool_servers$", "POST", "CONFIG_TOOL_SERVERS"),
++        (rf"^/api/v1/configs/terminal_servers/verify$", "POST", "CONFIG_TERMINAL_SERVERS_VERIFY"),
++        (rf"^/api/v1/configs/terminal_servers/policy$", "POST", "CONFIG_TERMINAL_SERVERS_POLICY"),
+         (rf"^/api/v1/configs/terminal_servers$", "POST", "CONFIG_TERMINAL_SERVERS"),
+         (rf"^/api/v1/configs/code_execution$", "POST", "CONFIG_CODE_EXECUTION"),
+         (rf"^/api/v1/configs/models$", "POST", "CONFIG_MODELS"),
+@@ -353,6 +360,25 @@ def _compile_action_rules() -> list[tuple[re.Pattern, Optional[str], str]]:
+         (rf"^/api/v1/folders/{_ID}/update/parent$", "POST", "FOLDER_MOVE"),
+         (rf"^/api/v1/folders/{_ID}$", "DELETE", "FOLDER_DELETE"),
+ 
++        # ── Automations (code execution risk) ───────────────────────────
++        # RESOURCE_RUN_AUTOMATION is NIS2-critical: it triggers server-side
++        # code/workflow execution and can modify system state.
++        (rf"^/api/v1/automations/create$", "POST", "RESOURCE_CREATE_AUTOMATION"),
++        (rf"^/api/v1/automations/{_ID}/update$", "POST", "RESOURCE_UPDATE_AUTOMATION"),
++        (rf"^/api/v1/automations/{_ID}/run$", "POST", "RESOURCE_RUN_AUTOMATION"),
++        (rf"^/api/v1/automations/{_ID}/toggle$", "POST", "RESOURCE_TOGGLE_AUTOMATION"),
++        (rf"^/api/v1/automations/{_ID}/delete$", "DELETE", "RESOURCE_DELETE_AUTOMATION"),
++
++        # ── Calendar ─────────────────────────────────────────────────────
++        (rf"^/api/v1/calendars/events/create$", "POST", "CALENDAR_EVENT_CREATE"),
++        (rf"^/api/v1/calendars/events/{_ID}/update$", "POST", "CALENDAR_EVENT_UPDATE"),
++        (rf"^/api/v1/calendars/events/{_ID}/rsvp$", "POST", "CALENDAR_EVENT_RSVP"),
++        (rf"^/api/v1/calendars/events/{_ID}/delete$", "DELETE", "CALENDAR_EVENT_DELETE"),
++        (rf"^/api/v1/calendars/create$", "POST", "CALENDAR_CREATE"),
++        (rf"^/api/v1/calendars/{_ID}/update$", "POST", "CALENDAR_UPDATE"),
++        (rf"^/api/v1/calendars/{_ID}/default$", "POST", "CALENDAR_SET_DEFAULT"),
++        (rf"^/api/v1/calendars/{_ID}/delete$", "DELETE", "CALENDAR_DELETE"),
++
+         # ── Channels ─────────────────────────────────────────────────────
+         (rf"^/api/v1/channels/create$", "POST", "CHANNEL_CREATE"),
+         (rf"^/api/v1/channels/{_ID}/update$", "POST", "CHANNEL_UPDATE"),
+@@ -423,6 +449,13 @@ _NIS2_SECURITY_ACTIONS = frozenset({
+     "RESOURCE_DELETE_FUNCTION", "RESOURCE_LOAD_FUNCTION_URL",
+     "RESOURCE_CREATE_TOOL", "RESOURCE_UPDATE_TOOL",
+     "RESOURCE_DELETE_TOOL", "RESOURCE_LOAD_TOOL_URL",
++    # Automations (server-side code/workflow execution)
++    "RESOURCE_CREATE_AUTOMATION", "RESOURCE_UPDATE_AUTOMATION",
++    "RESOURCE_DELETE_AUTOMATION", "RESOURCE_RUN_AUTOMATION",
++    # OAuth MCP authorization flow
++    "AUTH_OAUTH_AUTHORIZE",
++    # Terminal server policy (execution environment config)
++    "CONFIG_TERMINAL_SERVERS_VERIFY", "CONFIG_TERMINAL_SERVERS_POLICY",
+     # Pipelines (code execution — upload/manage executable code)
+     "PIPELINE_UPLOAD", "PIPELINE_ADD", "PIPELINE_DELETE", "PIPELINE_VALVES_UPDATE",
+     # Channel/webhook (external integrations)
+@@ -480,6 +513,9 @@ def _compile_object_id_patterns() -> list[tuple[re.Pattern, str]]:
+         (rf"/memories/{_ID}", "memory"),
+         (rf"/folders/{_ID}", "folder"),
+         (rf"/evaluations/feedback/{_ID}", "feedback"),
++        (rf"/automations/{_ID}", "automation"),
++        (rf"/calendars/events/{_ID}", "calendar_event"),
++        (rf"/calendars/{_ID}", "calendar"),
+     ]
+ 
+     return [(re.compile(p, re.IGNORECASE), obj_type) for p, obj_type in raw]
