@@ -9,7 +9,7 @@ Overview
 --------
 The middleware intercepts every inbound request, extracts identity
 and context from JWT cookies / OIDC tokens / DB lookups, classifies
-the action as one of ~150 NIS2-relevant types, then emits a single
+the action as one of ~165 NIS2-relevant types, then emits a single
 pipe-delimited log line to stdout.  Security-relevant actions are
 logged at WARNING level so SIEM systems can filter on severity.
 
@@ -17,7 +17,7 @@ Key features:
   • User identity resolved via JWT cookie → DB (email, role).
   • OIDC subject (``sub``) and MFA status (``amr``/``acr``)
     extracted from server-side OAuth sessions (id_token).
-  • ~150 regex rules classify every API route into a semantic
+  • ~165 regex rules classify every API route into a semantic
     action type (AUTH_LOGIN, GROUP_MEMBER_ADD, CONFIG_IMPORT, …).
   • Failed authentication attempts auto-detected (status ≥ 400
     on AUTH_LOGIN* → AUTH_LOGIN_FAIL with nis2=Y).
@@ -205,7 +205,7 @@ def _compile_action_rules() -> list[tuple[re.Pattern, Optional[str], str]]:
     Called once at module load time. Each rule is:
         (path_regex, http_method | None, action_type)
 
-    Compatible with Open WebUI v0.9.x+.  Covers ~150 route patterns
+    Compatible with Open WebUI v0.9.x+.  Covers ~165 route patterns
     across all registered API routers including the v0.9.x additions:
     automations, calendars, skills, MCP OAuth 2.1 authorize/callback,
     IdP back-channel logout, and retrieval/audio/images config.
@@ -277,6 +277,17 @@ def _compile_action_rules() -> list[tuple[re.Pattern, Optional[str], str]]:
         (rf"^/api/v1/retrieval/reset/uploads$", "POST", "DATA_RESET_RETRIEVAL_UPLOADS"),
         (rf"^/api/v1/audio/config/update$", "POST", "CONFIG_AUDIO"),
         (rf"^/api/v1/images/config/update$", "POST", "CONFIG_IMAGES"),
+
+        # ── Tasks (AI generation + config) ──────────────────────────────
+        (rf"^/api/v1/tasks/config/update$", "POST", "CONFIG_TASKS"),
+        (rf"^/api/v1/tasks/title/completions$", "POST", "TASK_TITLE_GENERATE"),
+        (rf"^/api/v1/tasks/follow_up/completions$", "POST", "TASK_FOLLOWUP_GENERATE"),
+        (rf"^/api/v1/tasks/tags/completions$", "POST", "TASK_TAGS_GENERATE"),
+        (rf"^/api/v1/tasks/image_prompt/completions$", "POST", "TASK_IMAGE_PROMPT_GENERATE"),
+        (rf"^/api/v1/tasks/queries/completions$", "POST", "TASK_QUERY_GENERATE"),
+        (rf"^/api/v1/tasks/auto/completions$", "POST", "TASK_AUTOCOMPLETE_GENERATE"),
+        (rf"^/api/v1/tasks/emoji/completions$", "POST", "TASK_EMOJI_GENERATE"),
+        (rf"^/api/v1/tasks/moa/completions$", "POST", "TASK_MOA_GENERATE"),
 
         # ── Chat Operations ──────────────────────────────────────────────
         (rf"^/api/v1/chats/new$", "POST", "CHAT_CREATE"),
@@ -420,6 +431,7 @@ def _compile_action_rules() -> list[tuple[re.Pattern, Optional[str], str]]:
         (rf"^/api/v1/automations/{_ID}/run$", "POST", "RESOURCE_RUN_AUTOMATION"),
         (rf"^/api/v1/automations/{_ID}/toggle$", "POST", "RESOURCE_TOGGLE_AUTOMATION"),
         (rf"^/api/v1/automations/{_ID}/delete$", "DELETE", "RESOURCE_DELETE_AUTOMATION"),
+        (rf"^/api/v1/automations/{_ID}/runs$", "GET", "RESOURCE_VIEW_AUTOMATION_RUNS"),
 
         # ── Calendar ─────────────────────────────────────────────────────
         (rf"^/api/v1/calendars/events/create$", "POST", "CALENDAR_EVENT_CREATE"),
@@ -484,7 +496,7 @@ _NIS2_SECURITY_ACTIONS = frozenset({
     "CONFIG_TOOL_SERVERS_VERIFY", "CONFIG_TERMINAL_SERVERS",
     "CONFIG_CODE_EXECUTION", "CONFIG_MODELS", "CONFIG_IMPORT",
     "CONFIG_EVALUATIONS", "CONFIG_RETRIEVAL", "CONFIG_RETRIEVAL_EMBEDDING",
-    "CONFIG_AUDIO", "CONFIG_IMAGES",
+    "CONFIG_AUDIO", "CONFIG_IMAGES", "CONFIG_TASKS",
     # Access control / sharing
     "ACCESS_SHARE_CHAT", "ACCESS_UNSHARE_CHAT", "ACCESS_SHARE_CHAT_UPDATE",
     "ACCESS_NOTE_UPDATE", "ACCESS_KNOWLEDGE_UPDATE",
@@ -516,6 +528,10 @@ _NIS2_SECURITY_ACTIONS = frozenset({
     "PIPELINE_UPLOAD", "PIPELINE_ADD", "PIPELINE_DELETE", "PIPELINE_VALVES_UPDATE",
     # Channel/webhook (external integrations)
     "CHANNEL_WEBHOOK_CREATE", "CHANNEL_WEBHOOK_UPDATE", "CHANNEL_WEBHOOK_DELETE",
+    # Calendar (destructive)
+    "CALENDAR_DELETE",
+    # Scheduled automations (background code execution — no HTTP triggerer)
+    "TASK_AUTOMATION_SCHEDULED", "TASK_AUTOMATION_SCHEDULED_ERROR",
 })
 
 
@@ -820,6 +836,57 @@ def _resolve_user_context(user_id: str) -> _UserContext:
         _cache_data[user_id] = (ctx, time.monotonic())
 
     return ctx
+
+
+def log_scheduled_activity(
+    action: str,
+    user_email: str,
+    user_role: str,
+    object_id: str,
+    object_type: str,
+    status_code: int,
+    duration_s: float,
+    meta: str = None,
+) -> None:
+    """Emit a NIS2-compliant log line for background / scheduled activities.
+
+    Scheduled automations bypass the ASGI middleware stack entirely — they
+    are triggered by the scheduler worker loop, not by an HTTP request.
+    This function writes to the same ``open_webui.access`` logger (same
+    handler, same format) so that SIEM tools see a consistent record.
+
+    All scheduled runs are emitted at WARNING level (nis2=Y) because they
+    represent autonomous server-side code execution with no interactive
+    HTTP triggerer.
+
+    Args:
+        action:      NIS2 action type — TASK_AUTOMATION_SCHEDULED or
+                     TASK_AUTOMATION_SCHEDULED_ERROR.
+        user_email:  Owner's email (automation.user_id resolved to email).
+                     Use "unknown" when the user record cannot be fetched.
+        user_role:   Owner's role ("admin" / "user" / "unknown").
+        object_id:   Automation ID (UUID).
+        object_type: Always "automation" for current callers.
+        status_code: 200 for success, 500 for error.
+        duration_s:  Wall-clock seconds from task start to completion.
+        meta:        Optional pipe-separated key=value pairs, e.g.
+                     "trigger=scheduler|name=Daily Report|chat_id=<uuid>".
+    """
+    logger = logging.getLogger("open_webui.access")
+    outcome = _outcome_from_status(status_code)
+    log_msg = (
+        f"email={user_email} | session_id=scheduler | "
+        f"correlation_id=- | oidc_sub=- | mfa=- | "
+        f"role={user_role} | "
+        f"action={action} | outcome={outcome} | nis2=Y | "
+        f"object={object_type}:{object_id} | "
+        f"ua=scheduler | "
+        f"scheduler - \"SCHEDULER /api/v1/automations/{object_id}/run\" {status_code} | "
+        f"time={duration_s:.3f}s"
+    )
+    if meta:
+        log_msg += f" | meta={meta}"
+    logger.warning(log_msg)
 
 
 class AccessLogMiddleware(BaseHTTPMiddleware):

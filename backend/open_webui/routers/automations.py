@@ -261,7 +261,7 @@ async def run_automation_by_id(
     await check_automations_permission(request, user)
     automation = await Automations.get_by_id(id, db=db)
     check_automation_access(automation, user)
-    asyncio.create_task(execute_automation(request.app, automation))
+    asyncio.create_task(execute_automation(request.app, automation, trigger="manual"))
     return await enrich_automation(automation, db, tz=user.timezone)
 
 
