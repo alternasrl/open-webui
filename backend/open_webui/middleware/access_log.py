@@ -9,7 +9,7 @@ Overview
 --------
 The middleware intercepts every inbound request, extracts identity
 and context from JWT cookies / OIDC tokens / DB lookups, classifies
-the action as one of ~130 NIS2-relevant types, then emits a single
+the action as one of ~150 NIS2-relevant types, then emits a single
 pipe-delimited log line to stdout.  Security-relevant actions are
 logged at WARNING level so SIEM systems can filter on severity.
 
@@ -17,7 +17,7 @@ Key features:
   • User identity resolved via JWT cookie → DB (email, role).
   • OIDC subject (``sub``) and MFA status (``amr``/``acr``)
     extracted from server-side OAuth sessions (id_token).
-  • ~130 regex rules classify every API route into a semantic
+  • ~150 regex rules classify every API route into a semantic
     action type (AUTH_LOGIN, GROUP_MEMBER_ADD, CONFIG_IMPORT, …).
   • Failed authentication attempts auto-detected (status ≥ 400
     on AUTH_LOGIN* → AUTH_LOGIN_FAIL with nis2=Y).
@@ -29,7 +29,7 @@ Key features:
 
 Compatibility
 -------------
-Targets Open WebUI v0.9.x+.  New API surfaces added in v0.9.0 and
+Targets Open WebUI v0.9.x+.  New API surfaces added in v0.9.0–v0.9.5 and
 covered by this middleware:
 
   • ``/api/v1/automations/*``        — Automation CRUD + run (code exec)
@@ -39,6 +39,11 @@ covered by this middleware:
   • ``/api/v1/configs/terminal_servers/verify``  — Terminal server verify
   • ``/api/v1/configs/terminal_servers/policy``  — Terminal execution policy
   • ``/api/v1/configs/oauth/clients/register``   — Dynamic OAuth client reg.
+  • ``/api/v1/skills/*``             — Skills CRUD (v0.9.x, code execution risk)
+  • ``POST /api/v1/auths/signout``   — signout is POST since v0.9.3 (was GET)
+  • ``DELETE /api/v1/auths/oauth/sessions/{p}`` — OAuth session revoke (v0.9.3)
+  • ``/api/v1/retrieval/config/update`` + ``/embedding/update`` — retrieval config
+  • ``/api/v1/audio/config/update``, ``/api/v1/images/config/update`` — media config
 
 Azure WAF / Front Door Integration
 -----------------------------------
@@ -200,10 +205,10 @@ def _compile_action_rules() -> list[tuple[re.Pattern, Optional[str], str]]:
     Called once at module load time. Each rule is:
         (path_regex, http_method | None, action_type)
 
-    Compatible with Open WebUI v0.9.x+.  Covers ~130 route patterns
+    Compatible with Open WebUI v0.9.x+.  Covers ~150 route patterns
     across all registered API routers including the v0.9.x additions:
-    automations, calendars, MCP OAuth 2.1 authorize/callback, and
-    IdP back-channel logout.
+    automations, calendars, skills, MCP OAuth 2.1 authorize/callback,
+    IdP back-channel logout, and retrieval/audio/images config.
     """
     _ID = r"[^/]+"  # matches a path segment (UUID, slug, etc.)
 
@@ -212,13 +217,14 @@ def _compile_action_rules() -> list[tuple[re.Pattern, Optional[str], str]]:
         (rf"^/api/v1/auths/signin$", "POST", "AUTH_LOGIN"),
         (rf"^/api/v1/auths/ldap$", "POST", "AUTH_LOGIN_LDAP"),
         (rf"^/api/v1/auths/signup$", "POST", "AUTH_SIGNUP"),
-        (rf"^/api/v1/auths/signout$", "GET", "AUTH_LOGOUT"),
+        (rf"^/api/v1/auths/signout$", "POST", "AUTH_LOGOUT"),
         (rf"^/api/v1/auths/update/password$", "POST", "AUTH_PASSWORD_CHANGE"),
         (rf"^/api/v1/auths/update/timezone$", "POST", "AUTH_TIMEZONE_UPDATE"),
         (rf"^/api/v1/auths/update/profile$", "POST", "AUTH_PROFILE_UPDATE"),
         (rf"^/api/v1/auths/api_key$", "POST", "AUTH_API_KEY_CREATE"),
         (rf"^/api/v1/auths/api_key$", "DELETE", "AUTH_API_KEY_DELETE"),
         (rf"^/api/v1/auths/oauth/{_ID}/token/exchange$", "POST", "AUTH_OAUTH_TOKEN"),
+        (rf"^/api/v1/auths/oauth/sessions/", "DELETE", "AUTH_LOGOUT"),          # OAuth session revoke (v0.9.3)
         # OIDC/OAuth2 callback endpoints (GET — browser redirect after IdP authentication)
         (rf"^/oauth/{_ID}/login/callback$", "GET", "AUTH_OIDC_LOGIN"),
         (rf"^/oauth/{_ID}/callback$", "GET", "AUTH_OIDC_LOGIN"),         # legacy path
@@ -264,6 +270,14 @@ def _compile_action_rules() -> list[tuple[re.Pattern, Optional[str], str]]:
         (rf"^/api/v1/configs/suggestions$", "POST", "CONFIG_SUGGESTIONS"),
         (rf"^/api/v1/configs/banners$", "POST", "CONFIG_BANNERS"),
 
+        # ── Retrieval / Audio / Images configuration (admin-only) ────────
+        (rf"^/api/v1/retrieval/embedding/update$", "POST", "CONFIG_RETRIEVAL_EMBEDDING"),
+        (rf"^/api/v1/retrieval/config/update$", "POST", "CONFIG_RETRIEVAL"),
+        (rf"^/api/v1/retrieval/reset/db$", "POST", "DATA_RESET_RETRIEVAL_DB"),
+        (rf"^/api/v1/retrieval/reset/uploads$", "POST", "DATA_RESET_RETRIEVAL_UPLOADS"),
+        (rf"^/api/v1/audio/config/update$", "POST", "CONFIG_AUDIO"),
+        (rf"^/api/v1/images/config/update$", "POST", "CONFIG_IMAGES"),
+
         # ── Chat Operations ──────────────────────────────────────────────
         (rf"^/api/v1/chats/new$", "POST", "CHAT_CREATE"),
         (rf"^/api/v1/chats/import$", "POST", "DATA_IMPORT"),
@@ -277,12 +291,16 @@ def _compile_action_rules() -> list[tuple[re.Pattern, Optional[str], str]]:
         (rf"^/api/v1/chats/{_ID}$", "DELETE", "CHAT_DELETE"),
         (rf"^/api/v1/chats/$", "DELETE", "CHAT_DELETE_ALL"),
         (rf"^/api/v1/chats/{_ID}$", "POST", "CHAT_UPDATE"),
+        (rf"^/api/v1/chats/shared/{_ID}/access/update$", "POST", "ACCESS_SHARE_CHAT_UPDATE"),
+        (rf"^/api/v1/chats/{_ID}/pin$", "POST", "CHAT_PIN"),
+        (rf"^/api/v1/chats/{_ID}/folder$", "POST", "CHAT_MOVE_FOLDER"),
         (rf"^/api/v1/chats/stats/export", "GET", "DATA_EXPORT"),
 
         # ── Note Operations ──────────────────────────────────────────────
         (rf"^/api/v1/notes/create$", "POST", "NOTE_CREATE"),
         (rf"^/api/v1/notes/{_ID}/update$", "POST", "NOTE_UPDATE"),
         (rf"^/api/v1/notes/{_ID}/access/update$", "POST", "ACCESS_NOTE_UPDATE"),
+        (rf"^/api/v1/notes/{_ID}/pin$", "POST", "NOTE_PIN"),
         (rf"^/api/v1/notes/{_ID}/delete$", "DELETE", "NOTE_DELETE"),
 
         # ── File Operations ──────────────────────────────────────────────
@@ -298,9 +316,11 @@ def _compile_action_rules() -> list[tuple[re.Pattern, Optional[str], str]]:
         (rf"^/api/v1/knowledge/{_ID}/delete$", "DELETE", "KNOWLEDGE_DELETE"),
         (rf"^/api/v1/knowledge/{_ID}/reset$", "POST", "KNOWLEDGE_RESET"),
         (rf"^/api/v1/knowledge/{_ID}/file/add$", "POST", "KNOWLEDGE_FILE_ADD"),
+        (rf"^/api/v1/knowledge/{_ID}/file/update$", "POST", "KNOWLEDGE_FILE_UPDATE"),
         (rf"^/api/v1/knowledge/{_ID}/file/remove$", "POST", "KNOWLEDGE_FILE_REMOVE"),
         (rf"^/api/v1/knowledge/{_ID}/files/batch/add$", "POST", "KNOWLEDGE_FILE_ADD"),
         (rf"^/api/v1/knowledge/{_ID}/export$", "GET", "DATA_EXPORT"),
+        (rf"^/api/v1/knowledge/metadata/reindex$", "POST", "KNOWLEDGE_REINDEX"),
         (rf"^/api/v1/knowledge/reindex$", "POST", "KNOWLEDGE_REINDEX"),
 
         # ── Functions (Plugins) ──────────────────────────────────────────
@@ -352,6 +372,14 @@ def _compile_action_rules() -> list[tuple[re.Pattern, Optional[str], str]]:
         (rf"^/api/v1/pipelines/add$", "POST", "PIPELINE_ADD"),
         (rf"^/api/v1/pipelines/delete$", "DELETE", "PIPELINE_DELETE"),
         (rf"^/api/v1/pipelines/{_ID}/valves/update$", "POST", "PIPELINE_VALVES_UPDATE"),
+
+        # ── Skills (code execution risk — same profile as Functions/Tools) ─
+        (rf"^/api/v1/skills/create$", "POST", "RESOURCE_CREATE_SKILL"),
+        (rf"^/api/v1/skills/id/{_ID}/update$", "POST", "RESOURCE_UPDATE_SKILL"),
+        (rf"^/api/v1/skills/id/{_ID}/access/update$", "POST", "ACCESS_SKILL_UPDATE"),
+        (rf"^/api/v1/skills/id/{_ID}/toggle$", "POST", "RESOURCE_TOGGLE_SKILL"),
+        (rf"^/api/v1/skills/id/{_ID}/delete$", "DELETE", "RESOURCE_DELETE_SKILL"),
+        (rf"^/api/v1/skills/export$", "GET", "DATA_EXPORT"),
 
         # ── Prompts ──────────────────────────────────────────────────────
         (rf"^/api/v1/prompts/create$", "POST", "RESOURCE_CREATE_PROMPT"),
@@ -455,12 +483,13 @@ _NIS2_SECURITY_ACTIONS = frozenset({
     "CONFIG_CONNECTIONS", "CONFIG_OAUTH_CLIENT", "CONFIG_TOOL_SERVERS",
     "CONFIG_TOOL_SERVERS_VERIFY", "CONFIG_TERMINAL_SERVERS",
     "CONFIG_CODE_EXECUTION", "CONFIG_MODELS", "CONFIG_IMPORT",
-    "CONFIG_EVALUATIONS",
+    "CONFIG_EVALUATIONS", "CONFIG_RETRIEVAL", "CONFIG_RETRIEVAL_EMBEDDING",
+    "CONFIG_AUDIO", "CONFIG_IMAGES",
     # Access control / sharing
-    "ACCESS_SHARE_CHAT", "ACCESS_UNSHARE_CHAT",
+    "ACCESS_SHARE_CHAT", "ACCESS_UNSHARE_CHAT", "ACCESS_SHARE_CHAT_UPDATE",
     "ACCESS_NOTE_UPDATE", "ACCESS_KNOWLEDGE_UPDATE",
     "ACCESS_TOOL_UPDATE", "ACCESS_MODEL_UPDATE",
-    "ACCESS_PROMPT_UPDATE",
+    "ACCESS_PROMPT_UPDATE", "ACCESS_SKILL_UPDATE",
     # Data export (potential data exfiltration)
     "CONFIG_EXPORT", "DATA_EXPORT", "DATA_IMPORT",
     # Destructive operations
@@ -468,11 +497,14 @@ _NIS2_SECURITY_ACTIONS = frozenset({
     "KNOWLEDGE_DELETE", "KNOWLEDGE_RESET",
     "EVAL_DELETE_ALL_FEEDBACKS", "EVAL_DELETE_FEEDBACKS",
     "MEMORY_RESET", "MEMORY_DELETE_ALL",
+    "DATA_RESET_RETRIEVAL_DB", "DATA_RESET_RETRIEVAL_UPLOADS",
     # Resource management with security implications
     "RESOURCE_CREATE_FUNCTION", "RESOURCE_UPDATE_FUNCTION",
     "RESOURCE_DELETE_FUNCTION", "RESOURCE_LOAD_FUNCTION_URL",
     "RESOURCE_CREATE_TOOL", "RESOURCE_UPDATE_TOOL",
     "RESOURCE_DELETE_TOOL", "RESOURCE_LOAD_TOOL_URL",
+    # Skills (code execution — same risk profile as functions/tools)
+    "RESOURCE_CREATE_SKILL", "RESOURCE_UPDATE_SKILL", "RESOURCE_DELETE_SKILL",
     # Automations (server-side code/workflow execution)
     "RESOURCE_CREATE_AUTOMATION", "RESOURCE_UPDATE_AUTOMATION",
     "RESOURCE_DELETE_AUTOMATION", "RESOURCE_RUN_AUTOMATION",
@@ -540,6 +572,7 @@ def _compile_object_id_patterns() -> list[tuple[re.Pattern, str]]:
         (rf"/automations/{_ID}", "automation"),
         (rf"/calendars/events/{_ID}", "calendar_event"),
         (rf"/calendars/{_ID}", "calendar"),
+        (rf"/skills/id/{_ID}", "skill"),
     ]
 
     return [(re.compile(p, re.IGNORECASE), obj_type) for p, obj_type in raw]
