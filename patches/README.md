@@ -7,7 +7,8 @@ Sono numerate progressivamente e vanno applicate in ordine con:
 git am patches/*.patch
 ```
 
-> **Nota v0.9.2**: rimossi tutti i workaround Azure WAF (ex 0003-0008/0010-0012 nella serie v0.9.1) — totale sceso da 24 a **16 patch**.
+> **Nota v0.9.2**: rimossi tutti i workaround Azure WAF (ex 0003-0008/0010-0012 nella serie v0.9.1) — totale sceso da 24 a **16 patch**.  
+> **Nota v0.9.5**: aggiunte regole NIS2 per nuovi endpoint — totale **17 patch**.
 
 ---
 
@@ -42,7 +43,7 @@ Nuove metriche e filtri nella dashboard admin Analytics (riscritte per SQLAlchem
 
 ### 📋 NIS2 — Access Logging Middleware
 
-Implementa un middleware di access log conforme alla direttiva NIS2 per la registrazione degli accessi alle API (~130 regole regex, compatibile con v0.9.x).
+Implementa un middleware di access log conforme alla direttiva NIS2 per la registrazione degli accessi alle API (~150 regole regex, compatibile con v0.9.x).
 
 | # | File | Descrizione |
 |---|------|-------------|
@@ -57,7 +58,8 @@ Implementa un middleware di access log conforme alla direttiva NIS2 per la regis
 | 0013 | `feat-log-OIDC-claims-on-both-success-and-failed-logi...` | `oauth.py` salva l'`id_token` grezzo in `request.state.oidc_raw_id_token` per i login falliti (dominio non consentito, ruolo mancante). Il middleware lo usa come fallback: `oidc_sub` e `mfa` sono popolati sia per login riusciti (307) che falliti (4xx). |
 | 0014 | `feat-log-full-OIDC-token-claims-in-AUTH_OIDC_LOGIN-a...` | Aggiunge il campo `claims=<json>` alla riga `AUTH_OIDC_LOGIN`. Nuovo helper `_decode_full_id_token()` decodifica il JWT senza verifica firma e rimuove claim opachi (`at_hash`, `nonce`, `jti`). |
 | 0015 | `feat-nis2-add-NIS2-rules-for-v0.9.x-new-endpoints-au...` | Aggiunge ~20 nuove regole per le superfici introdotte in v0.9.0: Automations (CREATE/UPDATE/RUN/TOGGLE/DELETE), Calendar (CRUD eventi, RSVP), OAuth MCP (`AUTH_OAUTH_AUTHORIZE`, `AUTH_LOGOUT` backchannel), Terminal policy (`CONFIG_TERMINAL_SERVERS_VERIFY`, `CONFIG_TERMINAL_SERVERS_POLICY`). |
-| 0016 | `docs-nis2-update-access_log.py-module-docstring-for-...` | Aggiorna il docstring di `access_log.py`: ~130 regole totali, sezione Compatibility per v0.9.x, categorie CALENDAR_* e nuovi subtype AUTH_*/CONFIG_*. |
+| 0016 | `docs-nis2-update-access_log.py-module-docstring-for-...` | Aggiorna il docstring di `access_log.py`: ~150 regole totali, sezione Compatibility per v0.9.x, categorie CALENDAR_* e nuovi subtype AUTH_*/CONFIG_*. |
+| 0017 | `feat-nis2-update-access-log-for-v0.9.5-fix-signout-P...` | Integrazione v0.9.5: corregge `signout` GET→POST (breaking change v0.9.3); aggiunge `AUTH_LOGOUT` per OAuth session revoke (`DELETE /auths/oauth/sessions/{p}`); aggiunge 13 nuove regole per skills CRUD (`RESOURCE_CREATE/UPDATE/TOGGLE/DELETE_SKILL`, `ACCESS_SKILL_UPDATE`), chat (`CHAT_PIN`, `CHAT_MOVE_FOLDER`, `ACCESS_SHARE_CHAT_UPDATE`), note (`NOTE_PIN`), knowledge (`KNOWLEDGE_FILE_UPDATE`, `KNOWLEDGE_REINDEX`), config retrieval/audio/images (`CONFIG_RETRIEVAL_EMBEDDING`, `CONFIG_RETRIEVAL`, `DATA_RESET_RETRIEVAL_DB/UPLOADS`, `CONFIG_AUDIO`, `CONFIG_IMAGES`). Aggiunge 10 nuovi action type a `_NIS2_SECURITY_ACTIONS` e il pattern `/skills/id/{id}` a `_OBJECT_ID_PATTERNS`. |
 
 ---
 

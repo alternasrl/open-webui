@@ -1,7 +1,7 @@
 From 6285fcaadff228367af163c867584c04deb76855 Mon Sep 17 00:00:00 2001
 From: Fabio Paracchini <fparacchini@alteanet.it>
 Date: Sun, 15 Feb 2026 01:44:30 +0100
-Subject: [PATCH 07/16] feat: Implement thread-safe caching for user context
+Subject: [PATCH 07/17] feat: Implement thread-safe caching for user context
  resolution in access logging
 
 ---

@@ -1,7 +1,7 @@
 From 54bc0f02149d9704c00f23e311473307c6b044cc Mon Sep 17 00:00:00 2001
 From: Fabio Paracchini <fparacchini@alteanet.it>
 Date: Tue, 31 Mar 2026 23:51:20 +0200
-Subject: [PATCH 13/16] feat: log OIDC claims on both success and failed login
+Subject: [PATCH 13/17] feat: log OIDC claims on both success and failed login
  in AccessLogMiddleware
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

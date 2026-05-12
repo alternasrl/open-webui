@@ -1,7 +1,7 @@
 From 225f254a39eee15de45ef08c971d4310fc932928 Mon Sep 17 00:00:00 2001
 From: Fabio Paracchini <fparacchini@alteanet.it>
 Date: Mon, 30 Mar 2026 13:02:22 +0200
-Subject: [PATCH 04/16] fix: enhance path validation and sanitization for file
+Subject: [PATCH 04/17] fix: enhance path validation and sanitization for file
  handling
 
 Co-authored-by: Francesco De Simone <fdesimone@alteanet.it>

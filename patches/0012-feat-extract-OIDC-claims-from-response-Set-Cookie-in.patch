@@ -1,7 +1,7 @@
 From 91e9a429bfebc3db1ab32343f0e6e94223335568 Mon Sep 17 00:00:00 2001
 From: Fabio Paracchini <fparacchini@alteanet.it>
 Date: Tue, 31 Mar 2026 23:47:02 +0200
-Subject: [PATCH 12/16] feat: extract OIDC claims from response Set-Cookie in
+Subject: [PATCH 12/17] feat: extract OIDC claims from response Set-Cookie in
  AUTH_OIDC_LOGIN log
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

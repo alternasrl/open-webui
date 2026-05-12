@@ -1,7 +1,7 @@
 From e57974cf194248a88d9566098ca7a7504aa7dd4e Mon Sep 17 00:00:00 2001
 From: Fabio Paracchini <fparacchini@alteanet.it>
 Date: Mon, 30 Mar 2026 13:03:46 +0200
-Subject: [PATCH 05/16] feat: custom access log NIS2 compliant
+Subject: [PATCH 05/17] feat: custom access log NIS2 compliant
 
 Co-authored-by: Fabio Paracchini <fparacchini@alteanet.it>
 Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>
