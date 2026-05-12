@@ -568,6 +568,13 @@ def _compile_object_id_patterns() -> list[tuple[re.Pattern, str]]:
     _ID = r"(?P<oid>[^/]+)"
 
     raw = [
+        # More-specific patterns MUST come before generic ones to avoid false
+        # matches.  E.g. /scim/v2/Users/{id} must precede /users/{id}$,
+        # and /calendars/events/{id} must precede /calendars/{id}.
+        (rf"/scim/v2/Users/{_ID}", "scim_user"),
+        (rf"/scim/v2/Groups/{_ID}", "scim_group"),
+        (rf"/calendars/events/{_ID}", "calendar_event"),
+        (rf"/evaluations/feedback/{_ID}", "feedback"),
         (rf"/groups/id/{_ID}", "group"),
         (rf"/users/{_ID}/update", "user"),
         (rf"/users/{_ID}$", "user"),
@@ -577,18 +584,14 @@ def _compile_object_id_patterns() -> list[tuple[re.Pattern, str]]:
         (rf"/knowledge/{_ID}", "knowledge"),
         (rf"/functions/id/{_ID}", "function"),
         (rf"/tools/id/{_ID}", "tool"),
+        (rf"/skills/id/{_ID}", "skill"),
         (rf"/channels/{_ID}", "channel"),
-        (rf"/scim/v2/Users/{_ID}", "scim_user"),
-        (rf"/scim/v2/Groups/{_ID}", "scim_group"),
         (rf"/pipelines/{_ID}", "pipeline"),
         (rf"/prompts/id/{_ID}", "prompt"),
         (rf"/memories/{_ID}", "memory"),
         (rf"/folders/{_ID}", "folder"),
-        (rf"/evaluations/feedback/{_ID}", "feedback"),
         (rf"/automations/{_ID}", "automation"),
-        (rf"/calendars/events/{_ID}", "calendar_event"),
         (rf"/calendars/{_ID}", "calendar"),
-        (rf"/skills/id/{_ID}", "skill"),
     ]
 
     return [(re.compile(p, re.IGNORECASE), obj_type) for p, obj_type in raw]
