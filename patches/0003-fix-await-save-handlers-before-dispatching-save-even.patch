@@ -1,7 +1,7 @@
 From 163c0be3fcb504383a7038698ce54b09a1afc921 Mon Sep 17 00:00:00 2001
 From: Fabio Paracchini <fparacchini@alteanet.it>
 Date: Tue, 10 Mar 2026 22:57:29 +0100
-Subject: [PATCH 03/17] fix: await save handlers before dispatching save event;
+Subject: [PATCH 03/18] fix: await save handlers before dispatching save event;
  propagate async through connection modal chain
 
 ---

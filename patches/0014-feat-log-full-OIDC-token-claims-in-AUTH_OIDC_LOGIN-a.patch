@@ -1,7 +1,7 @@
 From 16cb0761227ed7cbc9e721f09b39401b083ff764 Mon Sep 17 00:00:00 2001
 From: Fabio Paracchini <fparacchini@alteanet.it>
 Date: Tue, 31 Mar 2026 23:55:11 +0200
-Subject: [PATCH 14/17] feat: log full OIDC token claims in AUTH_OIDC_LOGIN
+Subject: [PATCH 14/18] feat: log full OIDC token claims in AUTH_OIDC_LOGIN
  access log line
 
 Add a 'claims=' JSON field to the ACCESS log line for AUTH_OIDC_LOGIN

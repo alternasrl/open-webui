@@ -1,0 +1,253 @@
+From 179d11b7fee99f5c916402df67517c22c4ec340e Mon Sep 17 00:00:00 2001
+From: Fabio Paracchini <fparacchini@alteanet.it>
+Date: Tue, 12 May 2026 11:58:39 +0200
+Subject: [PATCH 18/18] =?UTF-8?q?feat(nis2):=20add=20task/calendar/schedul?=
+ =?UTF-8?q?ed-automation=20logging=20=E2=80=94=20trigger-aware=20NIS2=20au?=
+ =?UTF-8?q?dit=20trail?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ backend/open_webui/middleware/access_log.py | 75 +++++++++++++++++++--
+ backend/open_webui/routers/automations.py   |  2 +-
+ backend/open_webui/utils/automations.py     | 50 +++++++++++++-
+ 3 files changed, 121 insertions(+), 6 deletions(-)
+
+diff --git a/backend/open_webui/middleware/access_log.py b/backend/open_webui/middleware/access_log.py
+index 21fc8d731..d63de061d 100644
+--- a/backend/open_webui/middleware/access_log.py
++++ b/backend/open_webui/middleware/access_log.py
+@@ -9,7 +9,7 @@ Overview
+ --------
+ The middleware intercepts every inbound request, extracts identity
+ and context from JWT cookies / OIDC tokens / DB lookups, classifies
+-the action as one of ~150 NIS2-relevant types, then emits a single
++the action as one of ~165 NIS2-relevant types, then emits a single
+ pipe-delimited log line to stdout.  Security-relevant actions are
+ logged at WARNING level so SIEM systems can filter on severity.
+ 
+@@ -17,7 +17,7 @@ Key features:
+   • User identity resolved via JWT cookie → DB (email, role).
+   • OIDC subject (``sub``) and MFA status (``amr``/``acr``)
+     extracted from server-side OAuth sessions (id_token).
+-  • ~150 regex rules classify every API route into a semantic
++  • ~165 regex rules classify every API route into a semantic
+     action type (AUTH_LOGIN, GROUP_MEMBER_ADD, CONFIG_IMPORT, …).
+   • Failed authentication attempts auto-detected (status ≥ 400
+     on AUTH_LOGIN* → AUTH_LOGIN_FAIL with nis2=Y).
+@@ -205,7 +205,7 @@ def _compile_action_rules() -> list[tuple[re.Pattern, Optional[str], str]]:
+     Called once at module load time. Each rule is:
+         (path_regex, http_method | None, action_type)
+ 
+-    Compatible with Open WebUI v0.9.x+.  Covers ~150 route patterns
++    Compatible with Open WebUI v0.9.x+.  Covers ~165 route patterns
+     across all registered API routers including the v0.9.x additions:
+     automations, calendars, skills, MCP OAuth 2.1 authorize/callback,
+     IdP back-channel logout, and retrieval/audio/images config.
+@@ -278,6 +278,17 @@ def _compile_action_rules() -> list[tuple[re.Pattern, Optional[str], str]]:
+         (rf"^/api/v1/audio/config/update$", "POST", "CONFIG_AUDIO"),
+         (rf"^/api/v1/images/config/update$", "POST", "CONFIG_IMAGES"),
+ 
++        # ── Tasks (AI generation + config) ──────────────────────────────
++        (rf"^/api/v1/tasks/config/update$", "POST", "CONFIG_TASKS"),
++        (rf"^/api/v1/tasks/title/completions$", "POST", "TASK_TITLE_GENERATE"),
++        (rf"^/api/v1/tasks/follow_up/completions$", "POST", "TASK_FOLLOWUP_GENERATE"),
++        (rf"^/api/v1/tasks/tags/completions$", "POST", "TASK_TAGS_GENERATE"),
++        (rf"^/api/v1/tasks/image_prompt/completions$", "POST", "TASK_IMAGE_PROMPT_GENERATE"),
++        (rf"^/api/v1/tasks/queries/completions$", "POST", "TASK_QUERY_GENERATE"),
++        (rf"^/api/v1/tasks/auto/completions$", "POST", "TASK_AUTOCOMPLETE_GENERATE"),
++        (rf"^/api/v1/tasks/emoji/completions$", "POST", "TASK_EMOJI_GENERATE"),
++        (rf"^/api/v1/tasks/moa/completions$", "POST", "TASK_MOA_GENERATE"),
++
+         # ── Chat Operations ──────────────────────────────────────────────
+         (rf"^/api/v1/chats/new$", "POST", "CHAT_CREATE"),
+         (rf"^/api/v1/chats/import$", "POST", "DATA_IMPORT"),
+@@ -420,6 +431,7 @@ def _compile_action_rules() -> list[tuple[re.Pattern, Optional[str], str]]:
+         (rf"^/api/v1/automations/{_ID}/run$", "POST", "RESOURCE_RUN_AUTOMATION"),
+         (rf"^/api/v1/automations/{_ID}/toggle$", "POST", "RESOURCE_TOGGLE_AUTOMATION"),
+         (rf"^/api/v1/automations/{_ID}/delete$", "DELETE", "RESOURCE_DELETE_AUTOMATION"),
++        (rf"^/api/v1/automations/{_ID}/runs$", "GET", "RESOURCE_VIEW_AUTOMATION_RUNS"),
+ 
+         # ── Calendar ─────────────────────────────────────────────────────
+         (rf"^/api/v1/calendars/events/create$", "POST", "CALENDAR_EVENT_CREATE"),
+@@ -484,7 +496,7 @@ _NIS2_SECURITY_ACTIONS = frozenset({
+     "CONFIG_TOOL_SERVERS_VERIFY", "CONFIG_TERMINAL_SERVERS",
+     "CONFIG_CODE_EXECUTION", "CONFIG_MODELS", "CONFIG_IMPORT",
+     "CONFIG_EVALUATIONS", "CONFIG_RETRIEVAL", "CONFIG_RETRIEVAL_EMBEDDING",
+-    "CONFIG_AUDIO", "CONFIG_IMAGES",
++    "CONFIG_AUDIO", "CONFIG_IMAGES", "CONFIG_TASKS",
+     # Access control / sharing
+     "ACCESS_SHARE_CHAT", "ACCESS_UNSHARE_CHAT", "ACCESS_SHARE_CHAT_UPDATE",
+     "ACCESS_NOTE_UPDATE", "ACCESS_KNOWLEDGE_UPDATE",
+@@ -516,6 +528,10 @@ _NIS2_SECURITY_ACTIONS = frozenset({
+     "PIPELINE_UPLOAD", "PIPELINE_ADD", "PIPELINE_DELETE", "PIPELINE_VALVES_UPDATE",
+     # Channel/webhook (external integrations)
+     "CHANNEL_WEBHOOK_CREATE", "CHANNEL_WEBHOOK_UPDATE", "CHANNEL_WEBHOOK_DELETE",
++    # Calendar (destructive)
++    "CALENDAR_DELETE",
++    # Scheduled automations (background code execution — no HTTP triggerer)
++    "TASK_AUTOMATION_SCHEDULED", "TASK_AUTOMATION_SCHEDULED_ERROR",
+ })
+ 
+ 
+@@ -822,6 +838,57 @@ def _resolve_user_context(user_id: str) -> _UserContext:
+     return ctx
+ 
+ 
++def log_scheduled_activity(
++    action: str,
++    user_email: str,
++    user_role: str,
++    object_id: str,
++    object_type: str,
++    status_code: int,
++    duration_s: float,
++    meta: str = None,
++) -> None:
++    """Emit a NIS2-compliant log line for background / scheduled activities.
++
++    Scheduled automations bypass the ASGI middleware stack entirely — they
++    are triggered by the scheduler worker loop, not by an HTTP request.
++    This function writes to the same ``open_webui.access`` logger (same
++    handler, same format) so that SIEM tools see a consistent record.
++
++    All scheduled runs are emitted at WARNING level (nis2=Y) because they
++    represent autonomous server-side code execution with no interactive
++    HTTP triggerer.
++
++    Args:
++        action:      NIS2 action type — TASK_AUTOMATION_SCHEDULED or
++                     TASK_AUTOMATION_SCHEDULED_ERROR.
++        user_email:  Owner's email (automation.user_id resolved to email).
++                     Use "unknown" when the user record cannot be fetched.
++        user_role:   Owner's role ("admin" / "user" / "unknown").
++        object_id:   Automation ID (UUID).
++        object_type: Always "automation" for current callers.
++        status_code: 200 for success, 500 for error.
++        duration_s:  Wall-clock seconds from task start to completion.
++        meta:        Optional pipe-separated key=value pairs, e.g.
++                     "trigger=scheduler|name=Daily Report|chat_id=<uuid>".
++    """
++    logger = logging.getLogger("open_webui.access")
++    outcome = _outcome_from_status(status_code)
++    log_msg = (
++        f"email={user_email} | session_id=scheduler | "
++        f"correlation_id=- | oidc_sub=- | mfa=- | "
++        f"role={user_role} | "
++        f"action={action} | outcome={outcome} | nis2=Y | "
++        f"object={object_type}:{object_id} | "
++        f"ua=scheduler | "
++        f"scheduler - \"SCHEDULER /api/v1/automations/{object_id}/run\" {status_code} | "
++        f"time={duration_s:.3f}s"
++    )
++    if meta:
++        log_msg += f" | meta={meta}"
++    logger.warning(log_msg)
++
++
+ class AccessLogMiddleware(BaseHTTPMiddleware):
+     """NIS2-compliant access logging middleware for Open WebUI.
+ 
+diff --git a/backend/open_webui/routers/automations.py b/backend/open_webui/routers/automations.py
+index 4ff66feb9..86cda17f0 100644
+--- a/backend/open_webui/routers/automations.py
++++ b/backend/open_webui/routers/automations.py
+@@ -261,7 +261,7 @@ async def run_automation_by_id(
+     await check_automations_permission(request, user)
+     automation = await Automations.get_by_id(id, db=db)
+     check_automation_access(automation, user)
+-    asyncio.create_task(execute_automation(request.app, automation))
++    asyncio.create_task(execute_automation(request.app, automation, trigger="manual"))
+     return await enrich_automation(automation, db, tz=user.timezone)
+ 
+ 
+diff --git a/backend/open_webui/utils/automations.py b/backend/open_webui/utils/automations.py
+index 05955d54d..d672bfca0 100644
+--- a/backend/open_webui/utils/automations.py
++++ b/backend/open_webui/utils/automations.py
+@@ -347,17 +347,40 @@ async def _set_terminal_cwd(app, server_id: str, user, cwd: str, chat_id: str) -
+         log.warning(f'Failed to set terminal CWD: {e}')
+ 
+ 
+-async def execute_automation(app, automation: AutomationModel) -> None:
++async def execute_automation(app, automation: AutomationModel, trigger: str = "scheduler") -> None:
+     """Execute an automation through the full chat completion pipeline.
+ 
+     Creates a real chat, then calls chat_completion exactly like the frontend:
+     session_id + chat_id + message_id → async task → pipeline handles everything
+     (filters, model params, knowledge/RAG, tools, DB saves, webhooks).
++
++    Args:
++        trigger: "scheduler" (background cron) or "manual" (HTTP user action).
++                 Manual runs are already logged by the ASGI middleware with the
++                 real HTTP triggerer — this function only emits NIS2 log lines
++                 for scheduler-triggered runs.
+     """
++    # Lazy import to avoid circular imports at module load time.
++    # access_log is only needed for scheduler-triggered runs.
++    if trigger == "scheduler":
++        from open_webui.middleware.access_log import log_scheduled_activity
++    else:
++        log_scheduled_activity = None
++
++    _start_time = time.time()
++    user = None
+     try:
+         user = await Users.get_user_by_id(automation.user_id)
+         if not user:
+             await _record_run(automation.id, 'error', error='User not found')
++            if log_scheduled_activity:
++                log_scheduled_activity(
++                    'TASK_AUTOMATION_SCHEDULED_ERROR',
++                    'unknown', 'unknown',
++                    automation.id, 'automation',
++                    500, 0.0,
++                    meta=f'trigger={trigger}|name={automation.name}|error=user_not_found',
++                )
+             return
+ 
+         prompt = await prompt_template(automation.data['prompt'], user)
+@@ -410,6 +433,14 @@ async def execute_automation(app, automation: AutomationModel) -> None:
+ 
+         if not chat:
+             await _record_run(automation.id, 'error', error='Failed to create chat')
++            if log_scheduled_activity:
++                log_scheduled_activity(
++                    'TASK_AUTOMATION_SCHEDULED_ERROR',
++                    user.email, user.role,
++                    automation.id, 'automation',
++                    500, time.time() - _start_time,
++                    meta=f'trigger={trigger}|name={automation.name}|error=chat_create_failed',
++                )
+             return
+ 
+         # Notify frontend to refresh chat list
+@@ -479,10 +510,27 @@ async def execute_automation(app, automation: AutomationModel) -> None:
+         )
+ 
+         await _record_run(automation.id, 'success', chat_id=chat.id)
++        if log_scheduled_activity:
++            log_scheduled_activity(
++                'TASK_AUTOMATION_SCHEDULED',
++                user.email, user.role,
++                automation.id, 'automation',
++                200, time.time() - _start_time,
++                meta=f'trigger={trigger}|name={automation.name}|chat_id={chat.id}',
++            )
+ 
+     except Exception as e:
+         log.exception(f'Automation {automation.id} failed')
+         await _record_run(automation.id, 'error', error=str(e)[:4000])
++        if log_scheduled_activity:
++            log_scheduled_activity(
++                'TASK_AUTOMATION_SCHEDULED_ERROR',
++                getattr(user, 'email', 'unknown'),
++                getattr(user, 'role', 'unknown'),
++                automation.id, 'automation',
++                500, time.time() - _start_time,
++                meta=f'trigger={trigger}|name={automation.name}|error={str(e)[:200]}',
++            )
+ 
+ 
+ ####################

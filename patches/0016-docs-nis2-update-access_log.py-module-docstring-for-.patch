@@ -1,7 +1,7 @@
 From dd488baafc5ca060acd37a788cf9c9639bdaa6d1 Mon Sep 17 00:00:00 2001
 From: Fabio Paracchini <fparacchini@alteanet.it>
 Date: Wed, 22 Apr 2026 16:13:34 +0200
-Subject: [PATCH 16/17] docs(nis2): update access_log.py module docstring for
+Subject: [PATCH 16/18] docs(nis2): update access_log.py module docstring for
  v0.9.x coverage
 
 ---
