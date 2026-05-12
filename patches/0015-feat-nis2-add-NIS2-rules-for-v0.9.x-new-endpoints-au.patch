@@ -1,7 +1,7 @@
 From e4d0f70e7093690161342358f9d48e1aa6c5a540 Mon Sep 17 00:00:00 2001
 From: Fabio Paracchini <fparacchini@alteanet.it>
 Date: Wed, 22 Apr 2026 16:09:10 +0200
-Subject: [PATCH 15/18] feat(nis2): add NIS2 rules for v0.9.x new endpoints
+Subject: [PATCH 15/19] feat(nis2): add NIS2 rules for v0.9.x new endpoints
  (automations, calendar, OAuth MCP, terminal policy)
 
 ---

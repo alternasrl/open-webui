@@ -1,7 +1,7 @@
 From 179d11b7fee99f5c916402df67517c22c4ec340e Mon Sep 17 00:00:00 2001
 From: Fabio Paracchini <fparacchini@alteanet.it>
 Date: Tue, 12 May 2026 11:58:39 +0200
-Subject: [PATCH 18/18] =?UTF-8?q?feat(nis2):=20add=20task/calendar/schedul?=
+Subject: [PATCH 18/19] =?UTF-8?q?feat(nis2):=20add=20task/calendar/schedul?=
  =?UTF-8?q?ed-automation=20logging=20=E2=80=94=20trigger-aware=20NIS2=20au?=
  =?UTF-8?q?dit=20trail?=
 MIME-Version: 1.0

@@ -1,7 +1,7 @@
 From 83ee90e60f0c094853689e9af8590c830eb89caa Mon Sep 17 00:00:00 2001
 From: Fabio Paracchini <fparacchini@alteanet.it>
 Date: Tue, 31 Mar 2026 21:30:12 +0200
-Subject: [PATCH 11/18] =?UTF-8?q?feat:=20audit=20OIDC/OAuth2=20callback=20?=
+Subject: [PATCH 11/19] =?UTF-8?q?feat:=20audit=20OIDC/OAuth2=20callback=20?=
  =?UTF-8?q?=E2=80=94=20track=20AUTH=5FOIDC=5FLOGIN=20and=20=5FFAIL=20in=20?=
  =?UTF-8?q?NIS2=20access=20log?=
 MIME-Version: 1.0

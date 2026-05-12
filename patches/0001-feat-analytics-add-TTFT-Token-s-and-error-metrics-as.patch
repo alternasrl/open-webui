@@ -1,7 +1,7 @@
 From 80c1e84457e606571bbc7226212b427a82a92da1 Mon Sep 17 00:00:00 2001
 From: Fabio Paracchini <fparacchini@alteanet.it>
 Date: Wed, 22 Apr 2026 15:48:02 +0200
-Subject: [PATCH 01/18] feat(analytics): add TTFT, Token/s and error metrics
+Subject: [PATCH 01/19] feat(analytics): add TTFT, Token/s and error metrics
  (async, delta from 0019-0020)
 
 ---

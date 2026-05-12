@@ -1,7 +1,7 @@
 From c55953ffc26964a6b608b0c04e85f1b1d326a6d2 Mon Sep 17 00:00:00 2001
 From: Fabio Paracchini <fparacchini@alteanet.it>
 Date: Sun, 15 Feb 2026 17:07:31 +0100
-Subject: [PATCH 09/18] feat: Enhance NIS2 compliance in access logging
+Subject: [PATCH 09/19] feat: Enhance NIS2 compliance in access logging
  middleware with detailed action classification and user context resolution,
  LOG360 friendly
 

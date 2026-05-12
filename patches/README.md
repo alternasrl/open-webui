@@ -8,7 +8,8 @@ git am patches/*.patch
 ```
 
 > **Nota v0.9.2**: rimossi tutti i workaround Azure WAF (ex 0003-0008/0010-0012 nella serie v0.9.1) — totale sceso da 24 a **16 patch**.  
-> **Nota v0.9.5**: aggiunte regole NIS2 per nuovi endpoint — totale **17 patch**.
+> **Nota v0.9.5**: aggiunte regole NIS2 per nuovi endpoint — totale **17 patch**.  
+> **Nota tasks/calendar/automation (2026-05)**: logging NIS2 per task AI, calendar e automazioni pianificate; trigger-aware `execute_automation()`; 128 test; bugfix ordinamento `_extract_object_ref` — totale **19 patch**.
 
 ---
 
@@ -43,7 +44,7 @@ Nuove metriche e filtri nella dashboard admin Analytics (riscritte per SQLAlchem
 
 ### 📋 NIS2 — Access Logging Middleware
 
-Implementa un middleware di access log conforme alla direttiva NIS2 per la registrazione degli accessi alle API (~150 regole regex, compatibile con v0.9.x).
+Implementa un middleware di access log conforme alla direttiva NIS2 per la registrazione degli accessi alle API (~165 regole regex, compatibile con v0.9.x).
 
 | # | File | Descrizione |
 |---|------|-------------|
@@ -60,12 +61,15 @@ Implementa un middleware di access log conforme alla direttiva NIS2 per la regis
 | 0015 | `feat-nis2-add-NIS2-rules-for-v0.9.x-new-endpoints-au...` | Aggiunge ~20 nuove regole per le superfici introdotte in v0.9.0: Automations (CREATE/UPDATE/RUN/TOGGLE/DELETE), Calendar (CRUD eventi, RSVP), OAuth MCP (`AUTH_OAUTH_AUTHORIZE`, `AUTH_LOGOUT` backchannel), Terminal policy (`CONFIG_TERMINAL_SERVERS_VERIFY`, `CONFIG_TERMINAL_SERVERS_POLICY`). |
 | 0016 | `docs-nis2-update-access_log.py-module-docstring-for-...` | Aggiorna il docstring di `access_log.py`: ~150 regole totali, sezione Compatibility per v0.9.x, categorie CALENDAR_* e nuovi subtype AUTH_*/CONFIG_*. |
 | 0017 | `feat-nis2-update-access-log-for-v0.9.5-fix-signout-P...` | Integrazione v0.9.5: corregge `signout` GET→POST (breaking change v0.9.3); aggiunge `AUTH_LOGOUT` per OAuth session revoke (`DELETE /auths/oauth/sessions/{p}`); aggiunge 13 nuove regole per skills CRUD (`RESOURCE_CREATE/UPDATE/TOGGLE/DELETE_SKILL`, `ACCESS_SKILL_UPDATE`), chat (`CHAT_PIN`, `CHAT_MOVE_FOLDER`, `ACCESS_SHARE_CHAT_UPDATE`), note (`NOTE_PIN`), knowledge (`KNOWLEDGE_FILE_UPDATE`, `KNOWLEDGE_REINDEX`), config retrieval/audio/images (`CONFIG_RETRIEVAL_EMBEDDING`, `CONFIG_RETRIEVAL`, `DATA_RESET_RETRIEVAL_DB/UPLOADS`, `CONFIG_AUDIO`, `CONFIG_IMAGES`). Aggiunge 10 nuovi action type a `_NIS2_SECURITY_ACTIONS` e il pattern `/skills/id/{id}` a `_OBJECT_ID_PATTERNS`. |
+| 0018 | `feat-nis2-add-task-calendar-scheduled-automation-log...` | Estende il logging NIS2 su tre fronti: **(1)** 9 nuove regole per task AI (`CONFIG_TASKS`, `TASK_TITLE_GENERATE`, `TASK_FOLLOWUP_GENERATE`, `TASK_TAGS_GENERATE`, `TASK_IMAGE_PROMPT_GENERATE`, `TASK_QUERY_GENERATE`, `TASK_AUTOCOMPLETE_GENERATE`, `TASK_EMOJI_GENERATE`, `TASK_MOA_GENERATE`) + `RESOURCE_VIEW_AUTOMATION_RUNS`; **(2)** aggiunge `CONFIG_TASKS`, `CALENDAR_DELETE`, `TASK_AUTOMATION_SCHEDULED`, `TASK_AUTOMATION_SCHEDULED_ERROR` a `_NIS2_SECURITY_ACTIONS`; **(3)** introduce `log_scheduled_activity()` — funzione che emette righe di log NIS2-compliant per le automazioni eseguite dallo scheduler (nessun HTTP triggerer); **(4)** `execute_automation()` riceve `trigger: str = "scheduler"` — le chiamate manuali passano `trigger="manual"` (già coperte dal middleware HTTP) mentre quelle schedulate emettono `TASK_AUTOMATION_SCHEDULED` / `TASK_AUTOMATION_SCHEDULED_ERROR`. |
+| 0019 | `test-nis2-add-128-tests-for-NIS2-access-log-middlewa...` | Aggiunge 128 test pytest in `backend/open_webui/test/middleware/test_access_log.py` coprendo: classificazione azioni per tutte le categorie (auth, user, group, config, tasks, automations, calendar, skills, SCIM, pipelines, channels), membership `_NIS2_SECURITY_ACTIONS`, `_extract_object_ref`, `_outcome_from_status`, `log_scheduled_activity` (formato, campi, livello WARNING, meta, durata), `invalidate_user_cache`. **Bugfix contestuale**: i test hanno rilevato un ordinamento errato in `_compile_object_id_patterns()` — i pattern SCIM `/scim/v2/Users/{id}` e `/calendars/events/{id}` venivano intercettati dai pattern generici `/users/{id}$` e `/calendars/{id}` prima di raggiungere quelli specifici. Fix: pattern più specifici spostati in cima alla lista. |
 
 ---
 
 ## Base upstream
 
-Le patch sono generate a partire dal tag upstream open-webui **v0.9.5** (commit `3660bc00f`).
+Le patch sono generate a partire dal tag upstream open-webui **v0.9.5** (commit `3660bc00f`).  
+Ultima rigenerazione: **19 patch** (HEAD `06cfcea54`, 12 maggio 2026).
 
 ```bash
 # Applica tutte le patch su un branch da v0.9.5

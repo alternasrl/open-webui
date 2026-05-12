@@ -1,7 +1,7 @@
 From d57fbb8edd324d69937b581da03178f12b7dc27a Mon Sep 17 00:00:00 2001
 From: Fabio Paracchini <fparacchini@alteanet.it>
 Date: Sun, 15 Feb 2026 01:01:41 +0100
-Subject: [PATCH 06/18] feat: Enhance NIS2 compliance in access logging and
+Subject: [PATCH 06/19] feat: Enhance NIS2 compliance in access logging and
  audit utilities
 
 - Added correlation ID and OIDC claims extraction to AccessLogMiddleware.

@@ -1,7 +1,7 @@
 From a297b8d3f5cbd99cd98881a8c944e27272fe4cdb Mon Sep 17 00:00:00 2001
 From: Fabio Paracchini <fparacchini@alteanet.it>
 Date: Tue, 12 May 2026 11:30:34 +0200
-Subject: [PATCH 17/18] =?UTF-8?q?feat(nis2):=20update=20access=20log=20for?=
+Subject: [PATCH 17/19] =?UTF-8?q?feat(nis2):=20update=20access=20log=20for?=
  =?UTF-8?q?=20v0.9.5=20=E2=80=94=20fix=20signout=20POST,=20add=20skills/re?=
  =?UTF-8?q?trieval/audio/images=20rules?=
 MIME-Version: 1.0
