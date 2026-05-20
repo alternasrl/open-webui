@@ -109,17 +109,22 @@ def upgrade():
             )
         )
 
-        # Create user:*:read grant for backward compat
+        # Create user:*:read grant for backward compat (skip if already exists)
         conn.execute(
-            access_grant_t.insert().values(
-                id=str(uuid.uuid4()),
-                resource_type='shared_chat',
-                resource_id=original_chat_id,
-                principal_type='user',
-                principal_id='*',
-                permission='read',
-                created_at=row.created_at or int(time.time()),
-            )
+            sa.text("""
+                INSERT INTO access_grant (id, resource_type, resource_id, principal_type, principal_id, permission, created_at)
+                VALUES (:id, :resource_type, :resource_id, :principal_type, :principal_id, :permission, :created_at)
+                ON CONFLICT ON CONSTRAINT uq_access_grant_grant DO NOTHING
+            """),
+            {
+                'id': str(uuid.uuid4()),
+                'resource_type': 'shared_chat',
+                'resource_id': original_chat_id,
+                'principal_type': 'user',
+                'principal_id': '*',
+                'permission': 'read',
+                'created_at': row.created_at or int(time.time()),
+            }
         )
 
     # 3. Clean up old phantom rows
