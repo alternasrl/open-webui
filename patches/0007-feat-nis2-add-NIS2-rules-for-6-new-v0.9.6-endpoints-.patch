@@ -1,0 +1,81 @@
+From f187b71e42f92feee895ae8de73d90ed8a7e0fb3 Mon Sep 17 00:00:00 2001
+From: Fabio Paracchini <fparacchini@alteanet.it>
+Date: Thu, 4 Jun 2026 12:40:49 +0200
+Subject: [PATCH 7/8] feat(nis2): add NIS2 rules for 6 new v0.9.6 endpoints
+ (patch 0020)
+
+New rules in _compile_action_rules():
+ FILE_RENAME
+ KNOWLEDGE_FILES_PENDING
+ KNOWLEDGE_SYNC_DIFF
+ KNOWLEDGE_SYNC_CLEANUP
+ USER_ACCESS_PREVIEW
+ GROUP_ACCESS_PREVIEW
+
+Added to _NIS2_SECURITY_ACTIONS:
+- KNOWLEDGE_SYNC_DIFF, KNOWLEDGE_SYNC_CLEANUP (oikb  data integrity)sync
+- GROUP_ACCESS_PREVIEW, USER_ACCESS_PREVIEW (admin identity lookup audit)
+
+Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>
+---
+ backend/open_webui/middleware/access_log.py | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/backend/open_webui/middleware/access_log.py b/backend/open_webui/middleware/access_log.py
+index b079efa0e..e7e80b322 100644
+--- a/backend/open_webui/middleware/access_log.py
++++ b/backend/open_webui/middleware/access_log.py
+@@ -246,6 +246,7 @@ def _compile_action_rules() -> list[tuple[re.Pattern, Optional[str], str]]:
+         (rf"^/api/v1/users/user/info/update$", "POST", "USER_INFO_UPDATE"),
+         (rf"^/api/v1/users/user/status/update$", "POST", "USER_STATUS_UPDATE"),
+         (rf"^/api/v1/users/{_ID}/oauth/sessions$", "GET", "USER_OAUTH_SESSIONS_VIEW"),
++        (rf"^/api/v1/users/{_ID}/preview$", "GET", "USER_ACCESS_PREVIEW"),
+ 
+         # ── Group Management ─────────────────────────────────────────────
+         (rf"^/api/v1/groups/create$", "POST", "GROUP_CREATE"),
+@@ -254,6 +255,7 @@ def _compile_action_rules() -> list[tuple[re.Pattern, Optional[str], str]]:
+         (rf"^/api/v1/groups/id/{_ID}/users/add$", "POST", "GROUP_MEMBER_ADD"),
+         (rf"^/api/v1/groups/id/{_ID}/users/remove$", "POST", "GROUP_MEMBER_REMOVE"),
+         (rf"^/api/v1/groups/id/{_ID}/export$", "GET", "DATA_EXPORT"),
++        (rf"^/api/v1/groups/id/{_ID}/preview$", "GET", "GROUP_ACCESS_PREVIEW"),
+ 
+         # ── System Configuration ─────────────────────────────────────────
+         (rf"^/api/v1/configs/import$", "POST", "CONFIG_IMPORT"),
+@@ -318,6 +320,7 @@ def _compile_action_rules() -> list[tuple[re.Pattern, Optional[str], str]]:
+         (rf"^/api/v1/files/$", "POST", "FILE_UPLOAD"),
+         (rf"^/api/v1/files/all$", "DELETE", "FILE_DELETE_ALL"),
+         (rf"^/api/v1/files/{_ID}$", "DELETE", "FILE_DELETE"),
++        (rf"^/api/v1/files/{_ID}/rename$", "POST", "FILE_RENAME"),
+         (rf"^/api/v1/files/{_ID}/data/content/update$", "POST", "FILE_CONTENT_UPDATE"),
+ 
+         # ── Knowledge Base ───────────────────────────────────────────────
+@@ -330,6 +333,9 @@ def _compile_action_rules() -> list[tuple[re.Pattern, Optional[str], str]]:
+         (rf"^/api/v1/knowledge/{_ID}/file/update$", "POST", "KNOWLEDGE_FILE_UPDATE"),
+         (rf"^/api/v1/knowledge/{_ID}/file/remove$", "POST", "KNOWLEDGE_FILE_REMOVE"),
+         (rf"^/api/v1/knowledge/{_ID}/files/batch/add$", "POST", "KNOWLEDGE_FILE_ADD"),
++        (rf"^/api/v1/knowledge/{_ID}/files/pending$", "GET", "KNOWLEDGE_FILES_PENDING"),
++        (rf"^/api/v1/knowledge/{_ID}/sync/diff$", "POST", "KNOWLEDGE_SYNC_DIFF"),
++        (rf"^/api/v1/knowledge/{_ID}/sync/cleanup$", "POST", "KNOWLEDGE_SYNC_CLEANUP"),
+         (rf"^/api/v1/knowledge/{_ID}/export$", "GET", "DATA_EXPORT"),
+         (rf"^/api/v1/knowledge/metadata/reindex$", "POST", "KNOWLEDGE_REINDEX"),
+         (rf"^/api/v1/knowledge/reindex$", "POST", "KNOWLEDGE_REINDEX"),
+@@ -484,9 +490,11 @@ _NIS2_SECURITY_ACTIONS = frozenset({
+     "AUTH_OAUTH_TOKEN", "AUTH_OIDC_LOGIN",
+     # User management
+     "USER_CREATE", "USER_UPDATE", "USER_DELETE", "USER_PERMISSIONS_DEFAULT",
++    "USER_ACCESS_PREVIEW",
+     # Group management
+     "GROUP_CREATE", "GROUP_UPDATE", "GROUP_DELETE",
+     "GROUP_MEMBER_ADD", "GROUP_MEMBER_REMOVE",
++    "GROUP_ACCESS_PREVIEW",
+     # SCIM 2.0 identity provisioning (IdP → Open WebUI sync)
+     "SCIM_USER_CREATE", "SCIM_USER_UPDATE", "SCIM_USER_PATCH", "SCIM_USER_DELETE",
+     "SCIM_GROUP_CREATE", "SCIM_GROUP_UPDATE", "SCIM_GROUP_PATCH", "SCIM_GROUP_DELETE",
+@@ -507,6 +515,7 @@ _NIS2_SECURITY_ACTIONS = frozenset({
+     # Destructive operations
+     "CHAT_DELETE_ALL", "FILE_DELETE_ALL", "RESOURCE_DELETE_ALL_MODELS",
+     "KNOWLEDGE_DELETE", "KNOWLEDGE_RESET",
++    "KNOWLEDGE_SYNC_DIFF", "KNOWLEDGE_SYNC_CLEANUP",
+     "EVAL_DELETE_ALL_FEEDBACKS", "EVAL_DELETE_FEEDBACKS",
+     "MEMORY_RESET", "MEMORY_DELETE_ALL",
+     "DATA_RESET_RETRIEVAL_DB", "DATA_RESET_RETRIEVAL_UPLOADS",
