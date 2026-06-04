@@ -1,7 +1,8 @@
+import re
+import uuid
 from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass, field
 from enum import Enum
-import re
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -11,7 +12,6 @@ from typing import (
     Optional,
     cast,
 )
-import uuid
 
 import jwt as pyjwt
 from asgiref.typing import (
@@ -20,14 +20,15 @@ from asgiref.typing import (
     ASGIReceiveEvent,
     ASGISendCallable,
     ASGISendEvent,
+)
+from asgiref.typing import (
     Scope as ASGIScope,
 )
 from loguru import logger
-from starlette.requests import Request
-
-from open_webui.env import AUDIT_LOG_LEVEL, ENABLE_AUDIT_GET_REQUESTS, AUDIT_INCLUDED_PATHS, MAX_BODY_LOG_SIZE
-from open_webui.utils.auth import get_current_user, get_http_authorization_cred
+from open_webui.env import AUDIT_INCLUDED_PATHS, AUDIT_LOG_LEVEL, ENABLE_AUDIT_GET_REQUESTS, MAX_BODY_LOG_SIZE
 from open_webui.models.users import UserModel
+from open_webui.utils.auth import get_current_user, get_http_authorization_cred
+from starlette.requests import Request
 
 if TYPE_CHECKING:
     from loguru import Logger
@@ -247,7 +248,6 @@ class AuditLoggingMiddleware:
         ):
             value = request.headers.get(header)
             if value:
-                # X-Forwarded-For can be comma-separated; first entry is the real client
                 return value.split(",")[0].strip()
 
         return request.client.host if request.client else None
@@ -265,20 +265,16 @@ class AuditLoggingMiddleware:
         """
         tokens_to_try = []
 
-        # Priority 1: OIDC ID token cookie (set by OAuth flow)
         oauth_id_token = request.cookies.get("oauth_id_token")
         if oauth_id_token:
             tokens_to_try.append(oauth_id_token)
 
-        # Priority 2: Authorization Bearer token
         auth_header = request.headers.get("Authorization")
         if auth_header and auth_header.startswith("Bearer "):
             bearer_token = auth_header[len("Bearer "):]
-            # Skip API keys
             if not bearer_token.startswith("sk-"):
                 tokens_to_try.append(bearer_token)
 
-        # Priority 3: Session token cookie
         session_token = request.cookies.get("token")
         if session_token:
             tokens_to_try.append(session_token)
@@ -291,10 +287,7 @@ class AuditLoggingMiddleware:
         return None
 
     def _decode_jwt_claims(self, token: str) -> Optional[dict[str, Any]]:
-        """
-        Decode a JWT token without signature verification to extract
-        NIS2-relevant OIDC claims.
-        """
+        """Decode a JWT token without signature verification to extract NIS2-relevant OIDC claims."""
         try:
             decoded = pyjwt.decode(
                 token,
@@ -315,10 +308,8 @@ class AuditLoggingMiddleware:
                 ),
             )
 
-            # Only return if we have at least one meaningful claim
             claims_dict = asdict(claims)
             if any(v is not None for v in claims_dict.values()):
-                # Filter out None values for cleaner logs
                 return {k: v for k, v in claims_dict.items() if v is not None}
 
         except pyjwt.exceptions.DecodeError:

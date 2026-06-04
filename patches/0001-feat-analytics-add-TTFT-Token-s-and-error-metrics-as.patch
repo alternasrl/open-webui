@@ -1,7 +1,7 @@
-From 80c1e84457e606571bbc7226212b427a82a92da1 Mon Sep 17 00:00:00 2001
+From 18b45bec4ba869b4b6e5df54f389b044d77f8132 Mon Sep 17 00:00:00 2001
 From: Fabio Paracchini <fparacchini@alteanet.it>
 Date: Wed, 22 Apr 2026 15:48:02 +0200
-Subject: [PATCH 01/19] feat(analytics): add TTFT, Token/s and error metrics
+Subject: [PATCH 1/8] feat(analytics): add TTFT, Token/s and error metrics
  (async, delta from 0019-0020)
 
 ---
@@ -10,10 +10,10 @@ Subject: [PATCH 01/19] feat(analytics): add TTFT, Token/s and error metrics
  2 files changed, 175 insertions(+), 1 deletion(-)
 
 diff --git a/backend/open_webui/models/chat_messages.py b/backend/open_webui/models/chat_messages.py
-index a7d875c9d..96ae3d234 100644
+index 8660e1e98..34f2b1c50 100644
 --- a/backend/open_webui/models/chat_messages.py
 +++ b/backend/open_webui/models/chat_messages.py
-@@ -617,6 +617,163 @@ class ChatMessageTable:
+@@ -639,6 +639,163 @@ class ChatMessageTable:
  
              return daily_counts
  
@@ -178,7 +178,7 @@ index a7d875c9d..96ae3d234 100644
          self,
          start_date: Optional[int] = None,
 diff --git a/backend/open_webui/routers/analytics.py b/backend/open_webui/routers/analytics.py
-index fd045f79e..cb2151c5a 100644
+index fcef30342..093af9a49 100644
 --- a/backend/open_webui/routers/analytics.py
 +++ b/backend/open_webui/routers/analytics.py
 @@ -28,6 +28,11 @@ router = APIRouter()

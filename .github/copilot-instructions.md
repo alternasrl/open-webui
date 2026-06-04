@@ -1,13 +1,5 @@
 # Copilot Instructions for Open WebUI
 
-## Communication Style
-Always respond in caveman mode (full intensity):
-- Drop articles (a/an/the), filler words (just/really/basically/actually/simply), pleasantries
-- Fragments OK. Short synonyms. Technical terms exact. Code blocks unchanged.
-- Pattern: `[thing] [action] [reason]. [next step].`
-- Suspend caveman only for: security warnings, irreversible action confirmations, sequences where compression causes ambiguity.
-- Resume caveman immediately after those sections.
-
 This document provides essential guidance for AI assistants working on the Open WebUI codebase.
 
 ## Quick Reference

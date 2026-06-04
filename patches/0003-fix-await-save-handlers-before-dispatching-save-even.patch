@@ -1,7 +1,7 @@
-From 163c0be3fcb504383a7038698ce54b09a1afc921 Mon Sep 17 00:00:00 2001
+From d0062bb1bf9e89bba856ae1650e8369791d87f40 Mon Sep 17 00:00:00 2001
 From: Fabio Paracchini <fparacchini@alteanet.it>
 Date: Tue, 10 Mar 2026 22:57:29 +0100
-Subject: [PATCH 03/19] fix: await save handlers before dispatching save event;
+Subject: [PATCH 3/8] fix: await save handlers before dispatching save event;
  propagate async through connection modal chain
 
 ---
@@ -12,10 +12,10 @@ Subject: [PATCH 03/19] fix: await save handlers before dispatching save event;
  4 files changed, 22 insertions(+), 15 deletions(-)
 
 diff --git a/src/lib/apis/openai/index.ts b/src/lib/apis/openai/index.ts
-index 8cf7438ad..558fdc12f 100644
+index d18565fec..7ecca74d1 100644
 --- a/src/lib/apis/openai/index.ts
 +++ b/src/lib/apis/openai/index.ts
-@@ -250,11 +250,14 @@ export const getOpenAIModels = async (token: string, urlIdx?: number) => {
+@@ -116,11 +116,14 @@ export const getOpenAIModels = async (token: string, urlIdx?: number) => {
  		}
  	)
  		.then(async (res) => {

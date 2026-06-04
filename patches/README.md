@@ -8,8 +8,92 @@ git am patches/*.patch
 ```
 
 > **Nota v0.9.2**: rimossi tutti i workaround Azure WAF (ex 0003-0008/0010-0012 nella serie v0.9.1) — totale sceso da 24 a **16 patch**.  
-> **Nota v0.9.5**: aggiunte regole NIS2 per nuovi endpoint — totale **17 patch**.  
-> **Nota tasks/calendar/automation (2026-05)**: logging NIS2 per task AI, calendar e automazioni pianificate; trigger-aware `execute_automation()`; 128 test; bugfix ordinamento `_extract_object_ref` — totale **19 patch**.
+> **Nota v0.9.5**: aggiunte regole NIS2 per nuovi endpoint — totale **19 patch**.  
+> **Nota v0.9.6 (2026-06-04)**: aggiornamento a upstream v0.9.6 (`1a97751e3`). Patch 0004 (path validation) **rimossa** — fix equivalente incluso in v0.9.6 upstream (commit `b0fa4384e`). Patch precedenti 0005-0019 consolidate in 0004-0007. Aggiunta patch 0007 con 6 nuove regole NIS2 per endpoint v0.9.6. Totale: **8 patch** (incluso bump versione).
+
+---
+
+## Gruppi funzionali
+
+### 📊 Analytics
+
+Nuove metriche e filtri nella dashboard admin Analytics (riscritte per SQLAlchemy 2.0 async).
+
+| # | File | Descrizione |
+|---|------|-------------|
+| 0001 | `feat-analytics-add-TTFT-Token-s-and-error-metrics-as...` | Nuove metriche aggregate async: **TTFT** (Time To First Token), **Token/s** (throughput), **Error rate**. Aggiunge `get_performance_metrics_by_model` e `get_performance_metrics` al modello `ChatMessage` (SQLAlchemy 2.0 AsyncSession). Espone i campi `avg_ttft_ms`, `avg_tokens_per_second`, `error_requests`, `total_requests`, `error_rate` via `analytics.py`. |
+| 0002 | `feat-analytics-add-TTFT-error-UI-1h-filter-cross-fil...` | Frontend: colonne TTFT/Token/s/Error nella tabella Model Usage, filtro periodo "1h", cross-filter interattivo per modello/utente. Parametri `userId` e `modelId` aggiunti alle API call frontend. |
+
+---
+
+### 🔧 Fix Frontend
+
+| # | File | Descrizione |
+|---|------|-------------|
+| 0003 | `fix-await-save-handlers-before-dispatching-save-even...` | Fix async nel frontend: `await` sui save handler (`updateOpenAIHandler`, `updateOllamaHandler`) prima di fare dispatch dell'evento `save`. Handlers ritornano `true/false` per consentire la propagazione condizionale. Propagato lungo la catena dei connection modals (`OllamaConnection.svelte`, `OpenAIConnection.svelte`). |
+
+---
+
+### 🔒 Sicurezza — Path Validation
+
+> **Patch 0004 path-validation rimossa in v0.9.6.** La correzione path traversal per `main.py` è inclusa upstream (commit `b0fa4384e`). La sanitizzazione estensione in `audio.py` potrà essere reintrodotta come patch separata se necessario.
+
+---
+
+### 📋 NIS2 — Access Logging Middleware
+
+Implementa un middleware di access log conforme alla direttiva NIS2 per la registrazione degli accessi alle API (~165+ regole regex, compatibile con v0.9.6).
+
+| # | File | Descrizione |
+|---|------|-------------|
+| 0004 | `feat-custom-access-log-NIS2-compliant...` | Introduce `access_log.py` (middleware NIS2), `.github/copilot-instructions.md` (caveman mode + dev guidelines), `main.py` (registrazione middleware). |
+| 0005 | `feat-Enhance-NIS2-compliance-in-access-logging-and-a...` | Aggiunge campi NIS2 estesi all'`AuditLogEntry`: `correlation_id` (da header X-Request-ID / X-Azure-Ref) e `oidc_claims` (dal JWT). Aggiunge `OIDCClaims` dataclass, `docker-compose.yaml` env vars NIS2. |
+| 0006 | `feat-apply-patches-0007-NIS2-access_log-full-impl-oa...` | Implementazione completa NIS2: cache thread-safe user context (TTL 300s, maxsize 2048), 165+ action rules con regex, `_NIS2_SECURITY_ACTIONS` frozenset, OIDC claims extraction (response Set-Cookie + request.state fallback), `log_scheduled_activity()`, `execute_automation()` trigger-aware, 128 test pytest. Include anche patch oauth.py: `invalidate_user_cache` (0008), `oidc_raw_id_token` per login falliti (0013). |
+| 0007 | `feat-nis2-add-NIS2-rules-for-6-new-v0.9.6-endpoints-...` | Nuove regole NIS2 per i 6 endpoint introdotti in v0.9.6: `FILE_RENAME`, `KNOWLEDGE_FILES_PENDING`, `KNOWLEDGE_SYNC_DIFF`, `KNOWLEDGE_SYNC_CLEANUP`, `USER_ACCESS_PREVIEW`, `GROUP_ACCESS_PREVIEW`. I tipi di azione sync e preview aggiunti a `_NIS2_SECURITY_ACTIONS`. |
+
+---
+
+## Base upstream
+
+Le patch sono generate a partire dal tag upstream open-webui **v0.9.6** (commit `1a97751e3`).  
+Ultima rigenerazione: **8 patch** (HEAD `1213ec137`, 4 giugno 2026).
+
+```bash
+# Applica tutte le patch su un branch da v0.9.6
+git checkout -b my-branch v0.9.6
+git am patches/*.patch
+
+# Per la prossima integrazione upstream
+git checkout -b integration-vX.Y.Z vX.Y.Z
+git am patches/*.patch
+# risolvi conflitti, poi rigenera:
+git format-patch vX.Y.Z..HEAD --no-signature --output-directory patches/ -- ':!patches/'
+```
+
+### CVE risolte in v0.9.6 (automaticamente con il merge)
+
+| CVE | Descrizione | Fix |
+|-----|-------------|-----|
+| CVE-2026-48710 | BadHost — Host header injection in `auth.py` | `request.scope["path"]` invece di `request.url.path` (commit `66126f386`) |
+| — | Path traversal sibling-prefix in `serve_cache_file` | `os.path.abspath` + `os.sep` boundary check (commit `b0fa4384e`) |
+| — | SSRF multiple (redirect, webhook, URL parser, OAuth profile picture, Playwright) | Fix applicativi in v0.9.6 |
+| — | XSS (Mermaid, SVG upload, model profile image, iframe CSP) | Fix applicativi in v0.9.6 |
+| — | IDOR (prompt history, cross-user file, RAG collection access) | Fix applicativi in v0.9.6 |
+
+### Patch rimosse rispetto alla serie v0.9.1
+
+| Ex # (v0.9.1) | Motivo rimozione |
+|----------------|-----------------|
+| 0003 `fix-enhance-error-handling` | Workaround Azure WAF — error handling HTML 502/503 |
+| 0004 `fix-handle-non-JSON-error` | Workaround Azure WAF — non-JSON error parse |
+| 0005 `fix-azure-verify-fallback` | Workaround Azure WAF — fallback `model_ids` |
+| 0007 `fix-mask-API-keys` | Workaround Azure WAF — mask keys in GET responses |
+| 0008 `fix-wrap-JSON-config-Base64` | Workaround Azure WAF — Base64 retrieval config |
+| 0010 `fix-route-OpenAI-config` | Workaround Azure WAF — alias endpoint `/api/v1/configs/openai` |
+| 0011 `fix-mask-OpenAI-API-keys-configs` | Workaround Azure WAF — mask keys alias endpoint |
+| 0012 `fix-Base64-encode-OpenAI-config` | Workaround Azure WAF — Base64 payload OpenAI config |
+| 0004 `fix-enhance-path-validation` (v0.9.5) | Path traversal fix incluso in upstream v0.9.6 (commit `b0fa4384e`) |
+
 
 ---
 

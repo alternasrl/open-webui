@@ -1,7 +1,7 @@
-From a554693e184dd4fdf6ccd0129e3b19ad359bc9d2 Mon Sep 17 00:00:00 2001
+From c4a60f8d52fa9693d9aa4439c8e70156a7f2c4b2 Mon Sep 17 00:00:00 2001
 From: Fabio Paracchini <fparacchini@alteanet.it>
 Date: Wed, 22 Apr 2026 15:50:41 +0200
-Subject: [PATCH 02/19] feat(analytics): add TTFT/error UI + 1h filter +
+Subject: [PATCH 2/8] feat(analytics): add TTFT/error UI + 1h filter +
  cross-filter params (frontend delta 0018-0020)
 
 ---
