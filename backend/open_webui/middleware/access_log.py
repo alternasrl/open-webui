@@ -1,21 +1,915 @@
 """
-Custom Access Logging Middleware per Open WebUI
-Soluzione che FUNZIONA - bypassa completamente il logging di Uvicorn
+Custom Access Logging Middleware — Open WebUI
+================================================================
+NIS2-compliant access log middleware (EU Directive 2022/2555).
+Bypasses Uvicorn's built-in access logging entirely to produce a
+structured, security-enriched log line for every HTTP request.
+
+Overview
+--------
+The middleware intercepts every inbound request, extracts identity
+and context from JWT cookies / OIDC tokens / DB lookups, classifies
+the action as one of ~165 NIS2-relevant types, then emits a single
+pipe-delimited log line to stdout.  Security-relevant actions are
+logged at WARNING level so SIEM systems can filter on severity.
+
+Key features:
+  • User identity resolved via JWT cookie → DB (email, role).
+  • OIDC subject (``sub``) and MFA status (``amr``/``acr``)
+    extracted from server-side OAuth sessions (id_token).
+  • ~165 regex rules classify every API route into a semantic
+    action type (AUTH_LOGIN, GROUP_MEMBER_ADD, CONFIG_IMPORT, …).
+  • Failed authentication attempts auto-detected (status ≥ 400
+    on AUTH_LOGIN* → AUTH_LOGIN_FAIL with nis2=Y).
+  • Target object (type + id) extracted from URL path for
+    audit trail completeness.
+  • Thread-safe LRU cache (2 048 entries, 5 min TTL) avoids
+    repeated DB hits; short TTL (10 s) for entries missing
+    OIDC claims (login race window).
+
+Compatibility
+-------------
+Targets Open WebUI v0.9.x+.  New API surfaces added in v0.9.0–v0.9.5 and
+covered by this middleware:
+
+  • ``/api/v1/automations/*``        — Automation CRUD + run (code exec)
+  • ``/api/v1/calendars/*``          — Calendar & event management
+  • ``/oauth/clients/{id}/authorize`` — MCP OAuth 2.1 authorization flow
+  • ``/oauth/backchannel-logout``     — IdP-initiated back-channel logout
+  • ``/api/v1/configs/terminal_servers/verify``  — Terminal server verify
+  • ``/api/v1/configs/terminal_servers/policy``  — Terminal execution policy
+  • ``/api/v1/configs/oauth/clients/register``   — Dynamic OAuth client reg.
+  • ``/api/v1/skills/*``             — Skills CRUD (v0.9.x, code execution risk)
+  • ``POST /api/v1/auths/signout``   — signout is POST since v0.9.3 (was GET)
+  • ``DELETE /api/v1/auths/oauth/sessions/{p}`` — OAuth session revoke (v0.9.3)
+  • ``/api/v1/retrieval/config/update`` + ``/embedding/update`` — retrieval config
+  • ``/api/v1/audio/config/update``, ``/api/v1/images/config/update`` — media config
+
+Azure WAF / Front Door Integration
+-----------------------------------
+When deployed behind Azure WAF, Application Gateway, or Front Door
+the middleware extracts the real client IP from the following headers
+(in priority order):
+
+  1. ``X-Azure-ClientIP``           — Azure Front Door / AppGW
+  2. ``X-Original-Forwarded-For``   — original before WAF rewrite
+  3. ``X-Forwarded-For``            — standard reverse-proxy
+  4. ``X-Real-IP``                  — nginx-style
+  5. ``request.client.host``        — direct ASGI fallback
+
+The correlation ID is picked up from:
+  • ``X-Request-ID``       — generic / Azure API Management
+  • ``X-Correlation-ID``   — ManageEngine ADSSPM
+  • ``X-Azure-Ref``        — Azure Front Door unique reference
+
+ManageEngine Log360 SIEM Integration
+-------------------------------------
+Each log field maps to a CEF / syslog field that Log360 can parse
+and index automatically:
+
+  +-----------------+---------------------------+------------------------------------+
+  | Log field       | CEF / Log360 field        | Purpose                            |
+  +=================+===========================+====================================+
+  | email           | duser / suser             | User identity                      |
+  | session_id      | cs3                       | Session tracking (UEBA)            |
+  | correlation_id  | externalId                | Cross-system event correlation     |
+  | oidc_sub        | cs9                       | Federated identity (OIDC subject)  |
+  | mfa             | cs8                       | MFA method (Art.21.2.j)            |
+  | role            | spriv                     | Privilege level (escalation det.)  |
+  | action          | act                       | Semantic action type               |
+  | outcome         | outcome                   | success/failure (brute-force det.) |
+  | nis2            | cs10                      | NIS2 relevance flag (Y/N)          |
+  | object          | cs4 (id) + cs5 (type)     | Target resource for audit trail    |
+  | ua              | requestClientApplication  | User-Agent (UEBA anomaly det.)     |
+  | client IP       | src                       | Source IP address                  |
+  | HTTP method+path| request                   | Request URL                        |
+  | status code     | cs6                       | HTTP response status               |
+  | time            | cs7                       | Response latency (anomaly det.)    |
+  +-----------------+---------------------------+------------------------------------+
+
+Log360 UEBA uses ``outcome`` for brute-force scoring, ``spriv``
+for privilege-escalation detection, and ``requestClientApplication``
+for device-fingerprint anomalies.
+
+Log format example
+------------------
+::
+
+  2026-02-15 16:50:00 | WARNING  | email=admin@co.com | session_id=a1b2c3d4 |
+  correlation_id=azure-ref-xyz | oidc_sub=sub123 | mfa=pwd,otp | role=admin |
+  action=GROUP_MEMBER_ADD | outcome=success | nis2=Y | object=group:g-456 |
+  ua=Mozilla/5.0 … | 10.0.0.1 - "POST /api/v1/groups/id/g-456/users/add" 200 |
+  time=0.045s
+
+NIS2 Action Categories
+-----------------------
+  AUTH_*       — Authentication & session lifecycle
+                 AUTH_OIDC_LOGIN         — OIDC/OAuth2 callback (success=302, fail=4xx → _FAIL)
+                 AUTH_OAUTH_AUTHORIZE    — MCP OAuth 2.1 authorization initiation (v0.9.x)
+  USER_*       — User account management
+  GROUP_*      — Group & membership management
+  CONFIG_*     — System configuration changes
+                 CONFIG_OAUTH_CLIENT           — Dynamic OAuth client registration (v0.9.x)
+                 CONFIG_TERMINAL_SERVERS_VERIFY — Terminal server connectivity check (v0.9.x)
+                 CONFIG_TERMINAL_SERVERS_POLICY — Terminal execution policy update (v0.9.x)
+  ACCESS_*     — Access control & sharing changes
+  CHAT_*       — Chat lifecycle (create, delete, archive)
+  NOTE_*       — Note management
+  FILE_*       — File upload/deletion
+  KNOWLEDGE_*  — Knowledge base management
+  RESOURCE_*   — Tools, functions, models, prompts, automations management
+                 RESOURCE_RUN_AUTOMATION  — Server-side automation execution (v0.9.x, NIS2=Y)
+  CHANNEL_*    — Channel & webhook management
+  CALENDAR_*   — Calendar & event management (v0.9.x)
+  SCIM_*       — SCIM 2.0 identity provisioning (IdP sync)
+  PIPELINE_*   — Pipeline upload/management (code execution)
+  MEMORY_*     — User memory management
+  FOLDER_*     — Folder organisation
+  EVAL_*       — Evaluation & feedback management
+  DATA_*       — Data export/import
+  READ         — Read-only operations (lower severity)
 """
 
+import hashlib
+import json
+import re
 import uuid
 import logging
+import sys
 import time
-from typing import Callable
+import threading
+from typing import Callable, Optional, NamedTuple
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
+try:
+    import jwt as pyjwt
+except ImportError:
+    pyjwt = None
+
+# ---------------------------------------------------------------------------
+# Thread-safe cache: resolve user UUID → (email, oidc_sub, mfa_status) via DB.
+#
+# Design notes for 2 000 users / 200 concurrent:
+#   - maxsize=2048 covers the full user base → ~100 % hit rate after warm-up.
+#   - TTL of 300 s ensures changes propagate within 5 min.
+#   - threading.Lock protects the dict; released during I/O.
+#   - DB lookups are synchronous but fast (PK index, single row).
+#     They run inside BaseHTTPMiddleware's worker thread, so the
+#     asyncio event loop is NOT blocked.
+# ---------------------------------------------------------------------------
+
+_log = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# NIS2 Action Type Classification
+#
+# Maps API routes (path + method) to security-relevant action types.
+# NIS2 (Directive 2022/2555) requires logging of security-relevant events
+# including: authentication, authorization changes, configuration changes,
+# access control modifications, data sharing, and administrative actions.
+#
+# Categories:
+#   AUTH_*       — Authentication & session lifecycle
+#   USER_*       — User account management
+#   GROUP_*      — Group & membership management
+#   CONFIG_*     — System configuration changes
+#   ACCESS_*     — Access control & sharing changes
+#   CHAT_*       — Chat lifecycle (create, delete, archive)
+#   NOTE_*       — Note management
+#   FILE_*       — File upload/deletion
+#   KNOWLEDGE_*  — Knowledge base management
+#   RESOURCE_*   — Tools, functions, models, prompts management
+#   CHANNEL_*    — Channel & webhook management
+#   SCIM_*       — SCIM 2.0 identity provisioning (IdP sync)
+#   PIPELINE_*   — Pipeline upload/management (code execution)
+#   MEMORY_*     — User memory management
+#   FOLDER_*     — Folder organisation
+#   EVAL_*       — Evaluation & feedback management
+#   DATA_*       — Data export/import
+#   CALENDAR_*   — Calendar & event management (v0.9.x)
+#   READ         — Read-only operations (lower severity)
+# ---------------------------------------------------------------------------
+
+# Compiled regex rules: list of (compiled_pattern, http_method_or_None, action_type)
+# Order matters: first match wins. More specific patterns come first.
+# method=None means "any HTTP method".
+_NIS2_ACTION_RULES: list[tuple[re.Pattern, Optional[str], str]] = []
+
+
+def _compile_action_rules() -> list[tuple[re.Pattern, Optional[str], str]]:
+    """Build and compile the NIS2 action classification rules.
+
+    Called once at module load time. Each rule is:
+        (path_regex, http_method | None, action_type)
+
+    Compatible with Open WebUI v0.9.x+.  Covers ~165 route patterns
+    across all registered API routers including the v0.9.x additions:
+    automations, calendars, skills, MCP OAuth 2.1 authorize/callback,
+    IdP back-channel logout, and retrieval/audio/images config.
+    """
+    _ID = r"[^/]+"  # matches a path segment (UUID, slug, etc.)
+
+    raw_rules: list[tuple[str, Optional[str], str]] = [
+        # ── Authentication & Session ─────────────────────────────────────
+        (rf"^/api/v1/auths/signin$", "POST", "AUTH_LOGIN"),
+        (rf"^/api/v1/auths/ldap$", "POST", "AUTH_LOGIN_LDAP"),
+        (rf"^/api/v1/auths/signup$", "POST", "AUTH_SIGNUP"),
+        (rf"^/api/v1/auths/signout$", "POST", "AUTH_LOGOUT"),
+        (rf"^/api/v1/auths/update/password$", "POST", "AUTH_PASSWORD_CHANGE"),
+        (rf"^/api/v1/auths/update/timezone$", "POST", "AUTH_TIMEZONE_UPDATE"),
+        (rf"^/api/v1/auths/update/profile$", "POST", "AUTH_PROFILE_UPDATE"),
+        (rf"^/api/v1/auths/api_key$", "POST", "AUTH_API_KEY_CREATE"),
+        (rf"^/api/v1/auths/api_key$", "DELETE", "AUTH_API_KEY_DELETE"),
+        (rf"^/api/v1/auths/oauth/{_ID}/token/exchange$", "POST", "AUTH_OAUTH_TOKEN"),
+        (rf"^/api/v1/auths/oauth/sessions/", "DELETE", "AUTH_LOGOUT"),          # OAuth session revoke (v0.9.3)
+        # OIDC/OAuth2 callback endpoints (GET — browser redirect after IdP authentication)
+        (rf"^/oauth/{_ID}/login/callback$", "GET", "AUTH_OIDC_LOGIN"),
+        (rf"^/oauth/{_ID}/callback$", "GET", "AUTH_OIDC_LOGIN"),         # legacy path
+        (rf"^/oauth/clients/{_ID}/callback$", "GET", "AUTH_OIDC_LOGIN"),  # dynamic OAuth clients
+        # MCP OAuth 2.1: client initiates authorization flow
+        (rf"^/oauth/clients/{_ID}/authorize$", "GET", "AUTH_OAUTH_AUTHORIZE"),
+        # IdP-initiated back-channel logout (RFC 7009 / OpenID Connect Back-Channel Logout)
+        (rf"^/oauth/backchannel-logout$", "POST", "AUTH_LOGOUT"),
+        (rf"^/api/v1/auths/admin/config/ldap/server$", "POST", "CONFIG_LDAP_SERVER"),
+        (rf"^/api/v1/auths/admin/config/ldap$", "POST", "CONFIG_LDAP"),
+        (rf"^/api/v1/auths/admin/config$", "POST", "CONFIG_AUTH"),
+        (rf"^/api/v1/auths/add$", "POST", "USER_CREATE"),
+
+        # ── User Management ──────────────────────────────────────────────
+        (rf"^/api/v1/users/default/permissions$", "POST", "USER_PERMISSIONS_DEFAULT"),
+        (rf"^/api/v1/users/{_ID}/update$", "POST", "USER_UPDATE"),
+        (rf"^/api/v1/users/{_ID}$", "DELETE", "USER_DELETE"),
+        (rf"^/api/v1/users/user/settings/update$", "POST", "USER_SETTINGS_UPDATE"),
+        (rf"^/api/v1/users/user/info/update$", "POST", "USER_INFO_UPDATE"),
+        (rf"^/api/v1/users/user/status/update$", "POST", "USER_STATUS_UPDATE"),
+        (rf"^/api/v1/users/{_ID}/oauth/sessions$", "GET", "USER_OAUTH_SESSIONS_VIEW"),
+
+        # ── Group Management ─────────────────────────────────────────────
+        (rf"^/api/v1/groups/create$", "POST", "GROUP_CREATE"),
+        (rf"^/api/v1/groups/id/{_ID}/update$", "POST", "GROUP_UPDATE"),
+        (rf"^/api/v1/groups/id/{_ID}/delete$", "DELETE", "GROUP_DELETE"),
+        (rf"^/api/v1/groups/id/{_ID}/users/add$", "POST", "GROUP_MEMBER_ADD"),
+        (rf"^/api/v1/groups/id/{_ID}/users/remove$", "POST", "GROUP_MEMBER_REMOVE"),
+        (rf"^/api/v1/groups/id/{_ID}/export$", "GET", "DATA_EXPORT"),
+
+        # ── System Configuration ─────────────────────────────────────────
+        (rf"^/api/v1/configs/import$", "POST", "CONFIG_IMPORT"),
+        (rf"^/api/v1/configs/export$", "GET", "CONFIG_EXPORT"),
+        (rf"^/api/v1/configs/connections$", "POST", "CONFIG_CONNECTIONS"),
+        (rf"^/api/v1/configs/oauth/clients/register$", "POST", "CONFIG_OAUTH_CLIENT"),
+        (rf"^/api/v1/configs/tool_servers/verify$", "POST", "CONFIG_TOOL_SERVERS_VERIFY"),
+        (rf"^/api/v1/configs/tool_servers$", "POST", "CONFIG_TOOL_SERVERS"),
+        (rf"^/api/v1/configs/terminal_servers/verify$", "POST", "CONFIG_TERMINAL_SERVERS_VERIFY"),
+        (rf"^/api/v1/configs/terminal_servers/policy$", "POST", "CONFIG_TERMINAL_SERVERS_POLICY"),
+        (rf"^/api/v1/configs/terminal_servers$", "POST", "CONFIG_TERMINAL_SERVERS"),
+        (rf"^/api/v1/configs/code_execution$", "POST", "CONFIG_CODE_EXECUTION"),
+        (rf"^/api/v1/configs/models$", "POST", "CONFIG_MODELS"),
+        (rf"^/api/v1/configs/suggestions$", "POST", "CONFIG_SUGGESTIONS"),
+        (rf"^/api/v1/configs/banners$", "POST", "CONFIG_BANNERS"),
+
+        # ── Retrieval / Audio / Images configuration (admin-only) ────────
+        (rf"^/api/v1/retrieval/embedding/update$", "POST", "CONFIG_RETRIEVAL_EMBEDDING"),
+        (rf"^/api/v1/retrieval/config/update$", "POST", "CONFIG_RETRIEVAL"),
+        (rf"^/api/v1/retrieval/reset/db$", "POST", "DATA_RESET_RETRIEVAL_DB"),
+        (rf"^/api/v1/retrieval/reset/uploads$", "POST", "DATA_RESET_RETRIEVAL_UPLOADS"),
+        (rf"^/api/v1/audio/config/update$", "POST", "CONFIG_AUDIO"),
+        (rf"^/api/v1/images/config/update$", "POST", "CONFIG_IMAGES"),
+
+        # ── Tasks (AI generation + config) ──────────────────────────────
+        (rf"^/api/v1/tasks/config/update$", "POST", "CONFIG_TASKS"),
+        (rf"^/api/v1/tasks/title/completions$", "POST", "TASK_TITLE_GENERATE"),
+        (rf"^/api/v1/tasks/follow_up/completions$", "POST", "TASK_FOLLOWUP_GENERATE"),
+        (rf"^/api/v1/tasks/tags/completions$", "POST", "TASK_TAGS_GENERATE"),
+        (rf"^/api/v1/tasks/image_prompt/completions$", "POST", "TASK_IMAGE_PROMPT_GENERATE"),
+        (rf"^/api/v1/tasks/queries/completions$", "POST", "TASK_QUERY_GENERATE"),
+        (rf"^/api/v1/tasks/auto/completions$", "POST", "TASK_AUTOCOMPLETE_GENERATE"),
+        (rf"^/api/v1/tasks/emoji/completions$", "POST", "TASK_EMOJI_GENERATE"),
+        (rf"^/api/v1/tasks/moa/completions$", "POST", "TASK_MOA_GENERATE"),
+
+        # ── Chat Operations ──────────────────────────────────────────────
+        (rf"^/api/v1/chats/new$", "POST", "CHAT_CREATE"),
+        (rf"^/api/v1/chats/import$", "POST", "DATA_IMPORT"),
+        (rf"^/api/v1/chats/{_ID}/share$", "POST", "ACCESS_SHARE_CHAT"),
+        (rf"^/api/v1/chats/{_ID}/share$", "DELETE", "ACCESS_UNSHARE_CHAT"),
+        (rf"^/api/v1/chats/{_ID}/archive$", "POST", "CHAT_ARCHIVE"),
+        (rf"^/api/v1/chats/archive/all$", "POST", "CHAT_ARCHIVE_ALL"),
+        (rf"^/api/v1/chats/unarchive/all$", "POST", "CHAT_UNARCHIVE_ALL"),
+        (rf"^/api/v1/chats/{_ID}/clone$", "POST", "CHAT_CLONE"),
+        (rf"^/api/v1/chats/{_ID}/clone/shared$", "POST", "CHAT_CLONE_SHARED"),
+        (rf"^/api/v1/chats/{_ID}$", "DELETE", "CHAT_DELETE"),
+        (rf"^/api/v1/chats/$", "DELETE", "CHAT_DELETE_ALL"),
+        (rf"^/api/v1/chats/{_ID}$", "POST", "CHAT_UPDATE"),
+        (rf"^/api/v1/chats/shared/{_ID}/access/update$", "POST", "ACCESS_SHARE_CHAT_UPDATE"),
+        (rf"^/api/v1/chats/{_ID}/pin$", "POST", "CHAT_PIN"),
+        (rf"^/api/v1/chats/{_ID}/folder$", "POST", "CHAT_MOVE_FOLDER"),
+        (rf"^/api/v1/chats/stats/export", "GET", "DATA_EXPORT"),
+
+        # ── Note Operations ──────────────────────────────────────────────
+        (rf"^/api/v1/notes/create$", "POST", "NOTE_CREATE"),
+        (rf"^/api/v1/notes/{_ID}/update$", "POST", "NOTE_UPDATE"),
+        (rf"^/api/v1/notes/{_ID}/access/update$", "POST", "ACCESS_NOTE_UPDATE"),
+        (rf"^/api/v1/notes/{_ID}/pin$", "POST", "NOTE_PIN"),
+        (rf"^/api/v1/notes/{_ID}/delete$", "DELETE", "NOTE_DELETE"),
+
+        # ── File Operations ──────────────────────────────────────────────
+        (rf"^/api/v1/files/$", "POST", "FILE_UPLOAD"),
+        (rf"^/api/v1/files/all$", "DELETE", "FILE_DELETE_ALL"),
+        (rf"^/api/v1/files/{_ID}$", "DELETE", "FILE_DELETE"),
+        (rf"^/api/v1/files/{_ID}/data/content/update$", "POST", "FILE_CONTENT_UPDATE"),
+
+        # ── Knowledge Base ───────────────────────────────────────────────
+        (rf"^/api/v1/knowledge/create$", "POST", "KNOWLEDGE_CREATE"),
+        (rf"^/api/v1/knowledge/{_ID}/update$", "POST", "KNOWLEDGE_UPDATE"),
+        (rf"^/api/v1/knowledge/{_ID}/access/update$", "POST", "ACCESS_KNOWLEDGE_UPDATE"),
+        (rf"^/api/v1/knowledge/{_ID}/delete$", "DELETE", "KNOWLEDGE_DELETE"),
+        (rf"^/api/v1/knowledge/{_ID}/reset$", "POST", "KNOWLEDGE_RESET"),
+        (rf"^/api/v1/knowledge/{_ID}/file/add$", "POST", "KNOWLEDGE_FILE_ADD"),
+        (rf"^/api/v1/knowledge/{_ID}/file/update$", "POST", "KNOWLEDGE_FILE_UPDATE"),
+        (rf"^/api/v1/knowledge/{_ID}/file/remove$", "POST", "KNOWLEDGE_FILE_REMOVE"),
+        (rf"^/api/v1/knowledge/{_ID}/files/batch/add$", "POST", "KNOWLEDGE_FILE_ADD"),
+        (rf"^/api/v1/knowledge/{_ID}/export$", "GET", "DATA_EXPORT"),
+        (rf"^/api/v1/knowledge/metadata/reindex$", "POST", "KNOWLEDGE_REINDEX"),
+        (rf"^/api/v1/knowledge/reindex$", "POST", "KNOWLEDGE_REINDEX"),
+
+        # ── Functions (Plugins) ──────────────────────────────────────────
+        (rf"^/api/v1/functions/create$", "POST", "RESOURCE_CREATE_FUNCTION"),
+        (rf"^/api/v1/functions/id/{_ID}/update$", "POST", "RESOURCE_UPDATE_FUNCTION"),
+        (rf"^/api/v1/functions/id/{_ID}/delete$", "DELETE", "RESOURCE_DELETE_FUNCTION"),
+        (rf"^/api/v1/functions/id/{_ID}/toggle$", "POST", "RESOURCE_TOGGLE_FUNCTION"),
+        (rf"^/api/v1/functions/id/{_ID}/toggle/global$", "POST", "RESOURCE_TOGGLE_FUNCTION_GLOBAL"),
+        (rf"^/api/v1/functions/id/{_ID}/valves/update$", "POST", "RESOURCE_UPDATE_FUNCTION_VALVES"),
+        (rf"^/api/v1/functions/sync$", "POST", "RESOURCE_SYNC_FUNCTIONS"),
+        (rf"^/api/v1/functions/export$", "GET", "DATA_EXPORT"),
+        (rf"^/api/v1/functions/load/url$", "POST", "RESOURCE_LOAD_FUNCTION_URL"),
+
+        # ── Tools ────────────────────────────────────────────────────────
+        (rf"^/api/v1/tools/create$", "POST", "RESOURCE_CREATE_TOOL"),
+        (rf"^/api/v1/tools/id/{_ID}/update$", "POST", "RESOURCE_UPDATE_TOOL"),
+        (rf"^/api/v1/tools/id/{_ID}/access/update$", "POST", "ACCESS_TOOL_UPDATE"),
+        (rf"^/api/v1/tools/id/{_ID}/delete$", "DELETE", "RESOURCE_DELETE_TOOL"),
+        (rf"^/api/v1/tools/id/{_ID}/valves/update$", "POST", "RESOURCE_UPDATE_TOOL_VALVES"),
+        (rf"^/api/v1/tools/export$", "GET", "DATA_EXPORT"),
+        (rf"^/api/v1/tools/load/url$", "POST", "RESOURCE_LOAD_TOOL_URL"),
+
+        # ── Models ───────────────────────────────────────────────────────
+        (rf"^/api/v1/models/create$", "POST", "RESOURCE_CREATE_MODEL"),
+        (rf"^/api/v1/models/model/update$", "POST", "RESOURCE_UPDATE_MODEL"),
+        (rf"^/api/v1/models/model/access/update$", "POST", "ACCESS_MODEL_UPDATE"),
+        (rf"^/api/v1/models/model/delete$", "POST", "RESOURCE_DELETE_MODEL"),
+        (rf"^/api/v1/models/model/toggle$", "POST", "RESOURCE_TOGGLE_MODEL"),
+        (rf"^/api/v1/models/delete/all$", "DELETE", "RESOURCE_DELETE_ALL_MODELS"),
+        (rf"^/api/v1/models/import$", "POST", "DATA_IMPORT"),
+        (rf"^/api/v1/models/export$", "GET", "DATA_EXPORT"),
+        (rf"^/api/v1/models/sync$", "POST", "RESOURCE_SYNC_MODELS"),
+
+        # ── SCIM 2.0 Identity Provisioning ─────────────────────────────
+        # SCIM endpoints are used by IdPs (ManageEngine ADSSPM, Entra ID,
+        # Okta, etc.) to sync users and groups. All write operations are
+        # NIS2-critical because they modify the identity store.
+        (rf"^/api/v1/scim/v2/Users$", "POST", "SCIM_USER_CREATE"),
+        (rf"^/api/v1/scim/v2/Users/{_ID}$", "PUT", "SCIM_USER_UPDATE"),
+        (rf"^/api/v1/scim/v2/Users/{_ID}$", "PATCH", "SCIM_USER_PATCH"),
+        (rf"^/api/v1/scim/v2/Users/{_ID}$", "DELETE", "SCIM_USER_DELETE"),
+        (rf"^/api/v1/scim/v2/Groups$", "POST", "SCIM_GROUP_CREATE"),
+        (rf"^/api/v1/scim/v2/Groups/{_ID}$", "PUT", "SCIM_GROUP_UPDATE"),
+        (rf"^/api/v1/scim/v2/Groups/{_ID}$", "PATCH", "SCIM_GROUP_PATCH"),
+        (rf"^/api/v1/scim/v2/Groups/{_ID}$", "DELETE", "SCIM_GROUP_DELETE"),
+
+        # ── Pipelines (code execution risk) ──────────────────────────────
+        (rf"^/api/v1/pipelines/upload$", "POST", "PIPELINE_UPLOAD"),
+        (rf"^/api/v1/pipelines/add$", "POST", "PIPELINE_ADD"),
+        (rf"^/api/v1/pipelines/delete$", "DELETE", "PIPELINE_DELETE"),
+        (rf"^/api/v1/pipelines/{_ID}/valves/update$", "POST", "PIPELINE_VALVES_UPDATE"),
+
+        # ── Skills (code execution risk — same profile as Functions/Tools) ─
+        (rf"^/api/v1/skills/create$", "POST", "RESOURCE_CREATE_SKILL"),
+        (rf"^/api/v1/skills/id/{_ID}/update$", "POST", "RESOURCE_UPDATE_SKILL"),
+        (rf"^/api/v1/skills/id/{_ID}/access/update$", "POST", "ACCESS_SKILL_UPDATE"),
+        (rf"^/api/v1/skills/id/{_ID}/toggle$", "POST", "RESOURCE_TOGGLE_SKILL"),
+        (rf"^/api/v1/skills/id/{_ID}/delete$", "DELETE", "RESOURCE_DELETE_SKILL"),
+        (rf"^/api/v1/skills/export$", "GET", "DATA_EXPORT"),
+
+        # ── Prompts ──────────────────────────────────────────────────────
+        (rf"^/api/v1/prompts/create$", "POST", "RESOURCE_CREATE_PROMPT"),
+        (rf"^/api/v1/prompts/id/{_ID}/update$", "POST", "RESOURCE_UPDATE_PROMPT"),
+        (rf"^/api/v1/prompts/id/{_ID}/update/meta$", "POST", "RESOURCE_UPDATE_PROMPT_META"),
+        (rf"^/api/v1/prompts/id/{_ID}/update/version$", "POST", "RESOURCE_UPDATE_PROMPT_VERSION"),
+        (rf"^/api/v1/prompts/id/{_ID}/access/update$", "POST", "ACCESS_PROMPT_UPDATE"),
+        (rf"^/api/v1/prompts/id/{_ID}/toggle$", "POST", "RESOURCE_TOGGLE_PROMPT"),
+        (rf"^/api/v1/prompts/id/{_ID}/delete$", "DELETE", "RESOURCE_DELETE_PROMPT"),
+        (rf"^/api/v1/prompts/id/{_ID}/history/{_ID}$", "DELETE", "RESOURCE_DELETE_PROMPT_HISTORY"),
+
+        # ── Evaluations & Feedback ───────────────────────────────────────
+        (rf"^/api/v1/evaluations/config$", "POST", "CONFIG_EVALUATIONS"),
+        (rf"^/api/v1/evaluations/feedbacks/all$", "DELETE", "EVAL_DELETE_ALL_FEEDBACKS"),
+        (rf"^/api/v1/evaluations/feedbacks$", "DELETE", "EVAL_DELETE_FEEDBACKS"),
+        (rf"^/api/v1/evaluations/feedback/{_ID}$", "POST", "EVAL_UPDATE_FEEDBACK"),
+        (rf"^/api/v1/evaluations/feedback/{_ID}$", "DELETE", "EVAL_DELETE_FEEDBACK"),
+        (rf"^/api/v1/evaluations/feedback$", "POST", "EVAL_CREATE_FEEDBACK"),
+
+        # ── Memories ─────────────────────────────────────────────────────
+        (rf"^/api/v1/memories/add$", "POST", "MEMORY_ADD"),
+        (rf"^/api/v1/memories/reset$", "POST", "MEMORY_RESET"),
+        (rf"^/api/v1/memories/delete/user$", "DELETE", "MEMORY_DELETE_ALL"),
+        (rf"^/api/v1/memories/{_ID}/update$", "POST", "MEMORY_UPDATE"),
+        (rf"^/api/v1/memories/{_ID}$", "DELETE", "MEMORY_DELETE"),
+
+        # ── Folders ──────────────────────────────────────────────────────
+        (rf"^/api/v1/folders/$", "POST", "FOLDER_CREATE"),
+        (rf"^/api/v1/folders/{_ID}/update$", "POST", "FOLDER_UPDATE"),
+        (rf"^/api/v1/folders/{_ID}/update/parent$", "POST", "FOLDER_MOVE"),
+        (rf"^/api/v1/folders/{_ID}$", "DELETE", "FOLDER_DELETE"),
+
+        # ── Automations (code execution risk) ───────────────────────────
+        # RESOURCE_RUN_AUTOMATION is NIS2-critical: it triggers server-side
+        # code/workflow execution and can modify system state.
+        (rf"^/api/v1/automations/create$", "POST", "RESOURCE_CREATE_AUTOMATION"),
+        (rf"^/api/v1/automations/{_ID}/update$", "POST", "RESOURCE_UPDATE_AUTOMATION"),
+        (rf"^/api/v1/automations/{_ID}/run$", "POST", "RESOURCE_RUN_AUTOMATION"),
+        (rf"^/api/v1/automations/{_ID}/toggle$", "POST", "RESOURCE_TOGGLE_AUTOMATION"),
+        (rf"^/api/v1/automations/{_ID}/delete$", "DELETE", "RESOURCE_DELETE_AUTOMATION"),
+        (rf"^/api/v1/automations/{_ID}/runs$", "GET", "RESOURCE_VIEW_AUTOMATION_RUNS"),
+
+        # ── Calendar ─────────────────────────────────────────────────────
+        (rf"^/api/v1/calendars/events/create$", "POST", "CALENDAR_EVENT_CREATE"),
+        (rf"^/api/v1/calendars/events/{_ID}/update$", "POST", "CALENDAR_EVENT_UPDATE"),
+        (rf"^/api/v1/calendars/events/{_ID}/rsvp$", "POST", "CALENDAR_EVENT_RSVP"),
+        (rf"^/api/v1/calendars/events/{_ID}/delete$", "DELETE", "CALENDAR_EVENT_DELETE"),
+        (rf"^/api/v1/calendars/create$", "POST", "CALENDAR_CREATE"),
+        (rf"^/api/v1/calendars/{_ID}/update$", "POST", "CALENDAR_UPDATE"),
+        (rf"^/api/v1/calendars/{_ID}/default$", "POST", "CALENDAR_SET_DEFAULT"),
+        (rf"^/api/v1/calendars/{_ID}/delete$", "DELETE", "CALENDAR_DELETE"),
+
+        # ── Channels ─────────────────────────────────────────────────────
+        (rf"^/api/v1/channels/create$", "POST", "CHANNEL_CREATE"),
+        (rf"^/api/v1/channels/{_ID}/update$", "POST", "CHANNEL_UPDATE"),
+        (rf"^/api/v1/channels/{_ID}/delete$", "DELETE", "CHANNEL_DELETE"),
+        (rf"^/api/v1/channels/{_ID}/update/members/add$", "POST", "CHANNEL_MEMBER_ADD"),
+        (rf"^/api/v1/channels/{_ID}/update/members/remove$", "POST", "CHANNEL_MEMBER_REMOVE"),
+        (rf"^/api/v1/channels/{_ID}/webhooks/create$", "POST", "CHANNEL_WEBHOOK_CREATE"),
+        (rf"^/api/v1/channels/{_ID}/webhooks/{_ID}/update$", "POST", "CHANNEL_WEBHOOK_UPDATE"),
+        (rf"^/api/v1/channels/{_ID}/webhooks/{_ID}/delete$", "DELETE", "CHANNEL_WEBHOOK_DELETE"),
+        (rf"^/api/v1/channels/{_ID}/messages/post$", "POST", "CHANNEL_MESSAGE_POST"),
+        (rf"^/api/v1/channels/{_ID}/messages/{_ID}/delete$", "DELETE", "CHANNEL_MESSAGE_DELETE"),
+        (rf"^/api/v1/channels/{_ID}/messages/{_ID}/update$", "POST", "CHANNEL_MESSAGE_UPDATE"),
+
+        # ── Catch-all for remaining API write operations ─────────────────
+        # These catch any unmatched POST/PUT/PATCH/DELETE on /api/ paths
+        (rf"^/api/", "DELETE", "DELETE_OTHER"),
+        (rf"^/api/", "POST", "WRITE_OTHER"),
+        (rf"^/api/", "PUT", "WRITE_OTHER"),
+        (rf"^/api/", "PATCH", "WRITE_OTHER"),
+
+        # ── Read operations ──────────────────────────────────────────────
+        (rf"^/api/", "GET", "READ"),
+    ]
+
+    return [
+        (re.compile(pattern, re.IGNORECASE), method, action)
+        for pattern, method, action in raw_rules
+    ]
+
+
+_NIS2_ACTION_RULES = _compile_action_rules()
+
+# Pre-computed set of action types that are NIS2 security-relevant
+# (higher severity — should be flagged in SIEM/audit tools)
+_NIS2_SECURITY_ACTIONS = frozenset({
+    # Authentication
+    "AUTH_LOGIN", "AUTH_LOGIN_LDAP", "AUTH_SIGNUP", "AUTH_LOGOUT",
+    "AUTH_PASSWORD_CHANGE", "AUTH_API_KEY_CREATE", "AUTH_API_KEY_DELETE",
+    "AUTH_OAUTH_TOKEN", "AUTH_OIDC_LOGIN",
+    # User management
+    "USER_CREATE", "USER_UPDATE", "USER_DELETE", "USER_PERMISSIONS_DEFAULT",
+    # Group management
+    "GROUP_CREATE", "GROUP_UPDATE", "GROUP_DELETE",
+    "GROUP_MEMBER_ADD", "GROUP_MEMBER_REMOVE",
+    # SCIM 2.0 identity provisioning (IdP → Open WebUI sync)
+    "SCIM_USER_CREATE", "SCIM_USER_UPDATE", "SCIM_USER_PATCH", "SCIM_USER_DELETE",
+    "SCIM_GROUP_CREATE", "SCIM_GROUP_UPDATE", "SCIM_GROUP_PATCH", "SCIM_GROUP_DELETE",
+    # Configuration
+    "CONFIG_AUTH", "CONFIG_LDAP", "CONFIG_LDAP_SERVER",
+    "CONFIG_CONNECTIONS", "CONFIG_OAUTH_CLIENT", "CONFIG_TOOL_SERVERS",
+    "CONFIG_TOOL_SERVERS_VERIFY", "CONFIG_TERMINAL_SERVERS",
+    "CONFIG_CODE_EXECUTION", "CONFIG_MODELS", "CONFIG_IMPORT",
+    "CONFIG_EVALUATIONS", "CONFIG_RETRIEVAL", "CONFIG_RETRIEVAL_EMBEDDING",
+    "CONFIG_AUDIO", "CONFIG_IMAGES", "CONFIG_TASKS",
+    # Access control / sharing
+    "ACCESS_SHARE_CHAT", "ACCESS_UNSHARE_CHAT", "ACCESS_SHARE_CHAT_UPDATE",
+    "ACCESS_NOTE_UPDATE", "ACCESS_KNOWLEDGE_UPDATE",
+    "ACCESS_TOOL_UPDATE", "ACCESS_MODEL_UPDATE",
+    "ACCESS_PROMPT_UPDATE", "ACCESS_SKILL_UPDATE",
+    # Data export (potential data exfiltration)
+    "CONFIG_EXPORT", "DATA_EXPORT", "DATA_IMPORT",
+    # Destructive operations
+    "CHAT_DELETE_ALL", "FILE_DELETE_ALL", "RESOURCE_DELETE_ALL_MODELS",
+    "KNOWLEDGE_DELETE", "KNOWLEDGE_RESET",
+    "EVAL_DELETE_ALL_FEEDBACKS", "EVAL_DELETE_FEEDBACKS",
+    "MEMORY_RESET", "MEMORY_DELETE_ALL",
+    "DATA_RESET_RETRIEVAL_DB", "DATA_RESET_RETRIEVAL_UPLOADS",
+    # Resource management with security implications
+    "RESOURCE_CREATE_FUNCTION", "RESOURCE_UPDATE_FUNCTION",
+    "RESOURCE_DELETE_FUNCTION", "RESOURCE_LOAD_FUNCTION_URL",
+    "RESOURCE_CREATE_TOOL", "RESOURCE_UPDATE_TOOL",
+    "RESOURCE_DELETE_TOOL", "RESOURCE_LOAD_TOOL_URL",
+    # Skills (code execution — same risk profile as functions/tools)
+    "RESOURCE_CREATE_SKILL", "RESOURCE_UPDATE_SKILL", "RESOURCE_DELETE_SKILL",
+    # Automations (server-side code/workflow execution)
+    "RESOURCE_CREATE_AUTOMATION", "RESOURCE_UPDATE_AUTOMATION",
+    "RESOURCE_DELETE_AUTOMATION", "RESOURCE_RUN_AUTOMATION",
+    # OAuth MCP authorization flow
+    "AUTH_OAUTH_AUTHORIZE",
+    # Terminal server policy (execution environment config)
+    "CONFIG_TERMINAL_SERVERS_VERIFY", "CONFIG_TERMINAL_SERVERS_POLICY",
+    # Pipelines (code execution — upload/manage executable code)
+    "PIPELINE_UPLOAD", "PIPELINE_ADD", "PIPELINE_DELETE", "PIPELINE_VALVES_UPDATE",
+    # Channel/webhook (external integrations)
+    "CHANNEL_WEBHOOK_CREATE", "CHANNEL_WEBHOOK_UPDATE", "CHANNEL_WEBHOOK_DELETE",
+    # Calendar (destructive)
+    "CALENDAR_DELETE",
+    # Scheduled automations (background code execution — no HTTP triggerer)
+    "TASK_AUTOMATION_SCHEDULED", "TASK_AUTOMATION_SCHEDULED_ERROR",
+})
+
+
+def _classify_action(method: str, path: str) -> tuple[str, bool]:
+    """Classify an HTTP request into a NIS2 action type.
+
+    Returns (action_type, is_security_relevant).
+    """
+    for pattern, rule_method, action in _NIS2_ACTION_RULES:
+        if rule_method is not None and method.upper() != rule_method:
+            continue
+        if pattern.search(path):
+            return action, action in _NIS2_SECURITY_ACTIONS
+    return "-", False
+
+
+# ---------------------------------------------------------------------------
+# Object reference extraction  (Log360 cs4 / cs5)
+#
+# Extracts the target resource type and ID from URL paths so that Log360
+# can build a complete audit trail ("which group was modified?", "which
+# file was deleted?").
+# ---------------------------------------------------------------------------
+
+_OBJECT_ID_PATTERNS: list[tuple[re.Pattern, str]] = []
+
+
+def _compile_object_id_patterns() -> list[tuple[re.Pattern, str]]:
+    """Compile patterns for extracting object identifiers from URL paths.
+
+    Returns list of (compiled_regex, object_type) where the regex has a
+    named group 'oid' that captures the object ID.
+    """
+    _ID = r"(?P<oid>[^/]+)"
+
+    raw = [
+        # More-specific patterns MUST come before generic ones to avoid false
+        # matches.  E.g. /scim/v2/Users/{id} must precede /users/{id}$,
+        # and /calendars/events/{id} must precede /calendars/{id}.
+        (rf"/scim/v2/Users/{_ID}", "scim_user"),
+        (rf"/scim/v2/Groups/{_ID}", "scim_group"),
+        (rf"/calendars/events/{_ID}", "calendar_event"),
+        (rf"/evaluations/feedback/{_ID}", "feedback"),
+        (rf"/groups/id/{_ID}", "group"),
+        (rf"/users/{_ID}/update", "user"),
+        (rf"/users/{_ID}$", "user"),
+        (rf"/chats/{_ID}", "chat"),
+        (rf"/notes/{_ID}", "note"),
+        (rf"/files/{_ID}", "file"),
+        (rf"/knowledge/{_ID}", "knowledge"),
+        (rf"/functions/id/{_ID}", "function"),
+        (rf"/tools/id/{_ID}", "tool"),
+        (rf"/skills/id/{_ID}", "skill"),
+        (rf"/channels/{_ID}", "channel"),
+        (rf"/pipelines/{_ID}", "pipeline"),
+        (rf"/prompts/id/{_ID}", "prompt"),
+        (rf"/memories/{_ID}", "memory"),
+        (rf"/folders/{_ID}", "folder"),
+        (rf"/automations/{_ID}", "automation"),
+        (rf"/calendars/{_ID}", "calendar"),
+    ]
+
+    return [(re.compile(p, re.IGNORECASE), obj_type) for p, obj_type in raw]
+
+
+_OBJECT_ID_PATTERNS = _compile_object_id_patterns()
+
+
+def _extract_object_ref(path: str) -> tuple[Optional[str], Optional[str]]:
+    """Extract object_type and object_id from a URL path.
+
+    Returns (object_type, object_id) or (None, None) if no match.
+    Used to populate ManageEngine Log360 ``cs4`` (target resource)
+    and ``cs5`` (resource type).
+    """
+    for pattern, obj_type in _OBJECT_ID_PATTERNS:
+        m = pattern.search(path)
+        if m:
+            return obj_type, m.group("oid")
+    return None, None
+
+
+# ---------------------------------------------------------------------------
+# Outcome mapping  (Log360 outcome / CEF outcome)
+# ---------------------------------------------------------------------------
+
+def _outcome_from_status(status_code: int) -> str:
+    """Map HTTP status code to Log360-compatible outcome string.
+
+    ManageEngine Log360 UEBA uses outcome for brute-force detection,
+    anomaly scoring, and compliance reporting.
+
+    Values align with CEF outcome field:
+      success  — 2xx responses
+      failure  — 4xx client errors (auth failures, forbidden, not found)
+      error    — 5xx server errors (infrastructure issues)
+      redirect — 3xx redirects (OAuth flows, etc.)
+    """
+    if 200 <= status_code < 300:
+        return "success"
+    elif 300 <= status_code < 400:
+        return "redirect"
+    elif 400 <= status_code < 500:
+        return "failure"
+    else:
+        return "error"
+
+
+class _UserContext(NamedTuple):
+    email: Optional[str]
+    oidc_sub: Optional[str]
+    mfa_status: Optional[str]
+    role: Optional[str]
+
+
+_CACHE_MAX = 2048
+_CACHE_TTL = 300  # seconds
+_CACHE_TTL_SHORT = 10  # seconds — for entries missing OIDC claims (login race)
+_cache_lock = threading.Lock()
+_cache_data: dict[str, tuple[_UserContext, float]] = {}  # user_id → (ctx, ts)
+
+
+def invalidate_user_cache(user_id: str) -> None:
+    """Invalidate cached user context so the next request re-fetches from DB.
+
+    Call this after saving/updating an OAuth session for the user.
+    """
+    with _cache_lock:
+        _cache_data.pop(user_id, None)
+    _log.debug("Invalidated access-log cache for user %s", user_id)
+
+
+# ---------------------------------------------------------------------------
+# NIS2-required claims inside the OIDC id_token.
+#   sub  — unique subject identifier (mandatory per OIDC Core)
+#   amr  — Authentication Methods References (RFC 8176) — proves MFA
+#   acr  — Authentication Context Class Reference — alternative MFA signal
+# If any of these are absent the access-log cannot be fully NIS2-compliant.
+# ---------------------------------------------------------------------------
+_NIS2_REQUIRED_CLAIMS = ("sub",)
+_NIS2_MFA_CLAIMS = ("amr", "acr")  # at least one must be present
+
+
+def _decode_id_token_claims(id_token_raw: str, user_hint: str = "") -> tuple[Optional[str], Optional[str]]:
+    """Decode an OIDC id_token (without signature verification) and extract sub + MFA claims.
+
+    Emits a WARNING when claims required for NIS2 compliance are missing.
+    *user_hint* is included in warnings to ease troubleshooting.
+    """
+    if not id_token_raw or pyjwt is None:
+        return None, None
+    try:
+        decoded = pyjwt.decode(
+            id_token_raw,
+            options={"verify_signature": False},
+            algorithms=["RS256", "HS256", "ES256", "PS256", "EdDSA"],
+        )
+
+        # --- NIS2 compliance check ----------------------------------------
+        missing_required = [c for c in _NIS2_REQUIRED_CLAIMS if not decoded.get(c)]
+        has_mfa_claim = any(decoded.get(c) for c in _NIS2_MFA_CLAIMS)
+
+        if missing_required:
+            _log.warning(
+                "NIS2-COMPLIANCE: OIDC id_token for user [%s] is missing required claim(s): %s. "
+                "The IdP (ManageEngine ADSSPM) must be configured to include these claims. "
+                "Available claims: %s",
+                user_hint or "unknown",
+                ", ".join(missing_required),
+                ", ".join(sorted(decoded.keys())),
+            )
+        if not has_mfa_claim:
+            _log.warning(
+                "NIS2-COMPLIANCE: OIDC id_token for user [%s] contains neither 'amr' nor 'acr'. "
+                "MFA status cannot be determined. "
+                "Configure the IdP (ManageEngine ADSSPM) to emit 'amr' (RFC 8176) or 'acr' claims. "
+                "Available claims: %s",
+                user_hint or "unknown",
+                ", ".join(sorted(decoded.keys())),
+            )
+        # ------------------------------------------------------------------
+
+        oidc_sub = decoded.get("sub")
+        amr = decoded.get("amr")
+        acr = decoded.get("acr")
+        if amr:
+            mfa_status = ",".join(amr) if isinstance(amr, list) else str(amr)
+        elif acr:
+            mfa_status = str(acr)
+        else:
+            mfa_status = None
+        return oidc_sub, mfa_status
+    except Exception as e:
+        _log.warning(
+            "NIS2-COMPLIANCE: Failed to decode OIDC id_token for user [%s]: %s. "
+            "OIDC sub and MFA status will be unavailable.",
+            user_hint or "unknown", e,
+        )
+        return None, None
+
+
+# Claims to redact from the full token dump to avoid leaking opaque tokens
+# into the log (they add noise and may trigger WAF/DLP rules).
+_REDACTED_CLAIMS = frozenset({"at_hash", "c_hash", "nonce", "jti"})
+
+
+def _decode_full_id_token(id_token_raw: str) -> Optional[dict]:
+    """Decode all claims from an OIDC id_token for debug/audit logging.
+
+    Returns the full decoded payload dict, with a small set of opaque
+    internal claims redacted.  Returns None on any error.
+    """
+    if not id_token_raw or pyjwt is None:
+        return None
+    try:
+        decoded = pyjwt.decode(
+            id_token_raw,
+            options={"verify_signature": False},
+            algorithms=["RS256", "HS256", "ES256", "PS256", "EdDSA"],
+        )
+        return {k: v for k, v in decoded.items() if k not in _REDACTED_CLAIMS}
+    except Exception:
+        return None
+
+
+def _resolve_user_context(user_id: str) -> _UserContext:
+    """Resolve email, oidc_sub, mfa_status and role for a user UUID.
+
+    Uses the Users table for email + role and the OAuthSessions table for
+    OIDC claims (decrypts the stored id_token server-side — no dependency
+    on browser cookies).
+    Thread-safe, bounded cache with TTL.
+    """
+    now = time.monotonic()
+
+    with _cache_lock:
+        entry = _cache_data.get(user_id)
+        if entry is not None:
+            ctx, ts = entry
+            # Use shorter TTL when OIDC claims are missing (login race condition)
+            ttl = _CACHE_TTL if ctx.oidc_sub else _CACHE_TTL_SHORT
+            if now - ts < ttl:
+                return ctx
+            del _cache_data[user_id]
+
+    # --- DB lookups (outside lock) ---
+    email: Optional[str] = None
+    oidc_sub: Optional[str] = None
+    mfa_status: Optional[str] = None
+    role: Optional[str] = None
+
+    # 1) Resolve email + role from Users table (Log360: duser + spriv)
+    try:
+        from open_webui.models.users import Users
+        user = Users.get_user_by_id(user_id)
+        if user:
+            if getattr(user, "email", None):
+                email = str(user.email)
+            if getattr(user, "role", None):
+                role = str(user.role)
+    except Exception:
+        pass
+
+    # 2) Resolve OIDC claims from server-side OAuth session
+    try:
+        from open_webui.models.oauth_sessions import OAuthSessions
+        sessions = OAuthSessions.get_sessions_by_user_id(user_id)
+        if sessions:
+            # Take the most recent session
+            session = sessions[0]
+            token_dict = session.token  # already decrypted by the model
+            if isinstance(token_dict, dict):
+                id_token_raw = token_dict.get("id_token")
+                if id_token_raw and isinstance(id_token_raw, str):
+                    oidc_sub, mfa_status = _decode_id_token_claims(
+                        id_token_raw, user_hint=email or user_id
+                    )
+                else:
+                    _log.warning(
+                        "NIS2-COMPLIANCE: OAuth session for user [%s] does not contain an id_token. "
+                        "The IdP (ManageEngine ADSSPM) token response must include an id_token "
+                        "for NIS2-compliant logging. Token keys present: %s",
+                        email or user_id,
+                        ", ".join(sorted(token_dict.keys())) if token_dict else "(empty)",
+                    )
+                # Fallback: some providers put userinfo directly in the token response
+                if not oidc_sub:
+                    userinfo = token_dict.get("userinfo")
+                    if isinstance(userinfo, dict):
+                        oidc_sub = userinfo.get("sub")
+        else:
+            # User is authenticated but has no OAuth session — local account or API key
+            _log.debug(
+                "No OAuth session found for user %s — OIDC claims unavailable (local auth?)",
+                user_id,
+            )
+    except Exception as e:
+        _log.debug("Failed to resolve OIDC claims from OAuth session for user %s: %s", user_id, e)
+
+    ctx = _UserContext(email=email, oidc_sub=oidc_sub, mfa_status=mfa_status, role=role)
+
+    with _cache_lock:
+        while len(_cache_data) >= _CACHE_MAX:
+            _cache_data.pop(next(iter(_cache_data)))
+        _cache_data[user_id] = (ctx, time.monotonic())
+
+    return ctx
+
+
+def log_scheduled_activity(
+    action: str,
+    user_email: str,
+    user_role: str,
+    object_id: str,
+    object_type: str,
+    status_code: int,
+    duration_s: float,
+    meta: str = None,
+) -> None:
+    """Emit a NIS2-compliant log line for background / scheduled activities.
+
+    Scheduled automations bypass the ASGI middleware stack entirely — they
+    are triggered by the scheduler worker loop, not by an HTTP request.
+    This function writes to the same ``open_webui.access`` logger (same
+    handler, same format) so that SIEM tools see a consistent record.
+
+    All scheduled runs are emitted at WARNING level (nis2=Y) because they
+    represent autonomous server-side code execution with no interactive
+    HTTP triggerer.
+
+    Args:
+        action:      NIS2 action type — TASK_AUTOMATION_SCHEDULED or
+                     TASK_AUTOMATION_SCHEDULED_ERROR.
+        user_email:  Owner's email (automation.user_id resolved to email).
+                     Use "unknown" when the user record cannot be fetched.
+        user_role:   Owner's role ("admin" / "user" / "unknown").
+        object_id:   Automation ID (UUID).
+        object_type: Always "automation" for current callers.
+        status_code: 200 for success, 500 for error.
+        duration_s:  Wall-clock seconds from task start to completion.
+        meta:        Optional pipe-separated key=value pairs, e.g.
+                     "trigger=scheduler|name=Daily Report|chat_id=<uuid>".
+    """
+    logger = logging.getLogger("open_webui.access")
+    outcome = _outcome_from_status(status_code)
+    log_msg = (
+        f"email={user_email} | session_id=scheduler | "
+        f"correlation_id=- | oidc_sub=- | mfa=- | "
+        f"role={user_role} | "
+        f"action={action} | outcome={outcome} | nis2=Y | "
+        f"object={object_type}:{object_id} | "
+        f"ua=scheduler | "
+        f"scheduler - \"SCHEDULER /api/v1/automations/{object_id}/run\" {status_code} | "
+        f"time={duration_s:.3f}s"
+    )
+    if meta:
+        log_msg += f" | meta={meta}"
+    logger.warning(log_msg)
+
 
 class AccessLogMiddleware(BaseHTTPMiddleware):
-    """
-    Middleware che logga TUTTE le richieste con user_id e session_id
-    Bypassa completamente il logging di Uvicorn
+    """NIS2-compliant access logging middleware for Open WebUI.
+
+    Logs every HTTP request with identity, action classification, outcome,
+    and target object reference.  Bypasses Uvicorn access logging.
+
+    ManageEngine Log360 SIEM field mapping (CEF):
+      email           → duser       (user identity)
+      session_id      → cs3         (session tracking for UEBA)
+      correlation_id  → externalId  (cross-system event linking)
+      oidc_sub        → cs9         (federated identity)
+      mfa             → cs8         (MFA authentication method)
+      role            → spriv       (privilege level for escalation detection)
+      action          → act         (action performed)
+      outcome         → outcome     (success/failure for brute-force detection)
+      nis2            → cs10        (NIS2 relevance flag)
+      object          → cs4+cs5     (target resource type:id)
+      ua              → requestClientApplication (device fingerprint for UEBA)
     """
     
     def __init__(self, app, logger_name: str = "open_webui.access", exclude_paths: list = None):
@@ -32,8 +926,52 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
         # Genera o recupera session_id
         session_id = self._get_session_id(request)
         
-        # Estrai user_id dall'autenticazione
-        user_id = await self._get_user_id(request)
+        # Estrai user UUID dal JWT, poi risolvi email + OIDC claims dal DB (con cache)
+        user_uuid = self._extract_user_uuid(request)
+        if user_uuid:
+            ctx = _resolve_user_context(user_uuid)
+            user_display = ctx.email or user_uuid
+            oidc_sub = ctx.oidc_sub
+            mfa_status = ctx.mfa_status
+            role = ctx.role
+        else:
+            user_display = "anonymous"
+            role = None
+            # Fast path: try to extract OIDC claims from cookies (pre-login, API keys, etc.)
+            oidc_sub, mfa_status = self._get_oidc_claims_from_cookies(request)
+
+        # NIS2: Extract correlation ID from WAF/ADSSPM
+        correlation_id = self._get_correlation_id(request)
+
+        # NIS2: Classify action type based on HTTP method + path
+        action_type, is_nis2 = _classify_action(request.method, request.url.path)
+
+        # Log360: Extract target object reference from URL path (CEF cs4 + cs5)
+        object_type, object_id = _extract_object_ref(request.url.path)
+
+        # Log360 UEBA: Capture User-Agent for anomaly detection
+        user_agent = request.headers.get("user-agent", "-")
+        # Truncate to avoid log injection; Log360 parses first ~200 chars
+        if len(user_agent) > 200:
+            user_agent = user_agent[:200] + "…"
+        # Sanitise: replace pipe characters to preserve log field delimiters
+        user_agent = user_agent.replace("|", "/")
+
+        # Client info: prefer Azure WAF / proxy headers over direct connection
+        client_host = self._get_client_ip(request)
+        # Only append port if using direct connection (not proxy headers)
+        # Proxy headers like X-Forwarded-For may already include port info
+        _has_proxy_header = any(
+            request.headers.get(h) for h in (
+                "X-Azure-ClientIP", "X-Original-Forwarded-For",
+                "X-Forwarded-For", "X-Real-IP",
+            )
+        )
+        if _has_proxy_header:
+            client_display = client_host
+        else:
+            client_port = request.client.port if request.client else 0
+            client_display = f"{client_host}:{client_port}"
         
         # Timestamp inizio
         start_time = time.time()
@@ -42,12 +980,47 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
         try:
             response = await call_next(request)
             status_code = response.status_code
+
+            # For OIDC callbacks the oauth_id_token cookie is written into the *response*
+            # (not available in the request yet). After call_next we can parse it from the
+            # Set-Cookie response headers so that oidc_sub and mfa are visible in the
+            # AUTH_OIDC_LOGIN log line itself, not only in subsequent requests.
+            oidc_raw_id_token: Optional[str] = None
+            if action_type == "AUTH_OIDC_LOGIN" and not oidc_sub:
+                resp_sub, resp_mfa = self._extract_oidc_from_response_cookies(response)
+                if resp_sub:
+                    oidc_sub = resp_sub
+                    mfa_status = resp_mfa
+                    # grab the raw token from response cookie for full-claims dump
+                    for hdr in response.headers.getlist("set-cookie"):
+                        m = re.search(r'(?:^|;\s*)oauth_id_token=([^;]+)', hdr, re.IGNORECASE)
+                        if m:
+                            oidc_raw_id_token = m.group(1).strip()
+                            break
+                else:
+                    # Failure case: no cookie was issued. oauth.py stores the raw id_token
+                    # in request.state after a successful token exchange so we can still
+                    # log the identity of who failed to authenticate.
+                    raw = getattr(request.state, "oidc_raw_id_token", None)
+                    if raw:
+                        state_sub, state_mfa = _decode_id_token_claims(raw)
+                        if state_sub:
+                            oidc_sub = state_sub
+                            mfa_status = state_mfa
+                        oidc_raw_id_token = raw
+
         except Exception as e:
             # Log anche in caso di eccezione
             process_time = time.time() - start_time
             self.logger.error(
-                f"email={user_id} | session_id={session_id[:8]} | "
-                f"{request.client.host}:{request.client.port} - "
+                f"email={user_display} | session_id={session_id[:8]} | "
+                f"correlation_id={correlation_id or '-'} | "
+                f"oidc_sub={oidc_sub or '-'} | mfa={mfa_status or '-'} | "
+                f"role={role or '-'} | "
+                f"action={action_type} | outcome=error | nis2={'Y' if is_nis2 else 'N'} | "
+                f"object={object_type or '-'}:{object_id or '-'} | "
+                f"ua={user_agent} | "
+                f"{client_display} - "
                 f'"{request.method} {request.url.path}" EXCEPTION - '
                 f"{str(e)[:100]} | time={process_time:.3f}s"
             )
@@ -55,21 +1028,150 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
         
         # Calcola tempo di elaborazione
         process_time = time.time() - start_time
+
+        # Log360-compatible outcome (success/failure/error/redirect)
+        outcome = _outcome_from_status(status_code)
+
+        # Detect failed auth attempts (NIS2 Art.21 — incident detection)
+        # AUTH_OIDC_LOGIN: success = 302 redirect to app; failure = 4xx
+        if action_type in ("AUTH_LOGIN", "AUTH_LOGIN_LDAP", "AUTH_SIGNUP", "AUTH_OIDC_LOGIN") and status_code >= 400:
+            effective_action = f"{action_type}_FAIL"
+            effective_nis2 = True
+        else:
+            effective_action = action_type
+            effective_nis2 = is_nis2
         
-        # Log della richiesta completata con TUTTI i dettagli
-        # Usa solo primi 8 caratteri del session_id per leggibilità
-        self.logger.info(
-            f"email={user_id} | session_id={session_id[:8]} | "
-            f"{request.client.host}:{request.client.port} - "
+        # Log NIS2-compliant con tutti i campi richiesti da Log360 SIEM
+        # Campi: duser, cs3, externalId, cs9, cs8, spriv, act, outcome, cs10,
+        #        cs4+cs5, requestClientApplication, src, request, cs6, cs7
+        log_msg = (
+            f"email={user_display} | session_id={session_id[:8]} | "
+            f"correlation_id={correlation_id or '-'} | "
+            f"oidc_sub={oidc_sub or '-'} | mfa={mfa_status or '-'} | "
+            f"role={role or '-'} | "
+            f"action={effective_action} | outcome={outcome} | nis2={'Y' if effective_nis2 else 'N'} | "
+            f"object={object_type or '-'}:{object_id or '-'} | "
+            f"ua={user_agent} | "
+            f"{client_display} - "
             f'"{request.method} {request.url.path}" {status_code} | '
             f"time={process_time:.3f}s"
         )
+
+        # For OIDC login events append the full decoded token claims for debug/audit.
+        # The raw id_token is decoded here (no signature verification) and the result
+        # is appended as a JSON field so that claim mapping issues are immediately visible.
+        if action_type == "AUTH_OIDC_LOGIN":
+            claims_dict = _decode_full_id_token(oidc_raw_id_token) if oidc_raw_id_token else None
+            log_msg += f" | claims={json.dumps(claims_dict, default=str) if claims_dict else '-'}"
+
+        # Use WARNING level for NIS2 security-relevant actions to aid SIEM/alerting
+        if effective_nis2:
+            self.logger.warning(log_msg)
+        else:
+            self.logger.info(log_msg)
         
         # Aggiungi header alla risposta (opzionale)
         response.headers["X-Session-ID"] = session_id
         
         return response
     
+    def _get_correlation_id(self, request: Request) -> Optional[str]:
+        """Extract correlation ID from WAF/ADSSPM/Azure Front Door."""
+        return (
+            request.headers.get("X-Request-ID")
+            or request.headers.get("X-Correlation-ID")
+            or request.headers.get("X-Azure-Ref")
+            or None
+        )
+
+    def _get_client_ip(self, request: Request) -> str:
+        """
+        Extract real client IP from Azure WAF / reverse proxy headers.
+
+        Priority:
+          1. X-Azure-ClientIP    — Azure Front Door / Application Gateway
+          2. X-Original-Forwarded-For — original before WAF rewrite
+          3. X-Forwarded-For     — standard proxy (first entry = real client)
+          4. X-Real-IP           — nginx-style
+          5. request.client.host — direct ASGI connection (container-internal)
+        """
+        for header in (
+            "X-Azure-ClientIP",
+            "X-Original-Forwarded-For",
+            "X-Forwarded-For",
+            "X-Real-IP",
+        ):
+            value = request.headers.get(header)
+            if value:
+                return value.split(",")[0].strip()
+
+        return request.client.host if request.client else "-"
+
+    def _get_oidc_claims_from_cookies(self, request: Request) -> tuple[Optional[str], Optional[str]]:
+        """
+        Fast path: extract OIDC sub + MFA from cookies without DB access.
+        Used only for unauthenticated requests (no user UUID available).
+        Tries oauth_id_token and Authorization Bearer tokens.
+        """
+        tokens_to_try = []
+
+        oauth_id_token = request.cookies.get("oauth_id_token")
+        if oauth_id_token:
+            tokens_to_try.append(("oauth_id_token cookie", oauth_id_token))
+
+        auth_header = request.headers.get("Authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            bearer = auth_header[len("Bearer "):]
+            if not bearer.startswith("sk-"):
+                tokens_to_try.append(("Bearer token", bearer))
+
+        for source, token_value in tokens_to_try:
+            oidc_sub, mfa_status = _decode_id_token_claims(token_value)
+            if oidc_sub or mfa_status:
+                return oidc_sub, mfa_status
+
+        return None, None
+
+    def _extract_oidc_from_response_cookies(self, response: Response) -> tuple[Optional[str], Optional[str]]:
+        """Extract OIDC sub + MFA from the oauth_id_token Set-Cookie response header.
+
+        Used for OIDC callback requests (AUTH_OIDC_LOGIN) where the id_token cookie
+        is written into the *response*, not available in the incoming request.
+        Parses all Set-Cookie headers looking for oauth_id_token=<JWT>.
+        Returns (None, None) when no matching cookie is found (e.g. failed login
+        where no cookie was issued).
+        """
+        for cookie_header in response.headers.getlist("set-cookie"):
+            m = re.search(r'(?:^|;\s*)oauth_id_token=([^;]+)', cookie_header, re.IGNORECASE)
+            if m:
+                return _decode_id_token_claims(m.group(1).strip())
+        return None, None
+
+    def _extract_user_uuid(self, request: Request) -> Optional[str]:
+        """Extract the user UUID from request.state.user or from the session JWT cookie.
+
+        Returns the UUID string, or None if the user is not authenticated.
+        Does NOT do any DB lookups — that is deferred to _resolve_user_context.
+        """
+        try:
+            # Method 1: request.state.user (set by auth middleware upstream)
+            if hasattr(request.state, "user") and request.state.user:
+                user = request.state.user
+                uid = user.get("id") if isinstance(user, dict) else getattr(user, "id", None)
+                if uid:
+                    return str(uid)
+
+            # Method 2: decode session JWT cookie
+            token = request.cookies.get("token")
+            if token and pyjwt is not None:
+                decoded = pyjwt.decode(token, options={"verify_signature": False})
+                uid = decoded.get("id")
+                if uid:
+                    return str(uid)
+        except Exception:
+            pass
+        return None
+
     def _get_session_id(self, request: Request) -> str:
         """
         Recupera o genera un session_id
@@ -81,12 +1183,8 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
             return session_id
         
         # PRIORITÀ 2: Cookie 'token' (JWT token come session ID)
-        # Il JWT token è più affidabile come identificatore di sessione
-        # perché Open WebUI lo usa per l'autenticazione
         token = request.cookies.get("token")
         if token:
-            # Usa l'hash del token come session_id per privacy
-            import hashlib
             return hashlib.md5(token.encode()).hexdigest()[:16]
         
         # PRIORITÀ 3: Header 'X-Session-ID'
@@ -95,74 +1193,17 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
             return session_id
         
         # PRIORITÀ 4: Combinazione IP + User-Agent come identificatore temporaneo
-        # Questo aiuta a mantenere la stessa session_id per utenti non autenticati
-        # finché usano lo stesso browser dallo stesso IP
         try:
             user_agent = request.headers.get("user-agent", "")
-            client_ip = request.client.host
+            client_ip = request.client.host if request.client else "unknown"
             composite = f"{client_ip}:{user_agent}"
-            import hashlib
             return hashlib.md5(composite.encode()).hexdigest()[:16]
-        except:
+        except Exception:
             pass
         
         # FALLBACK: Genera nuovo UUID
-        # Questo dovrebbe accadere raramente
         return str(uuid.uuid4())[:16]
     
-    async def _get_user_id(self, request: Request) -> str:
-        """Estrae email (o user_id come fallback) dalla richiesta"""
-        try:
-            # Metodo 1: request.state.user (dopo autenticazione)
-            if hasattr(request.state, "user") and request.state.user:
-                user = request.state.user
-                if isinstance(user, dict):
-                    # PRIORITÀ: email > username > id
-                    email = user.get("email")
-                    if email:
-                        return str(email)
-                    username = user.get("username")
-                    if username:
-                        return str(username)
-                    user_id = user.get("id")
-                    if user_id:
-                        return str(user_id)
-                elif hasattr(user, "email"):
-                    return str(user.email)
-                elif hasattr(user, "username"):
-                    return str(user.username)
-                elif hasattr(user, "id"):
-                    return str(user.id)
-            
-            # Metodo 2: JWT token nei cookies - estrai l'email
-            token = request.cookies.get("token")
-            if token:
-                try:
-                    import jwt
-                    decoded = jwt.decode(token, options={"verify_signature": False})
-                    # PRIORITÀ: email > username > sub > user_id > id
-                    email = (
-                        decoded.get("email") or
-                        decoded.get("username") or 
-                        decoded.get("sub") or 
-                        decoded.get("user_id") or
-                        decoded.get("id")
-                    )
-                    if email:
-                        return str(email)
-                except Exception as e:
-                    # Log del token decodificato per debug
-                    import logging
-                    logger = logging.getLogger("open_webui.access")
-                    logger.debug(f"Errore decodifica JWT: {e}")
-        
-        except Exception as e:
-            import logging
-            logger = logging.getLogger("open_webui.access")
-            logger.debug(f"Errore estrazione user: {e}")
-        
-        return "anonymous"
-
 
 def setup_access_logging(app, log_level: str = "INFO", exclude_paths: list = None):
     """
@@ -178,8 +1219,8 @@ def setup_access_logging(app, log_level: str = "INFO", exclude_paths: list = Non
     logger = logging.getLogger("open_webui.access")
     logger.setLevel(getattr(logging, log_level.upper()))
     
-    # Handler per stdout
-    handler = logging.StreamHandler()
+    # Handler per stdout (esplicito sys.stdout per Azure Container Apps console)
+    handler = logging.StreamHandler(sys.stdout)
     handler.setLevel(getattr(logging, log_level.upper()))
     
     # Formato semplice e leggibile
