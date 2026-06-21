@@ -239,6 +239,82 @@ class TokenUsageResponse(BaseModel):
     total_tokens: int
 
 
+class RoutingSummaryEntry(BaseModel):
+    requested_model_id: str
+    selected_model_id: str
+    count: int
+    percentage: float
+
+
+class RoutingEventEntry(BaseModel):
+    message_id: str
+    chat_id: str
+    user_id: Optional[str] = None
+    created_at: int
+    requested_model_id: str
+    selected_model_id: str
+
+
+@router.get('/routing/summary', response_model=list[RoutingSummaryEntry])
+async def get_routing_summary(
+    start_date: Optional[int] = Query(None, description='Start timestamp (epoch)'),
+    end_date: Optional[int] = Query(None, description='End timestamp (epoch)'),
+    group_id: Optional[str] = Query(None, description='Filter by user group ID'),
+    user_id: Optional[str] = Query(None, description='Filter by user ID'),
+    model_selected: Optional[str] = Query(None, description='Filter by selected model ID'),
+    model_requested: Optional[str] = Query(None, description='Filter by requested model ID'),
+    model_mode: str = Query(
+        'or',
+        description="Model filter mode: 'or', 'and', 'selected', or 'requested'",
+    ),
+    user=Depends(get_admin_user),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Get routing pair summary (requested -> selected) with count and percentage."""
+    return await ChatMessages.get_routing_summary(
+        start_date=start_date,
+        end_date=end_date,
+        group_id=group_id,
+        user_id=user_id,
+        model_selected=model_selected,
+        model_requested=model_requested,
+        model_mode=model_mode,
+        db=db,
+    )
+
+
+@router.get('/routing/events', response_model=list[RoutingEventEntry])
+async def get_routing_events(
+    start_date: Optional[int] = Query(None, description='Start timestamp (epoch)'),
+    end_date: Optional[int] = Query(None, description='End timestamp (epoch)'),
+    group_id: Optional[str] = Query(None, description='Filter by user group ID'),
+    user_id: Optional[str] = Query(None, description='Filter by user ID'),
+    model_selected: Optional[str] = Query(None, description='Filter by selected model ID'),
+    model_requested: Optional[str] = Query(None, description='Filter by requested model ID'),
+    model_mode: str = Query(
+        'or',
+        description="Model filter mode: 'or', 'and', 'selected', or 'requested'",
+    ),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=1000),
+    user=Depends(get_admin_user),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Get routing events sourced from assistant message usage metadata."""
+    return await ChatMessages.get_routing_events(
+        start_date=start_date,
+        end_date=end_date,
+        group_id=group_id,
+        user_id=user_id,
+        model_selected=model_selected,
+        model_requested=model_requested,
+        model_mode=model_mode,
+        skip=skip,
+        limit=limit,
+        db=db,
+    )
+
+
 @router.get('/tokens', response_model=TokenUsageResponse)
 async def get_token_usage(
     start_date: Optional[int] = Query(None),
