@@ -51,6 +51,63 @@ def get_usage(data: dict) -> Optional[dict]:
     return normalize_usage(usage) if usage else None
 
 
+def _routing_match(
+    selected_model_id: Optional[str],
+    requested_model_id: Optional[str],
+    model_selected: Optional[str],
+    model_requested: Optional[str],
+    model_mode: str,
+) -> bool:
+    """Apply dual-axis model filter semantics for routing analytics."""
+    mode = (model_mode or 'or').lower()
+
+    if mode == 'selected':
+        return not model_selected or selected_model_id == model_selected
+
+    if mode == 'requested':
+        return not model_requested or requested_model_id == model_requested
+
+    if mode == 'and':
+        selected_ok = not model_selected or selected_model_id == model_selected
+        requested_ok = not model_requested or requested_model_id == model_requested
+        return selected_ok and requested_ok
+
+    # Default: or
+    if not model_selected and not model_requested:
+        return True
+
+    selected_ok = bool(model_selected and selected_model_id == model_selected)
+    requested_ok = bool(model_requested and requested_model_id == model_requested)
+    return selected_ok or requested_ok
+
+
+def _summarize_routing_pairs(events: list[dict]) -> list[dict]:
+    """Aggregate routing events by requested->selected pair."""
+    counts: dict[tuple[str, str], int] = {}
+    for event in events:
+        requested_model_id = event.get('requested_model_id')
+        selected_model_id = event.get('selected_model_id')
+        if not requested_model_id or not selected_model_id:
+            continue
+
+        key = (requested_model_id, selected_model_id)
+        counts[key] = counts.get(key, 0) + 1
+
+    total = sum(counts.values())
+    if total == 0:
+        return []
+
+    return [
+        {
+            'requested_model_id': requested,
+            'selected_model_id': selected,
+            'count': count,
+            'percentage': round((count / total) * 100, 2),
+        }
+        for (requested, selected), count in sorted(counts.items(), key=lambda item: item[1], reverse=True)
+    ]
+
+
 def _token_columns(dialect: str):
     """Return (input_tokens, output_tokens) SQL column expressions.
 
@@ -840,6 +897,109 @@ class ChatMessageTable:
                     current += timedelta(hours=1)
 
             return hourly_counts
+
+    async def get_routing_events(
+        self,
+        start_date: Optional[int] = None,
+        end_date: Optional[int] = None,
+        group_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        model_selected: Optional[str] = None,
+        model_requested: Optional[str] = None,
+        model_mode: str = 'or',
+        skip: int = 0,
+        limit: int = 100,
+        db: Optional[AsyncSession] = None,
+    ) -> list[dict]:
+        """Get routing events from assistant messages usage metadata."""
+        async with get_async_db_context(db) as db:
+            from open_webui.models.groups import GroupMember
+
+            stmt = select(
+                ChatMessage.id,
+                ChatMessage.chat_id,
+                ChatMessage.user_id,
+                ChatMessage.created_at,
+                ChatMessage.model_id,
+                ChatMessage.usage,
+            ).filter(
+                ChatMessage.role == 'assistant',
+                ChatMessage.model_id.isnot(None),
+                ChatMessage.usage.isnot(None),
+            )
+
+            if start_date:
+                stmt = stmt.filter(ChatMessage.created_at >= start_date)
+            if end_date:
+                stmt = stmt.filter(ChatMessage.created_at <= end_date)
+            if group_id:
+                group_users = select(GroupMember.user_id).filter(GroupMember.group_id == group_id).scalar_subquery()
+                stmt = stmt.filter(ChatMessage.user_id.in_(group_users))
+            if user_id:
+                stmt = stmt.filter(ChatMessage.user_id == user_id)
+            if model_selected and (model_mode or 'or').lower() in {'selected', 'and'}:
+                stmt = stmt.filter(ChatMessage.model_id == model_selected)
+
+            stmt = stmt.order_by(ChatMessage.created_at.desc()).offset(skip).limit(limit)
+            rows = (await db.execute(stmt)).all()
+
+            events = []
+            for row in rows:
+                usage = row.usage if isinstance(row.usage, dict) else {}
+                routing = usage.get('routing') if isinstance(usage, dict) else {}
+                requested_model_id = (routing or {}).get('requested_model_id')
+                selected_model_id = row.model_id
+
+                if not requested_model_id:
+                    continue
+
+                if not _routing_match(
+                    selected_model_id=selected_model_id,
+                    requested_model_id=requested_model_id,
+                    model_selected=model_selected,
+                    model_requested=model_requested,
+                    model_mode=model_mode,
+                ):
+                    continue
+
+                events.append(
+                    {
+                        'message_id': row.id,
+                        'chat_id': row.chat_id,
+                        'user_id': row.user_id,
+                        'created_at': row.created_at,
+                        'requested_model_id': requested_model_id,
+                        'selected_model_id': selected_model_id,
+                    }
+                )
+
+            return events
+
+    async def get_routing_summary(
+        self,
+        start_date: Optional[int] = None,
+        end_date: Optional[int] = None,
+        group_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        model_selected: Optional[str] = None,
+        model_requested: Optional[str] = None,
+        model_mode: str = 'or',
+        db: Optional[AsyncSession] = None,
+    ) -> list[dict]:
+        """Get routing pair summary (requested -> selected) with count and percentage."""
+        events = await self.get_routing_events(
+            start_date=start_date,
+            end_date=end_date,
+            group_id=group_id,
+            user_id=user_id,
+            model_selected=model_selected,
+            model_requested=model_requested,
+            model_mode=model_mode,
+            skip=0,
+            limit=1_000_000,
+            db=db,
+        )
+        return _summarize_routing_pairs(events)
 
 
 ChatMessages = ChatMessageTable()
