@@ -6,7 +6,9 @@
 		getModelAnalytics,
 		getUserAnalytics,
 		getDailyStats,
-		getTokenUsage
+		getTokenUsage,
+		getRoutingSummary,
+		getRoutingEvents
 	} from '$lib/apis/analytics';
 	import { getGroups } from '$lib/apis/groups';
 	import Spinner from '$lib/components/common/Spinner.svelte';
@@ -14,6 +16,7 @@
 	import ChevronDown from '$lib/components/icons/ChevronDown.svelte';
 	import ChartLine from './ChartLine.svelte';
 	import AnalyticsModelModal from './AnalyticsModelModal.svelte';
+	import RoutingUsage from './RoutingUsage.svelte';
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
 	import { WEBUI_API_BASE_URL } from '$lib/constants';
 	import { formatNumber } from '$lib/utils';
@@ -110,6 +113,24 @@
 	let filterByUserName: string | null = null;
 	let loadingModels = false;
 	let loadingUsers = false;
+	let loadingRouting = false;
+
+	let routingModelMode: 'or' | 'and' | 'selected' | 'requested' = 'or';
+	let routingPairs: Array<{
+		requested_model_id: string;
+		selected_model_id: string;
+		count: number;
+		percentage: number;
+	}> = [];
+	let routingEvents: Array<{
+		message_id: string;
+		chat_id: string;
+		user_id?: string | null;
+		created_at: number;
+		requested_model_id: string;
+		selected_model_id: string;
+	}> = [];
+	let routingSelectedPair: { requested_model_id: string; selected_model_id: string } | null = null;
 
 	// Sorting
 	let modelOrderBy = 'count';
@@ -212,6 +233,7 @@
 		} catch (err) {
 			console.error('Model table reload failed:', err);
 		}
+		await loadRoutingAnalytics();
 		loadingModels = false;
 	};
 
@@ -231,11 +253,75 @@
 		} catch (err) {
 			console.error('User table reload failed:', err);
 		}
+		await loadRoutingAnalytics();
 		loadingUsers = false;
+	};
+
+	const getRoutingModelFilters = () => {
+		if (routingSelectedPair) {
+			return {
+				modelSelected: routingSelectedPair.selected_model_id,
+				modelRequested: routingSelectedPair.requested_model_id
+			};
+		}
+
+		if (!filterByModelId) {
+			return { modelSelected: null, modelRequested: null };
+		}
+
+		if (routingModelMode === 'selected') {
+			return { modelSelected: filterByModelId, modelRequested: null };
+		}
+
+		if (routingModelMode === 'requested') {
+			return { modelSelected: null, modelRequested: filterByModelId };
+		}
+
+		return { modelSelected: filterByModelId, modelRequested: filterByModelId };
+	};
+
+	const loadRoutingAnalytics = async () => {
+		loadingRouting = true;
+		try {
+			const { start, end } = getDateRange(selectedPeriod);
+			const { modelSelected, modelRequested } = getRoutingModelFilters();
+
+			const [summaryRes, eventsRes] = await Promise.all([
+				getRoutingSummary(localStorage.token, {
+					startDate: start,
+					endDate: end,
+					groupId: selectedGroupId,
+					userId: filterByUserId,
+					modelSelected,
+					modelRequested,
+					modelMode: routingModelMode
+				}),
+				getRoutingEvents(localStorage.token, {
+					startDate: start,
+					endDate: end,
+					groupId: selectedGroupId,
+					userId: filterByUserId,
+					modelSelected,
+					modelRequested,
+					modelMode: routingModelMode,
+					skip: 0,
+					limit: 20
+				})
+			]);
+
+			routingPairs = summaryRes ?? [];
+			routingEvents = eventsRes ?? [];
+		} catch (err) {
+			console.error('Routing analytics load failed:', err);
+			routingPairs = [];
+			routingEvents = [];
+		}
+		loadingRouting = false;
 	};
 
 	$: if (selectedPeriod || selectedGroupId !== undefined) {
 		loadDashboard();
+		loadRoutingAnalytics();
 	}
 
 	onMount(async () => {
@@ -297,6 +383,7 @@
 	}
 
 	onMount(loadDashboard);
+	onMount(loadRoutingAnalytics);
 </script>
 
 <!-- Header with title and period selector -->
@@ -740,6 +827,33 @@
 				</table>
 			</div>
 		</div>
+	</div>
+
+	<div class="mt-4">
+		<RoutingUsage
+			pairs={routingPairs}
+			events={routingEvents}
+			loading={loadingRouting}
+			modelMode={routingModelMode}
+			selectedPair={routingSelectedPair}
+			modelFilterLabel={filterByModelName}
+			onModelModeChange={(mode) => {
+				routingModelMode = mode;
+				routingSelectedPair = null;
+				loadRoutingAnalytics();
+			}}
+			onSelectPair={(requestedModelId, selectedModelId) => {
+				routingSelectedPair = {
+					requested_model_id: requestedModelId,
+					selected_model_id: selectedModelId
+				};
+				loadRoutingAnalytics();
+			}}
+			onClearPair={() => {
+				routingSelectedPair = null;
+				loadRoutingAnalytics();
+			}}
+		/>
 	</div>
 
 	<div class="text-gray-500 text-xs mt-1.5 text-right">

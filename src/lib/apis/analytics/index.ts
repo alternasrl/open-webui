@@ -324,14 +324,26 @@ export const getModelOverview = async (token: string = '', modelId: string, days
 
 export const getRoutingSummary = async (
 	token: string = '',
-	startDate: number | null = null,
-	endDate: number | null = null,
-	groupId: string | null = null,
-	userId: string | null = null,
-	modelSelected: string | null = null,
-	modelRequested: string | null = null,
-	modelMode: 'or' | 'and' | 'selected' | 'requested' = 'or'
+	options: {
+		startDate?: number | null;
+		endDate?: number | null;
+		groupId?: string | null;
+		userId?: string | null;
+		modelSelected?: string | null;
+		modelRequested?: string | null;
+		modelMode?: 'or' | 'and' | 'selected' | 'requested';
+	} = {}
 ) => {
+	const {
+		startDate = null,
+		endDate = null,
+		groupId = null,
+		userId = null,
+		modelSelected = null,
+		modelRequested = null,
+		modelMode = 'or'
+	} = options;
+
 	let error = null;
 
 	const searchParams = new URLSearchParams();
@@ -370,16 +382,30 @@ export const getRoutingSummary = async (
 
 export const getRoutingEvents = async (
 	token: string = '',
-	startDate: number | null = null,
-	endDate: number | null = null,
-	groupId: string | null = null,
-	userId: string | null = null,
-	modelSelected: string | null = null,
-	modelRequested: string | null = null,
-	modelMode: 'or' | 'and' | 'selected' | 'requested' = 'or',
-	skip: number = 0,
-	limit: number = 100
+	options: {
+		startDate?: number | null;
+		endDate?: number | null;
+		groupId?: string | null;
+		userId?: string | null;
+		modelSelected?: string | null;
+		modelRequested?: string | null;
+		modelMode?: 'or' | 'and' | 'selected' | 'requested';
+		skip?: number;
+		limit?: number;
+	} = {}
 ) => {
+	const {
+		startDate = null,
+		endDate = null,
+		groupId = null,
+		userId = null,
+		modelSelected = null,
+		modelRequested = null,
+		modelMode = 'or',
+		skip = 0,
+		limit = 100
+	} = options;
+
 	let error = null;
 
 	const searchParams = new URLSearchParams();
