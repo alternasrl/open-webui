@@ -831,6 +831,7 @@
 			modelMode={routingModelMode}
 			selectedPair={routingSelectedPair}
 			modelFilterLabel={filterByModelName}
+			userFilterLabel={filterByUserName}
 			onModelModeChange={(mode) => {
 				routingModelMode = mode;
 				routingSelectedPair = null;

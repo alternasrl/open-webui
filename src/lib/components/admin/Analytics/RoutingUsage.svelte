@@ -21,6 +21,7 @@
 	export let modelMode: 'or' | 'and' | 'selected' | 'requested' = 'or';
 	export let selectedPair: { requested_model_id: string; selected_model_id: string } | null = null;
 	export let modelFilterLabel: string | null = null;
+	export let userFilterLabel: string | null = null;
 
 	export let onModelModeChange: (mode: 'or' | 'and' | 'selected' | 'requested') => void;
 	export let onSelectPair: (requestedModelId: string, selectedModelId: string) => void;
@@ -33,6 +34,9 @@
 		<div class="flex items-center gap-2">
 			{#if modelFilterLabel}
 				<span class="text-blue-500 font-normal">Filtered model: <span class="font-medium">{modelFilterLabel}</span></span>
+			{/if}
+			{#if userFilterLabel}
+				<span class="text-blue-500 font-normal ml-2">Filtered user: <span class="font-medium">{userFilterLabel}</span></span>
 			{/if}
 			<label class="text-gray-500 dark:text-gray-400 font-normal" for="routing-mode">Mode</label>
 			<select
