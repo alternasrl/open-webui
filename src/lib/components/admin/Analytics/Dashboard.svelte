@@ -21,6 +21,13 @@
 	import { WEBUI_API_BASE_URL } from '$lib/constants';
 	import { formatNumber } from '$lib/utils';
 	import { goto } from '$app/navigation';
+	import {
+		createRequestTracker,
+		deriveRoutingFilters,
+		toggleSelection,
+		type RoutingMode,
+		type RoutingPair
+	} from './cross-filter-state';
 
 	const i18n = getContext('i18n');
 
@@ -131,6 +138,11 @@
 		selected_model_id: string;
 	}> = [];
 	let routingSelectedPair: { requested_model_id: string; selected_model_id: string } | null = null;
+
+	// Request trackers for race guard
+	const routingTracker = createRequestTracker();
+	const modelTracker = createRequestTracker();
+	const userTracker = createRequestTracker();
 
 	// Sorting
 	let modelOrderBy = 'count';
@@ -257,34 +269,16 @@
 		loadingUsers = false;
 	};
 
-	const getRoutingModelFilters = () => {
-		if (routingSelectedPair) {
-			return {
-				modelSelected: routingSelectedPair.selected_model_id,
-				modelRequested: routingSelectedPair.requested_model_id
-			};
-		}
-
-		if (!filterByModelId) {
-			return { modelSelected: null, modelRequested: null };
-		}
-
-		if (routingModelMode === 'selected') {
-			return { modelSelected: filterByModelId, modelRequested: null };
-		}
-
-		if (routingModelMode === 'requested') {
-			return { modelSelected: null, modelRequested: filterByModelId };
-		}
-
-		return { modelSelected: filterByModelId, modelRequested: filterByModelId };
-	};
-
 	const loadRoutingAnalytics = async () => {
 		loadingRouting = true;
+		const requestId = routingTracker.next();
 		try {
 			const { start, end } = getDateRange(selectedPeriod);
-			const { modelSelected, modelRequested } = getRoutingModelFilters();
+			const { modelSelected, modelRequested } = deriveRoutingFilters({
+				routingSelectedPair,
+				filterByModelId,
+				routingModelMode
+			});
 
 			const [summaryRes, eventsRes] = await Promise.all([
 				getRoutingSummary(localStorage.token, {
@@ -309,14 +303,22 @@
 				})
 			]);
 
+			// Only update state if this is still the latest request
+			if (!routingTracker.isLatest(requestId)) return;
+
 			routingPairs = summaryRes ?? [];
 			routingEvents = eventsRes ?? [];
 		} catch (err) {
 			console.error('Routing analytics load failed:', err);
-			routingPairs = [];
-			routingEvents = [];
+			if (routingTracker.isLatest(requestId)) {
+				routingPairs = [];
+				routingEvents = [];
+			}
+		} finally {
+			if (routingTracker.isLatest(requestId)) {
+				loadingRouting = false;
+			}
 		}
-		loadingRouting = false;
 	};
 
 	$: if (selectedPeriod || selectedGroupId !== undefined) {
@@ -632,13 +634,9 @@
 								class:bg-blue-50={filterByModelId === model.model_id}
 								class:dark:bg-blue-950={filterByModelId === model.model_id}
 								on:click={() => {
-									if (filterByModelId === model.model_id) {
-										filterByModelId = null;
-										filterByModelName = null;
-									} else {
-										filterByModelId = model.model_id;
-									filterByModelName = model.name ?? model.model_id;
-									}
+									const next = toggleSelection(filterByModelId, model.model_id);
+									filterByModelId = next;
+									filterByModelName = next ? (model.name ?? model.model_id) : null;
 									reloadUserTable();
 								}}
 							>
@@ -786,13 +784,9 @@
 								class:bg-blue-50={filterByUserId === user.user_id}
 								class:dark:bg-blue-950={filterByUserId === user.user_id}
 								on:click={() => {
-									if (filterByUserId === user.user_id) {
-										filterByUserId = null;
-										filterByUserName = null;
-									} else {
-										filterByUserId = user.user_id;
-										filterByUserName = user.name || user.email || user.user_id.substring(0, 8);
-									}
+									const next = toggleSelection(filterByUserId, user.user_id);
+									filterByUserId = next;
+									filterByUserName = next ? (user.name || user.email || user.user_id.substring(0, 8)) : null;
 									reloadModelTable();
 								}}
 							>
