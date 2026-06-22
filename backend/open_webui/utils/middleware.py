@@ -166,7 +166,8 @@ def merge_routing_usage(usage: dict | None, metadata: dict | None) -> dict:
         'routing': {
             **(usage.get('routing') or {}),
             'requested_model_id': requested_model_id,
-            'routed': True,
+            'selected_model_id': routing.get('selected_model_id'),
+            'routed': routing.get('routed', True),
         },
     }
 

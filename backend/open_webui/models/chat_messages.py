@@ -948,7 +948,9 @@ class ChatMessageTable:
                 usage = row.usage if isinstance(row.usage, dict) else {}
                 routing = usage.get('routing') if isinstance(usage, dict) else {}
                 requested_model_id = (routing or {}).get('requested_model_id')
-                selected_model_id = row.model_id
+                # Prefer the selected_model_id stored by the router (contains true routing target).
+                # Fall back to row.model_id (the DB column, which reflects the user-facing model ID).
+                selected_model_id = (routing or {}).get('selected_model_id') or row.model_id
 
                 if not requested_model_id:
                     continue
