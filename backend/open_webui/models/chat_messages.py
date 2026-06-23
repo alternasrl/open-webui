@@ -475,6 +475,7 @@ class ChatMessageTable:
         start_date: Optional[int] = None,
         end_date: Optional[int] = None,
         group_id: Optional[str] = None,
+        user_id: Optional[str] = None,
         db: Optional[AsyncSession] = None,
     ) -> dict[str, int]:
         async with get_async_db_context(db) as db:
@@ -492,6 +493,8 @@ class ChatMessageTable:
             if group_id:
                 group_users = select(GroupMember.user_id).filter(GroupMember.group_id == group_id).scalar_subquery()
                 stmt = stmt.filter(ChatMessage.user_id.in_(group_users))
+            if user_id:
+                stmt = stmt.filter(ChatMessage.user_id == user_id)
 
             stmt = stmt.group_by(ChatMessage.model_id)
             result = await db.execute(stmt)
@@ -502,6 +505,7 @@ class ChatMessageTable:
         start_date: Optional[int] = None,
         end_date: Optional[int] = None,
         group_id: Optional[str] = None,
+        user_id: Optional[str] = None,
         db: Optional[AsyncSession] = None,
     ) -> dict[str, dict]:
         """Aggregate token usage by model using database-level aggregation."""
@@ -533,6 +537,8 @@ class ChatMessageTable:
             if group_id:
                 group_users = select(GroupMember.user_id).filter(GroupMember.group_id == group_id).scalar_subquery()
                 stmt = stmt.filter(ChatMessage.user_id.in_(group_users))
+            if user_id:
+                stmt = stmt.filter(ChatMessage.user_id == user_id)
 
             stmt = stmt.group_by(ChatMessage.model_id)
             result = await db.execute(stmt)
@@ -552,6 +558,7 @@ class ChatMessageTable:
         start_date: Optional[int] = None,
         end_date: Optional[int] = None,
         group_id: Optional[str] = None,
+        model_id: Optional[str] = None,
         db: Optional[AsyncSession] = None,
     ) -> dict[str, dict]:
         """Aggregate token usage by user using database-level aggregation."""
@@ -581,6 +588,8 @@ class ChatMessageTable:
             if group_id:
                 group_users = select(GroupMember.user_id).filter(GroupMember.group_id == group_id).scalar_subquery()
                 stmt = stmt.filter(ChatMessage.user_id.in_(group_users))
+            if model_id:
+                stmt = stmt.filter(ChatMessage.model_id == model_id)
 
             stmt = stmt.group_by(ChatMessage.user_id)
             result = await db.execute(stmt)
@@ -600,6 +609,7 @@ class ChatMessageTable:
         start_date: Optional[int] = None,
         end_date: Optional[int] = None,
         group_id: Optional[str] = None,
+        model_id: Optional[str] = None,
         db: Optional[AsyncSession] = None,
     ) -> dict[str, int]:
         async with get_async_db_context(db) as db:
@@ -616,6 +626,8 @@ class ChatMessageTable:
             if group_id:
                 group_users = select(GroupMember.user_id).filter(GroupMember.group_id == group_id).scalar_subquery()
                 stmt = stmt.filter(ChatMessage.user_id.in_(group_users))
+            if model_id:
+                stmt = stmt.filter(ChatMessage.model_id == model_id)
 
             stmt = stmt.group_by(ChatMessage.user_id)
             result = await db.execute(stmt)
@@ -701,6 +713,7 @@ class ChatMessageTable:
         start_date: Optional[int] = None,
         end_date: Optional[int] = None,
         group_id: Optional[str] = None,
+        user_id: Optional[str] = None,
         db: Optional[AsyncSession] = None,
     ) -> dict[str, dict]:
         """Aggregate TTFT, Token/s and error metrics grouped by model_id."""
@@ -731,6 +744,8 @@ class ChatMessageTable:
             if group_id:
                 group_users = select(GroupMember.user_id).filter(GroupMember.group_id == group_id).scalar_subquery()
                 stmt = stmt.filter(ChatMessage.user_id.in_(group_users))
+            if user_id:
+                stmt = stmt.filter(ChatMessage.user_id == user_id)
 
             result = await db.execute(stmt)
             rows = result.all()
