@@ -140,6 +140,7 @@
 	let routingSelectedPair: { requested_model_id: string; selected_model_id: string } | null = null;
 
 	// Request trackers for race guard
+	const dashboardTracker = createRequestTracker();
 	const routingTracker = createRequestTracker();
 	const modelTracker = createRequestTracker();
 	const userTracker = createRequestTracker();
@@ -170,6 +171,7 @@
 
 	const loadDashboard = async () => {
 		loading = true;
+		const requestId = dashboardTracker.next();
 		try {
 			const { start, end } = getDateRange(selectedPeriod);
 			const granularity = selectedPeriod === '1h' || selectedPeriod === '24h' ? 'hourly' : 'daily';
@@ -178,8 +180,10 @@
 				getModelAnalytics(localStorage.token, start, end, selectedGroupId, filterByUserId),
 				getUserAnalytics(localStorage.token, start, end, 50, selectedGroupId, filterByModelId),
 				getDailyStats(localStorage.token, start, end, granularity, selectedGroupId),
-				getTokenUsage(localStorage.token, start, end, selectedGroupId, filterByUserId)
+				getTokenUsage(localStorage.token, start, end, selectedGroupId, filterByUserId, filterByModelId)
 			]);
+
+			if (!dashboardTracker.isLatest(requestId)) return;
 
 			summary = summaryRes ?? summary;
 
@@ -210,18 +214,23 @@
 			}
 		} catch (err) {
 			console.error('Dashboard load failed:', err);
+			if (!dashboardTracker.isLatest(requestId)) return;
 		}
-		loading = false;
+		if (dashboardTracker.isLatest(requestId)) {
+			loading = false;
+		}
 	};
 
 	const reloadModelTable = async () => {
 		loadingModels = true;
+		const requestId = modelTracker.next();
 		try {
 			const { start, end } = getDateRange(selectedPeriod);
 			const [modelsRes, tokensRes] = await Promise.all([
 				getModelAnalytics(localStorage.token, start, end, selectedGroupId, filterByUserId),
-				getTokenUsage(localStorage.token, start, end, selectedGroupId, filterByUserId)
+				getTokenUsage(localStorage.token, start, end, selectedGroupId, filterByUserId, filterByModelId)
 			]);
+			if (!modelTracker.isLatest(requestId)) return;
 			const modelsMap = new Map($models.map((m) => [m.id, m.name || m.id]));
 			modelStats = (modelsRes?.models ?? []).map((entry) => ({
 				...entry,
@@ -244,13 +253,17 @@
 			}
 		} catch (err) {
 			console.error('Model table reload failed:', err);
+			if (!modelTracker.isLatest(requestId)) return;
 		}
-		await loadRoutingAnalytics();
-		loadingModels = false;
+		if (modelTracker.isLatest(requestId)) {
+			await loadRoutingAnalytics();
+			loadingModels = false;
+		}
 	};
 
 	const reloadUserTable = async () => {
 		loadingUsers = true;
+		const requestId = userTracker.next();
 		try {
 			const { start, end } = getDateRange(selectedPeriod);
 			const usersRes = await getUserAnalytics(
@@ -261,12 +274,16 @@
 				selectedGroupId,
 				filterByModelId
 			);
+			if (!userTracker.isLatest(requestId)) return;
 			userStats = usersRes?.users ?? [];
 		} catch (err) {
 			console.error('User table reload failed:', err);
+			if (!userTracker.isLatest(requestId)) return;
 		}
-		await loadRoutingAnalytics();
-		loadingUsers = false;
+		if (userTracker.isLatest(requestId)) {
+			await loadRoutingAnalytics();
+			loadingUsers = false;
+		}
 	};
 
 	const loadRoutingAnalytics = async () => {
@@ -384,8 +401,6 @@
 		localStorage.setItem('analyticsPeriod', selectedPeriod);
 	}
 
-	onMount(loadDashboard);
-	onMount(loadRoutingAnalytics);
 </script>
 
 <!-- Header with title and period selector -->
