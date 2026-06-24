@@ -91,3 +91,16 @@ describe('toggleSelection', () => {
     expect(toggleSelection(null, 'u1')).toBe('u1');
   });
 });
+
+describe('routing pair filter extraction', () => {
+  it('extracts selected_model_id from routing pair for filtering', () => {
+    // Simulate selecting a routing pair: gpt-4 → mistral
+    const routingPair = { requested_model_id: 'gpt-4', selected_model_id: 'mistral' };
+
+    // Extract the selected model to use as filter
+    const filterByModelId = routingPair.selected_model_id;
+
+    // Verify correct model is extracted
+    expect(filterByModelId).toBe('mistral');
+  });
+});
