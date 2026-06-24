@@ -169,6 +169,22 @@
 		}
 	};
 
+	const onSelectPair = (requestedModelId: string, selectedModelId: string) => {
+		routingSelectedPair = { requested_model_id: requestedModelId, selected_model_id: selectedModelId };
+		filterByModelId = selectedModelId;
+		reloadModelTable();
+		reloadUserTable();
+		loadRoutingAnalytics();
+	};
+
+	const onClearPair = () => {
+		routingSelectedPair = null;
+		filterByModelId = null;
+		reloadModelTable();
+		reloadUserTable();
+		loadRoutingAnalytics();
+	};
+
 	const loadDashboard = async () => {
 		loading = true;
 		const requestId = dashboardTracker.next();
