@@ -870,17 +870,8 @@
 				routingSelectedPair = null;
 				loadRoutingAnalytics();
 			}}
-			onSelectPair={(requestedModelId, selectedModelId) => {
-				routingSelectedPair = {
-					requested_model_id: requestedModelId,
-					selected_model_id: selectedModelId
-				};
-				loadRoutingAnalytics();
-			}}
-			onClearPair={() => {
-				routingSelectedPair = null;
-				loadRoutingAnalytics();
-			}}
+			onSelectPair={onSelectPair}
+			onClearPair={onClearPair}
 		/>
 	</div>
 
