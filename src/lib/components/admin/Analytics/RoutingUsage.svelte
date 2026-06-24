@@ -38,6 +38,9 @@
 			{#if userFilterLabel}
 				<span class="text-blue-500 font-normal ml-2">Filtered user: <span class="font-medium">{userFilterLabel}</span></span>
 			{/if}
+			{#if selectedPair}
+				<span class="text-blue-500 font-normal ml-2">Routing filter: <span class="font-medium">{selectedPair.requested_model_id} → {selectedPair.selected_model_id}</span></span>
+			{/if}
 			<label class="text-gray-500 dark:text-gray-400 font-normal" for="routing-mode">Mode</label>
 			<select
 				id="routing-mode"
