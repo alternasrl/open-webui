@@ -355,6 +355,8 @@
 	};
 
 	$: if (selectedPeriod || selectedGroupId !== undefined) {
+		routingSelectedPair = null;
+		filterByModelId = null;
 		loadDashboard();
 		loadRoutingAnalytics();
 	}
