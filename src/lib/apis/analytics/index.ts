@@ -329,3 +329,125 @@ export const getModelOverview = async (token: string = '', modelId: string, days
 
 	return res;
 };
+
+export const getRoutingSummary = async (
+	token: string = '',
+	options: {
+		startDate?: number | null;
+		endDate?: number | null;
+		groupId?: string | null;
+		userId?: string | null;
+		modelSelected?: string | null;
+		modelRequested?: string | null;
+		modelMode?: 'or' | 'and' | 'selected' | 'requested';
+	} = {}
+) => {
+	const {
+		startDate = null,
+		endDate = null,
+		groupId = null,
+		userId = null,
+		modelSelected = null,
+		modelRequested = null,
+		modelMode = 'or'
+	} = options;
+
+	let error = null;
+
+	const searchParams = new URLSearchParams();
+	if (startDate) searchParams.append('start_date', startDate.toString());
+	if (endDate) searchParams.append('end_date', endDate.toString());
+	if (groupId) searchParams.append('group_id', groupId);
+	if (userId) searchParams.append('user_id', userId);
+	if (modelSelected) searchParams.append('model_selected', modelSelected);
+	if (modelRequested) searchParams.append('model_requested', modelRequested);
+	if (modelMode) searchParams.append('model_mode', modelMode);
+
+	const res = await fetch(`${WEBUI_API_BASE_URL}/analytics/routing/summary?${searchParams.toString()}`, {
+		method: 'GET',
+		headers: {
+			Accept: 'application/json',
+			'Content-Type': 'application/json',
+			authorization: `Bearer ${token}`
+		}
+	})
+		.then(async (res) => {
+			if (!res.ok) throw await res.json();
+			return res.json();
+		})
+		.catch((err) => {
+			error = err.detail;
+			console.error(err);
+			return null;
+		});
+
+	if (error) {
+		throw error;
+	}
+
+	return res;
+};
+
+export const getRoutingEvents = async (
+	token: string = '',
+	options: {
+		startDate?: number | null;
+		endDate?: number | null;
+		groupId?: string | null;
+		userId?: string | null;
+		modelSelected?: string | null;
+		modelRequested?: string | null;
+		modelMode?: 'or' | 'and' | 'selected' | 'requested';
+		skip?: number;
+		limit?: number;
+	} = {}
+) => {
+	const {
+		startDate = null,
+		endDate = null,
+		groupId = null,
+		userId = null,
+		modelSelected = null,
+		modelRequested = null,
+		modelMode = 'or',
+		skip = 0,
+		limit = 100
+	} = options;
+
+	let error = null;
+
+	const searchParams = new URLSearchParams();
+	if (startDate) searchParams.append('start_date', startDate.toString());
+	if (endDate) searchParams.append('end_date', endDate.toString());
+	if (groupId) searchParams.append('group_id', groupId);
+	if (userId) searchParams.append('user_id', userId);
+	if (modelSelected) searchParams.append('model_selected', modelSelected);
+	if (modelRequested) searchParams.append('model_requested', modelRequested);
+	if (modelMode) searchParams.append('model_mode', modelMode);
+	if (skip) searchParams.append('skip', skip.toString());
+	if (limit) searchParams.append('limit', limit.toString());
+
+	const res = await fetch(`${WEBUI_API_BASE_URL}/analytics/routing/events?${searchParams.toString()}`, {
+		method: 'GET',
+		headers: {
+			Accept: 'application/json',
+			'Content-Type': 'application/json',
+			authorization: `Bearer ${token}`
+		}
+	})
+		.then(async (res) => {
+			if (!res.ok) throw await res.json();
+			return res.json();
+		})
+		.catch((err) => {
+			error = err.detail;
+			console.error(err);
+			return null;
+		});
+
+	if (error) {
+		throw error;
+	}
+
+	return res;
+};
