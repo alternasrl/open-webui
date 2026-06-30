@@ -426,6 +426,8 @@ async def lifespan(app: FastAPI):
     await publish_event(app, EVENTS.SYSTEM_SHUTDOWN_COMPLETED, source='system')
 
 
+from open_webui.middleware.access_log import setup_access_logging
+
 app = FastAPI(
     title='Open WebUI',
     docs_url='/docs' if ENV == 'dev' else None,
@@ -433,6 +435,8 @@ app = FastAPI(
     redoc_url=None,
     lifespan=lifespan,
 )
+
+setup_access_logging(app)
 
 # Used by readiness checks to gate traffic until startup work is done.
 app.state.startup_complete = False
