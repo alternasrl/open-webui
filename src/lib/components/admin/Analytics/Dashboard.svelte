@@ -32,6 +32,7 @@
 		(typeof localStorage !== 'undefined' && localStorage.getItem('analyticsCustomEnd')) || '';
 
 	$: periods = [
+		{ value: '1h', label: $i18n.t('Last 1 hour') },
 		{ value: '24h', label: $i18n.t('Last 24 hours') },
 		{ value: '7d', label: $i18n.t('Last 7 days') },
 		{ value: '30d', label: $i18n.t('Last 30 days') },
@@ -48,6 +49,8 @@
 		const now = Math.floor(Date.now() / 1000);
 		const day = 86400;
 		switch (period) {
+			case '1h':
+				return { start: now - 3600, end: now };
 			case '24h':
 				return { start: now - day, end: now };
 			case '7d':
@@ -74,6 +77,9 @@
 		count: number;
 		unique_users?: number;
 		unique_chats?: number;
+		avg_ttft_ms?: number;
+		avg_tokens_per_second?: number;
+		error_rate?: number;
 		name?: string;
 	}> = [];
 	let userStats: Array<{ user_id: string; name?: string; email?: string; count: number }> = [];
@@ -85,6 +91,10 @@
 	let totalTokens = { input: 0, output: 0, total: 0 };
 
 	let loading = true;
+
+	// Cross-filter: selecting a model filters the user table; selecting a user filters the model table
+	let selectedFilterUserId: string | null = null;
+	let selectedFilterModelId: string | null = null;
 
 	// Selected model for drill-down
 	let selectedModel: { id: string; name: string } | null = null;
@@ -118,11 +128,11 @@
 		loading = true;
 		try {
 			const { start, end } = getDateRange(selectedPeriod);
-			const granularity = selectedPeriod === '24h' ? 'hourly' : 'daily';
+			const granularity = selectedPeriod === '1h' || selectedPeriod === '24h' ? 'hourly' : 'daily';
 			const [summaryRes, modelsRes, usersRes, dailyRes, tokensRes] = await Promise.all([
 				getSummary(localStorage.token, start, end, selectedGroupId),
-				getModelAnalytics(localStorage.token, start, end, selectedGroupId),
-				getUserAnalytics(localStorage.token, start, end, 50, selectedGroupId),
+				getModelAnalytics(localStorage.token, start, end, selectedGroupId, selectedFilterUserId),
+				getUserAnalytics(localStorage.token, start, end, 50, selectedGroupId, selectedFilterModelId),
 				getDailyStats(localStorage.token, start, end, granularity, selectedGroupId),
 				getTokenUsage(localStorage.token, start, end, selectedGroupId)
 			]);
@@ -160,13 +170,15 @@
 		loading = false;
 	};
 
-	// Reload when the period, group, or custom range changes.
+	// Reload when the period, group, custom range, or cross-filter changes.
 	// In custom mode, wait until both dates are set to avoid a half-specified query.
 	$: if (selectedPeriod === 'custom' ? customStart && customEnd : selectedPeriod) {
-		// reference customStart/customEnd so this block reruns when they change
+		// reference all filter variables so this block reruns when they change
 		customStart;
 		customEnd;
 		selectedGroupId;
+		selectedFilterUserId;
+		selectedFilterModelId;
 		loadDashboard();
 	}
 
@@ -198,6 +210,21 @@
 			const aChats = a.unique_chats ?? 0;
 			const bChats = b.unique_chats ?? 0;
 			return modelDirection === 'asc' ? aChats - bChats : bChats - aChats;
+		}
+		if (modelOrderBy === 'ttft') {
+			const aT = a.avg_ttft_ms ?? 0;
+			const bT = b.avg_ttft_ms ?? 0;
+			return modelDirection === 'asc' ? aT - bT : bT - aT;
+		}
+		if (modelOrderBy === 'tps') {
+			const aT = a.avg_tokens_per_second ?? 0;
+			const bT = b.avg_tokens_per_second ?? 0;
+			return modelDirection === 'asc' ? aT - bT : bT - aT;
+		}
+		if (modelOrderBy === 'error_rate') {
+			const aT = a.error_rate ?? 0;
+			const bT = b.error_rate ?? 0;
+			return modelDirection === 'asc' ? aT - bT : bT - aT;
 		}
 		return modelDirection === 'asc' ? a.count - b.count : b.count - a.count;
 	});
@@ -329,7 +356,7 @@
 		{@const periodMap = { '24h': 'hour', '7d': 'week', '30d': 'month', '90d': 'year', all: 'all' }}
 		<div class="mb-4">
 			<div class="text-xs font-medium text-gray-600 dark:text-gray-400 mb-2 px-0.5">
-				{selectedPeriod === '24h' ? $i18n.t('Hourly Messages') : $i18n.t('Daily Messages')}
+				{selectedPeriod === '1h' || selectedPeriod === '24h' ? $i18n.t('Hourly Messages') : $i18n.t('Daily Messages')}
 			</div>
 			<ChartLine
 				data={dailyStats}
@@ -450,6 +477,60 @@
 							</th>
 							<th
 								scope="col"
+								class="px-2.5 py-2 cursor-pointer select-none text-right"
+								on:click={() => toggleModelSort('ttft')}
+							>
+								<div class="flex gap-1.5 items-center justify-end">
+									{$i18n.t('TTFT')}
+									{#if modelOrderBy === 'ttft'}
+										<span class="font-normal">
+											{#if modelDirection === 'asc'}<ChevronUp
+													className="size-2"
+												/>{:else}<ChevronDown className="size-2" />{/if}
+										</span>
+									{:else}
+										<span class="invisible"><ChevronUp className="size-2" /></span>
+									{/if}
+								</div>
+							</th>
+							<th
+								scope="col"
+								class="px-2.5 py-2 cursor-pointer select-none text-right"
+								on:click={() => toggleModelSort('tps')}
+							>
+								<div class="flex gap-1.5 items-center justify-end">
+									{$i18n.t('Tok/s')}
+									{#if modelOrderBy === 'tps'}
+										<span class="font-normal">
+											{#if modelDirection === 'asc'}<ChevronUp
+													className="size-2"
+												/>{:else}<ChevronDown className="size-2" />{/if}
+										</span>
+									{:else}
+										<span class="invisible"><ChevronUp className="size-2" /></span>
+									{/if}
+								</div>
+							</th>
+							<th
+								scope="col"
+								class="px-2.5 py-2 cursor-pointer select-none text-right"
+								on:click={() => toggleModelSort('error_rate')}
+							>
+								<div class="flex gap-1.5 items-center justify-end">
+									{$i18n.t('Err%')}
+									{#if modelOrderBy === 'error_rate'}
+										<span class="font-normal">
+											{#if modelDirection === 'asc'}<ChevronUp
+													className="size-2"
+												/>{:else}<ChevronDown className="size-2" />{/if}
+										</span>
+									{:else}
+										<span class="invisible"><ChevronUp className="size-2" /></span>
+									{/if}
+								</div>
+							</th>
+							<th
+								scope="col"
 								class="px-2.5 py-2 cursor-pointer select-none text-right w-16"
 								on:click={() => toggleModelSort('percentage')}
 							>
@@ -472,7 +553,11 @@
 						{#each sortedModels as model, idx (model.model_id)}
 							<tr
 								class="bg-white dark:bg-gray-900 dark:border-gray-850 text-xs cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+								class:ring-1={selectedFilterModelId === model.model_id}
+								class:ring-blue-400={selectedFilterModelId === model.model_id}
 								on:click={() => {
+									selectedFilterModelId =
+										selectedFilterModelId === model.model_id ? null : model.model_id;
 									selectedModel = { id: model.model_id, name: model.name };
 									showModelModal = true;
 								}}
@@ -498,6 +583,17 @@
 									>{formatNumber(tokenStats[model.model_id]?.total_tokens ?? 0)}</td
 								>
 								<td class="px-3 py-1 text-right text-gray-400">
+									{model.avg_ttft_ms != null ? model.avg_ttft_ms.toFixed(0) + ' ms' : '—'}
+								</td>
+								<td class="px-3 py-1 text-right text-gray-400">
+									{model.avg_tokens_per_second != null
+										? model.avg_tokens_per_second.toFixed(1)
+										: '—'}
+								</td>
+								<td class="px-3 py-1 text-right text-gray-400">
+									{model.error_rate != null ? (model.error_rate * 100).toFixed(1) + '%' : '—'}
+								</td>
+								<td class="px-3 py-1 text-right text-gray-400">
 									{totalModelMessages > 0
 										? ((model.count / totalModelMessages) * 100).toFixed(1)
 										: 0}%
@@ -506,7 +602,7 @@
 						{/each}
 						{#if sortedModels.length === 0}
 							<tr
-								><td colspan="7" class="px-3 py-2 text-center text-gray-400"
+								><td colspan="10" class="px-3 py-2 text-center text-gray-400"
 									>{$i18n.t('No data')}</td
 								></tr
 							>
@@ -584,7 +680,15 @@
 					</thead>
 					<tbody>
 						{#each sortedUsers as user, idx (user.user_id)}
-							<tr class="bg-white dark:bg-gray-900 dark:border-gray-850 text-xs">
+							<tr
+								class="bg-white dark:bg-gray-900 dark:border-gray-850 text-xs cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+								class:ring-1={selectedFilterUserId === user.user_id}
+								class:ring-blue-400={selectedFilterUserId === user.user_id}
+								on:click={() => {
+									selectedFilterUserId =
+										selectedFilterUserId === user.user_id ? null : user.user_id;
+								}}
+							>
 								<td class="px-3 py-1 text-gray-400">{idx + 1}</td>
 								<td class="px-3 py-1 font-medium text-gray-900 dark:text-white">
 									<div class="flex items-center gap-2">
