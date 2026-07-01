@@ -1,22 +1,23 @@
-From d57fbb8edd324d69937b581da03178f12b7dc27a Mon Sep 17 00:00:00 2001
+From f9bdf5b6cebf347555c4474b1128a5edf850ac8f Mon Sep 17 00:00:00 2001
 From: Fabio Paracchini <fparacchini@alteanet.it>
-Date: Sun, 15 Feb 2026 01:01:41 +0100
-Subject: [PATCH 06/19] feat: Enhance NIS2 compliance in access logging and
+Date: Tue, 30 Jun 2026 22:00:52 +0200
+Subject: [PATCH 06/10] feat: Enhance NIS2 compliance in access logging and
  audit utilities
 
 - Added correlation ID and OIDC claims extraction to AccessLogMiddleware.
 - Updated AuditLoggingMiddleware to include correlation ID and OIDC claims.
 - Modified logger to support NIS2 compliance fields in log records.
 - Updated docker-compose to enable audit logging configurations.
+
+Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>
 ---
- backend/open_webui/middleware/access_log.py | 165 +++++++++++++++-----
- backend/open_webui/utils/audit.py           | 133 +++++++++++++++-
- backend/open_webui/utils/logger.py          |   3 +
+ backend/open_webui/middleware/access_log.py | 124 ++++++++++++++++--
+ backend/open_webui/utils/audit.py           | 134 +++++++++++++++++++-
  docker-compose.yaml                         |   6 +
- 4 files changed, 269 insertions(+), 38 deletions(-)
+ 3 files changed, 251 insertions(+), 13 deletions(-)
 
 diff --git a/backend/open_webui/middleware/access_log.py b/backend/open_webui/middleware/access_log.py
-index 28325b75a..f4b5ca610 100644
+index 28325b75a..ca02da41a 100644
 --- a/backend/open_webui/middleware/access_log.py
 +++ b/backend/open_webui/middleware/access_log.py
 @@ -1,16 +1,24 @@
@@ -45,23 +46,25 @@ index 28325b75a..f4b5ca610 100644
  
  class AccessLogMiddleware(BaseHTTPMiddleware):
      """
-@@ -34,6 +42,16 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
+@@ -34,7 +42,17 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
          
          # Estrai user_id dall'autenticazione
          user_id = await self._get_user_id(request)
+-        
 +
 +        # NIS2: Extract correlation ID from WAF/ADSSPM
 +        correlation_id = self._get_correlation_id(request)
 +
 +        # NIS2: Extract OIDC claims (sub, MFA status)
 +        oidc_sub, mfa_status = self._get_oidc_nis2_fields(request)
-+        
++
 +        # Client info: prefer Azure WAF / proxy headers over direct connection
 +        client_host = self._get_client_ip(request)
 +        client_port = request.client.port if request.client else 0
-         
++
          # Timestamp inizio
          start_time = time.time()
+         
 @@ -47,7 +65,9 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
              process_time = time.time() - start_time
              self.logger.error(
@@ -89,10 +92,12 @@ index 28325b75a..f4b5ca610 100644
              f'"{request.method} {request.url.path}" {status_code} | '
              f"time={process_time:.3f}s"
          )
-@@ -70,6 +91,91 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
+@@ -69,7 +90,91 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
+         response.headers["X-Session-ID"] = session_id
          
          return response
-     
+-    
++
 +    def _get_correlation_id(self, request: Request) -> Optional[str]:
 +        """Extract correlation ID from WAF/ADSSPM/Azure Front Door."""
 +        return (
@@ -161,7 +166,6 @@ index 28325b75a..f4b5ca610 100644
 +                    algorithms=["RS256", "HS256", "ES256"],
 +                )
 +                oidc_sub = decoded.get("sub")
-+                # MFA status: amr is a list of methods, acr is a single value
 +                amr = decoded.get("amr")
 +                acr = decoded.get("acr")
 +                if amr:
@@ -181,12 +185,8 @@ index 28325b75a..f4b5ca610 100644
      def _get_session_id(self, request: Request) -> str:
          """
          Recupera o genera un session_id
-@@ -81,12 +187,8 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
-             return session_id
-         
-         # PRIORITÀ 2: Cookie 'token' (JWT token come session ID)
--        # Il JWT token è più affidabile come identificatore di sessione
--        # perché Open WebUI lo usa per l'autenticazione
+@@ -85,8 +190,6 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
+         # perché Open WebUI lo usa per l'autenticazione
          token = request.cookies.get("token")
          if token:
 -            # Usa l'hash del token come session_id per privacy
@@ -194,12 +194,8 @@ index 28325b75a..f4b5ca610 100644
              return hashlib.md5(token.encode()).hexdigest()[:16]
          
          # PRIORITÀ 3: Header 'X-Session-ID'
-@@ -95,19 +197,15 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
-             return session_id
-         
-         # PRIORITÀ 4: Combinazione IP + User-Agent come identificatore temporaneo
--        # Questo aiuta a mantenere la stessa session_id per utenti non autenticati
--        # finché usano lo stesso browser dallo stesso IP
+@@ -99,9 +202,8 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
+         # finché usano lo stesso browser dallo stesso IP
          try:
              user_agent = request.headers.get("user-agent", "")
 -            client_ip = request.client.host
@@ -207,89 +203,31 @@ index 28325b75a..f4b5ca610 100644
              composite = f"{client_ip}:{user_agent}"
 -            import hashlib
              return hashlib.md5(composite.encode()).hexdigest()[:16]
--        except:
-+        except Exception:
+         except:
              pass
-         
-         # FALLBACK: Genera nuovo UUID
--        # Questo dovrebbe accadere raramente
-         return str(uuid.uuid4())[:16]
-     
-     async def _get_user_id(self, request: Request) -> str:
-@@ -138,28 +236,23 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
-             token = request.cookies.get("token")
-             if token:
-                 try:
--                    import jwt
--                    decoded = jwt.decode(token, options={"verify_signature": False})
--                    # PRIORITÀ: email > username > sub > user_id > id
--                    email = (
--                        decoded.get("email") or
--                        decoded.get("username") or 
--                        decoded.get("sub") or 
--                        decoded.get("user_id") or
--                        decoded.get("id")
--                    )
--                    if email:
--                        return str(email)
-+                    if pyjwt is not None:
-+                        decoded = pyjwt.decode(token, options={"verify_signature": False})
-+                        # PRIORITÀ: email > username > sub > user_id > id
-+                        email = (
-+                            decoded.get("email") or
-+                            decoded.get("username") or 
-+                            decoded.get("sub") or 
-+                            decoded.get("user_id") or
-+                            decoded.get("id")
-+                        )
-+                        if email:
-+                            return str(email)
-                 except Exception as e:
--                    # Log del token decodificato per debug
--                    import logging
--                    logger = logging.getLogger("open_webui.access")
--                    logger.debug(f"Errore decodifica JWT: {e}")
-+                    self.logger.debug(f"Errore decodifica JWT: {e}")
-         
-         except Exception as e:
--            import logging
--            logger = logging.getLogger("open_webui.access")
--            logger.debug(f"Errore estrazione user: {e}")
-+            self.logger.debug(f"Errore estrazione user: {e}")
-         
-         return "anonymous"
- 
-@@ -178,8 +271,8 @@ def setup_access_logging(app, log_level: str = "INFO", exclude_paths: list = Non
-     logger = logging.getLogger("open_webui.access")
-     logger.setLevel(getattr(logging, log_level.upper()))
-     
--    # Handler per stdout
--    handler = logging.StreamHandler()
-+    # Handler per stdout (esplicito sys.stdout per Azure Container Apps console)
-+    handler = logging.StreamHandler(sys.stdout)
-     handler.setLevel(getattr(logging, log_level.upper()))
-     
-     # Formato semplice e leggibile
 diff --git a/backend/open_webui/utils/audit.py b/backend/open_webui/utils/audit.py
-index 5686c88d5..502913370 100644
+index 313f4cf23..f529189b8 100644
 --- a/backend/open_webui/utils/audit.py
 +++ b/backend/open_webui/utils/audit.py
-@@ -1,5 +1,5 @@
+@@ -1,7 +1,7 @@
+ import re
+ import uuid
  from contextlib import asynccontextmanager
 -from dataclasses import asdict, dataclass
 +from dataclasses import asdict, dataclass, field
  from enum import Enum
- import re
  from typing import (
-@@ -13,6 +13,7 @@ from typing import (
+     TYPE_CHECKING,
+@@ -13,6 +13,8 @@ from typing import (
+     cast,
  )
- import uuid
  
 +import jwt as pyjwt
++
  from asgiref.typing import (
      ASGI3Application,
      ASGIReceiveCallable,
-@@ -32,6 +33,16 @@ if TYPE_CHECKING:
+@@ -33,6 +35,16 @@ if TYPE_CHECKING:
      from loguru import Logger
  
  
@@ -306,7 +244,7 @@ index 5686c88d5..502913370 100644
  @dataclass(frozen=True)
  class AuditLogEntry:
      # `Metadata` audit level properties
-@@ -40,6 +51,9 @@ class AuditLogEntry:
+@@ -41,6 +53,9 @@ class AuditLogEntry:
      audit_level: str
      verb: str
      request_uri: str
@@ -316,7 +254,7 @@ index 5686c88d5..502913370 100644
      user_agent: Optional[str] = None
      source_ip: Optional[str] = None
      # `Request` audit level properties
-@@ -205,6 +219,115 @@ class AuditLoggingMiddleware:
+@@ -206,6 +221,115 @@ class AuditLoggingMiddleware:
  
          return None
  
@@ -432,7 +370,7 @@ index 5686c88d5..502913370 100644
      def _should_skip_auditing(self, request: Request) -> bool:
          if AUDIT_LOG_LEVEL == 'NONE':
              return True
-@@ -260,6 +383,10 @@ class AuditLoggingMiddleware:
+@@ -261,6 +385,10 @@ class AuditLoggingMiddleware:
  
              user = user.model_dump(include={'id', 'name', 'email', 'role'}) if user else {}
  
@@ -443,7 +381,7 @@ index 5686c88d5..502913370 100644
              request_body = context.request_body.decode('utf-8', errors='replace')
              response_body = context.response_body.decode('utf-8', errors='replace')
  
-@@ -277,8 +404,10 @@ class AuditLoggingMiddleware:
+@@ -278,8 +406,10 @@ class AuditLoggingMiddleware:
                  audit_level=self.audit_level.value,
                  verb=request.method,
                  request_uri=str(request.url),
@@ -455,20 +393,6 @@ index 5686c88d5..502913370 100644
                  user_agent=request.headers.get('user-agent'),
                  request_object=request_body,
                  response_object=response_body,
-diff --git a/backend/open_webui/utils/logger.py b/backend/open_webui/utils/logger.py
-index fa4e77f53..0c1ccfcc4 100644
---- a/backend/open_webui/utils/logger.py
-+++ b/backend/open_webui/utils/logger.py
-@@ -130,6 +130,9 @@ def file_format(record: 'Record'):
-         'response_status_code': record['extra'].get('response_status_code', 0),
-         'source_ip': record['extra'].get('source_ip', ''),
-         'user_agent': record['extra'].get('user_agent', ''),
-+        # NIS2 compliance fields
-+        'correlation_id': record['extra'].get('correlation_id'),
-+        'oidc_claims': record['extra'].get('oidc_claims'),
-         'request_object': record['extra'].get('request_object', b''),
-         'response_object': record['extra'].get('response_object', b''),
-         'extra': record['extra'].get('extra', {}),
 diff --git a/docker-compose.yaml b/docker-compose.yaml
 index 349734a93..14a92a5db 100644
 --- a/docker-compose.yaml

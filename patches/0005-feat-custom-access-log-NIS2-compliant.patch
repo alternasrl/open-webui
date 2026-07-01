@@ -1,16 +1,21 @@
-From e57974cf194248a88d9566098ca7a7504aa7dd4e Mon Sep 17 00:00:00 2001
+From 1383fbb79598e578f1e1d566372dd0f919c9b305 Mon Sep 17 00:00:00 2001
 From: Fabio Paracchini <fparacchini@alteanet.it>
-Date: Mon, 30 Mar 2026 13:03:46 +0200
-Subject: [PATCH 05/19] feat: custom access log NIS2 compliant
+Date: Tue, 30 Jun 2026 21:56:01 +0200
+Subject: [PATCH 05/10] feat: custom access log NIS2 compliant
 
-Co-authored-by: Fabio Paracchini <fparacchini@alteanet.it>
+- Add backend/open_webui/middleware/access_log.py (new file)
+- Register setup_access_logging(app) in main.py after FastAPI init
+- Add .github/copilot-instructions.md
+
 Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>
 ---
  .github/copilot-instructions.md             | 144 ++++++++++++++
- backend/open_webui/main.py                  |   3 +
+ backend/open_webui/main.py                  |   4 +
+ backend/open_webui/middleware/__init__.py   |   0
  backend/open_webui/middleware/access_log.py | 206 ++++++++++++++++++++
- 3 files changed, 353 insertions(+)
+ 4 files changed, 354 insertions(+)
  create mode 100644 .github/copilot-instructions.md
+ create mode 100644 backend/open_webui/middleware/__init__.py
  create mode 100644 backend/open_webui/middleware/access_log.py
 
 diff --git a/.github/copilot-instructions.md b/.github/copilot-instructions.md
@@ -164,18 +169,19 @@ index 000000000..b3c8da3e0
 +
 +All integrations are optional and configurable via environment variables.
 diff --git a/backend/open_webui/main.py b/backend/open_webui/main.py
-index a7476457b..ad59f0d75 100644
+index bd9580e9c..0184edc19 100644
 --- a/backend/open_webui/main.py
 +++ b/backend/open_webui/main.py
-@@ -754,6 +754,7 @@ async def lifespan(app: FastAPI):
-     if hasattr(app.state, 'redis_task_command_listener'):
-         app.state.redis_task_command_listener.cancel()
+@@ -426,6 +426,8 @@ async def lifespan(app: FastAPI):
+     await publish_event(app, EVENTS.SYSTEM_SHUTDOWN_COMPLETED, source='system')
+ 
  
 +from open_webui.middleware.access_log import setup_access_logging
- 
++
  app = FastAPI(
      title='Open WebUI',
-@@ -763,6 +764,8 @@ app = FastAPI(
+     docs_url='/docs' if ENV == 'dev' else None,
+@@ -434,6 +436,8 @@ app = FastAPI(
      lifespan=lifespan,
  )
  
@@ -184,6 +190,9 @@ index a7476457b..ad59f0d75 100644
  # Used by readiness checks to gate traffic until startup work is done.
  app.state.startup_complete = False
  
+diff --git a/backend/open_webui/middleware/__init__.py b/backend/open_webui/middleware/__init__.py
+new file mode 100644
+index 000000000..e69de29bb
 diff --git a/backend/open_webui/middleware/access_log.py b/backend/open_webui/middleware/access_log.py
 new file mode 100644
 index 000000000..28325b75a

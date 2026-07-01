@@ -7,6 +7,7 @@ This document provides essential guidance for AI assistants working on the Open 
 ### Build & Test Commands
 
 #### Frontend (Svelte + TypeScript)
+
 - **Local Development**: `npm run dev` - Starts dev server with hot reload on `http://localhost:5173`
   - Alternative port: `npm run dev:5050` for port 5050
 - **Build**: `npm run build` - Produces optimized production build to `build/`
@@ -17,6 +18,7 @@ This document provides essential guidance for AI assistants working on the Open 
 - **Format**: `npm run format` - Prettier (TypeScript, Svelte, CSS, JSON, etc.)
 
 #### Backend (FastAPI + Python)
+
 - **Python Version**: Must use **Python 3.11** or **3.12** (see `pyproject.toml` `requires-python`)
 - **Install**: `pip install -e .` or use `uv` for faster installs
 - **Run Backend**: Backend starts via FastAPI app at `open_webui.main:app` (typically port 8000)
@@ -25,6 +27,7 @@ This document provides essential guidance for AI assistants working on the Open 
 - **Tests**: See `backend/open_webui/test/` for pytest tests (run via `pytest backend/`)
 
 #### Full Stack Commands
+
 - **Lint Everything**: `npm run lint` runs frontend → types → backend sequentially
 - **Format Everything**: `npm run format` + `npm run format:backend`
 - **Docker**: Use `Makefile` targets or `docker-compose` (multiple configs available for GPU, AMD, Ollama, etc.)
@@ -34,6 +37,7 @@ This document provides essential guidance for AI assistants working on the Open 
 **Open WebUI is a two-tier full-stack application:**
 
 ### Frontend (SvelteKit + Vite)
+
 - **Framework**: SvelteKit 2.x with static adapter (`@sveltejs/adapter-static`)
 - **Language**: TypeScript with strict mode
 - **Styling**: Tailwind CSS 4.0 + PostCSS
@@ -43,10 +47,11 @@ This document provides essential guidance for AI assistants working on the Open 
 - **Version Management**: Git commit SHA or package.json version (for offline builds); polls every 60s for updates
 
 ### Backend (FastAPI + Python)
+
 - **Framework**: FastAPI 0.135.1 with Uvicorn ASGI server
 - **Database**: SQLAlchemy 2.0 (ORM) + Alembic (migrations); supports SQLite, PostgreSQL, MariaDB
 - **Auth**: JWT tokens, bcrypt password hashing, OAuth support, LDAP/AD integration
-- **Key Packages**: 
+- **Key Packages**:
   - **LLM Integration**: OpenAI, Anthropic, Google GenAI, Ollama APIs
   - **RAG**: LangChain, ChromaDB (9 vector database options supported)
   - **Retrieval**: Multiple content extractors (Tika, Docling, etc.) and web search providers (SearXNG, Brave, Tavily, etc.)
@@ -57,6 +62,7 @@ This document provides essential guidance for AI assistants working on the Open 
   - **Real-time**: Socket.IO for WebSocket communication
 
 **Backend Structure:**
+
 - `backend/open_webui/routers/` - FastAPI router modules (models, users, tools, functions, etc.)
 - `backend/open_webui/models/` - SQLAlchemy models and Pydantic schemas
 - `backend/open_webui/utils/` - Helper utilities (auth, access control, etc.)
@@ -66,6 +72,7 @@ This document provides essential guidance for AI assistants working on the Open 
 - `backend/open_webui/migrations/` - Alembic DB migrations
 
 ### Data Flow
+
 1. **Frontend** (SvelteKit) sends HTTP/WebSocket requests to FastAPI backend
 2. **Backend** processes requests, queries DB (SQLAlchemy), calls external APIs (Ollama, OpenAI, web search, etc.)
 3. **Results** returned as JSON or streamed responses; WebSocket handles real-time updates
@@ -74,6 +81,7 @@ This document provides essential guidance for AI assistants working on the Open 
 ## Key Conventions
 
 ### Frontend Code
+
 - **Component Organization**: Svelte files in `src/lib/components/` follow single-file component pattern
 - **State Management**: Context API for shared state; stores in `src/lib/stores/` for reactive globals
 - **Routing**: SvelteKit filesystem routing; pages in `src/routes/+page.svelte`, layouts in `+layout.svelte`
@@ -82,6 +90,7 @@ This document provides essential guidance for AI assistants working on the Open 
 - **Type Safety**: Use TypeScript interfaces/types; avoid `any`; leverage SvelteKit's type generation
 
 ### Backend Code
+
 - **Router Pattern**: Use APIRouter with decorators (`@router.get()`, `@router.post()`, etc.)
 - **Dependencies**: Leverage FastAPI's dependency injection (`Depends()`) for auth, DB sessions, permissions
 - **Auth Checks**: Use `get_verified_user()` or `get_admin_user()` from `open_webui.utils.auth`
@@ -93,12 +102,14 @@ This document provides essential guidance for AI assistants working on the Open 
 - **Environment Config**: All settings in `backend/open_webui/env.py` or `config.py`; read via `os.getenv()`
 
 ### Database
+
 - **ORM**: SQLAlchemy 2.0; models in `backend/open_webui/models/`
 - **Migrations**: Use Alembic CLI (`alembic upgrade head` to apply); never modify schema directly
 - **Sessions**: Always use `get_session()` dependency to obtain DB session; let FastAPI handle cleanup
 - **Multi-DB**: SQLite default; postgres/mariadb via optional dependencies and environment config
 
 ### Testing
+
 - **Frontend Tests**: Vitest in `test/` directory; async tests use Vitest's built-in async support
 - **Backend Tests**: Pytest; test files in `backend/open_webui/test/` mirroring source structure
 - **Test DB**: Use temporary SQLite in-memory or fixture-based setups; avoid production DB
@@ -106,6 +117,7 @@ This document provides essential guidance for AI assistants working on the Open 
 - **Coverage**: Aim for critical paths (auth, routers, data validation)
 
 ### Code Style & Formatting
+
 - **Frontend**: ESLint + Prettier (auto-fix enabled); tabs (not spaces)
 - **Backend**: Black formatter; 100-char line limit (see config)
 - **Python**: Follow PEP 8; type hints required for functions
@@ -113,6 +125,7 @@ This document provides essential guidance for AI assistants working on the Open 
 - **PR Checklist**: Target `dev` branch (NOT `main`); include changelog entry; test thoroughly; document user-facing changes
 
 ### Special Considerations
+
 - **Node/NPM Version**: Node 18.13.0 ≤ version ≤ 22.x.x; npm ≥ 6.0.0
 - **Pyodide Fetching**: Frontend build requires `npm run pyodide:fetch` before `npm run build`
 - **Offline-First**: Targets PWA and offline capabilities; version polling every 60s for updates
@@ -145,28 +158,29 @@ All integrations are optional and configurable via environment variables.
 
 ## Tag & Release Naming Convention
 
-  Always apply these rules when creating git tags or GitHub releases.ENFORCED ### 
+Always apply these rules when creating git tags or GitHub releases.ENFORCED ###
 
 #### 1. Source release tags (git tags on `alternasrl/open-webui`)
 
 **Format:** `v{MAJOR}.{MINOR}.{PATCH}-{YYMMDD}[{letter}]`
 
-| Component | Format | Description |
-|-----------|--------|-------------|
-| `v{semver}` | `v0.9.6` | Upstream open-webui version |
- `260604` |
-| `{letter}` | *(omit)*, `b`, ` | Same-day re-iterations only; first tag has NO suffix |c`
+| Component   | Format           | Description                                          |
+| ----------- | ---------------- | ---------------------------------------------------- | --- |
+| `v{semver}` | `v0.9.6`         | Upstream open-webui version                          |
+| `260604`    |
+| `{letter}`  | _(omit)_, `b`, ` | Same-day re-iterations only; first tag has NO suffix | c`  |
 
 **Examples:**
+
 ```
-v0.9.5- v0.9.5, May 12 2026 (first tag that day)260512    
-v0.9.5- v0.9.5, May 20 2026260520    
-v0.9.6- v0.9.6, June 4 2026 (CORRECT form)260604    
-v0.9.6- v0.9.6, June 4 2026, second iteration260604b   
-v0.9.6- v0.9.6, June 4 2026, third iteration260604c   
+v0.9.5- v0.9.5, May 12 2026 (first tag that day)260512
+v0.9.5- v0.9.5, May 20 2026260520
+v0.9.6- v0.9.6, June 4 2026 (CORRECT form)260604
+v0.9.6- v0.9.6, June 4 2026, second iteration260604b
+v0.9.6- v0.9.6, June 4 2026, third iteration260604c
 ```
 
- **Known deviation:** Tags `v0.9.6-040626` and `v0.9.6-040626b` exist in the repo with the wrong DDMMYY order. They remain for backwards compat but MUST NOT be used as a model for new tags. Always use **YYMMDD**.> 
+**Known deviation:** Tags `v0.9.6-040626` and `v0.9.6-040626b` exist in the repo with the wrong DDMMYY order. They remain for backwards compat but MUST NOT be used as a model for new tags. Always use **YYMMDD**.>
 
 **Regex to validate:** `^v\d+\.\d+\.\d+(-[a-z0-9]+)?-\d{6}[b-z]?$`
 
@@ -174,14 +188,15 @@ v0.9.6- v0.9.6, June 4 2026, third iteration260604c
 
 **Format:** `{source-release-tag}-build-{YYYYMMDD}.{NN}`
 
-| Component | Format | Description |
-|-----------|--------|-------------|
-| `{source-release-tag}` | `v0.9.6-260604` | Full source release tag (YYMMDD) |
-| `build` | literal | Separator |
-| `{YYYYMMDD}` | `20260604` | ISO date with **4-digit year** |
-| `{NN}` | `01`, ` | Zero-padded sequential build number for the day |02`
+| Component              | Format          | Description                                     |
+| ---------------------- | --------------- | ----------------------------------------------- | --- |
+| `{source-release-tag}` | `v0.9.6-260604` | Full source release tag (YYMMDD)                |
+| `build`                | literal         | Separator                                       |
+| `{YYYYMMDD}`           | `20260604`      | ISO date with **4-digit year**                  |
+| `{NN}`                 | `01`, `         | Zero-padded sequential build number for the day | 02` |
 
 **Examples:**
+
 ```
 v0.9.6-260604-build-20260604.01
 v0.9.6-260604-build-20260604.02
@@ -200,7 +215,7 @@ v0.9.6-260604b-build-20260604.01
 
 - Integration branches: `integration-v{MAJOR}.{MINOR}.{PATCH}`
 - Feature branches: `feat/{short-description}` from `dev`
-- Do NOT branch from `main` for  use `dev`features 
+- Do NOT branch from `main` for use `dev`features
 
 #### Quick cheat-sheet
 
@@ -213,8 +228,8 @@ Docker image tag:   v0.9.7-260604-build-20260604.01
 ACR ref:            craltea.azurecr.io/open-webui:v0.9.7-260604-build-20260604.01
 ```
 
-
 <!-- headroom:rtk-instructions -->
+
 # RTK (Rust Token Killer) - Token-Optimized Commands
 
 When running shell commands, **always prefix with `rtk`**. This reduces context
@@ -222,6 +237,7 @@ usage by 60-90% with zero behavior change. If rtk has no filter for a command,
 it passes through unchanged — so it is always safe to use.
 
 ## Key Commands
+
 ```bash
 # Git (59-80% savings)
 rtk git status          rtk git diff            rtk git log
@@ -252,6 +268,7 @@ rtk pip list            rtk pnpm install        rtk npm run <script>
 ```
 
 ## Rules
+
 - In command chains, prefix each segment: `rtk git add . && rtk git commit -m "msg"`
 - For debugging, use raw command without rtk prefix
 - `rtk proxy <cmd>` runs command without filtering but tracks usage

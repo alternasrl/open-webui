@@ -45,6 +45,20 @@ covered by this middleware:
   • ``/api/v1/retrieval/config/update`` + ``/embedding/update`` — retrieval config
   • ``/api/v1/audio/config/update``, ``/api/v1/images/config/update`` — media config
 
+New API surfaces added in v0.9.7–v0.10.1 and covered by this middleware:
+
+  • ``/api/v1/auths/admin/config/oauth``        — OAuth admin config (GET/POST)
+  • ``/api/v1/chats/config``                    — Chat feature config (GET/POST)
+  • ``/api/v1/chats/share/all``                 — Bulk delete of shared chats
+  • ``/api/v1/chats/{id}/compact``               — Chat history compaction
+  • ``/api/v1/chats/{id}/messages/{message_id}`` — Single message delete
+  • ``/api/v1/configs/terminal_servers/lifecycle`` + ``/refresh`` — terminal server ops
+  • ``/api/v1/folders/{id}/access/update``       — Folder sharing/access control
+  • ``/api/v1/knowledge/external/connections/*`` — External knowledge connections CRUD
+  • ``/api/v1/knowledge/external/source/*``      — External knowledge source CRUD
+  • ``/api/v1/memories/{search,path,paths,update}`` — Memory bulk operations
+  • ``/api/v1/analytics/routing/*``             — Model routing analytics (read-only)
+
 Azure WAF / Front Door Integration
 -----------------------------------
 When deployed behind Azure WAF, Application Gateway, or Front Door
@@ -210,338 +224,426 @@ def _compile_action_rules() -> list[tuple[re.Pattern, Optional[str], str]]:
     automations, calendars, skills, MCP OAuth 2.1 authorize/callback,
     IdP back-channel logout, and retrieval/audio/images config.
     """
-    _ID = r"[^/]+"  # matches a path segment (UUID, slug, etc.)
+    _ID = r'[^/]+'  # matches a path segment (UUID, slug, etc.)
 
     raw_rules: list[tuple[str, Optional[str], str]] = [
         # ── Authentication & Session ─────────────────────────────────────
-        (rf"^/api/v1/auths/signin$", "POST", "AUTH_LOGIN"),
-        (rf"^/api/v1/auths/ldap$", "POST", "AUTH_LOGIN_LDAP"),
-        (rf"^/api/v1/auths/signup$", "POST", "AUTH_SIGNUP"),
-        (rf"^/api/v1/auths/signout$", "POST", "AUTH_LOGOUT"),
-        (rf"^/api/v1/auths/update/password$", "POST", "AUTH_PASSWORD_CHANGE"),
-        (rf"^/api/v1/auths/update/timezone$", "POST", "AUTH_TIMEZONE_UPDATE"),
-        (rf"^/api/v1/auths/update/profile$", "POST", "AUTH_PROFILE_UPDATE"),
-        (rf"^/api/v1/auths/api_key$", "POST", "AUTH_API_KEY_CREATE"),
-        (rf"^/api/v1/auths/api_key$", "DELETE", "AUTH_API_KEY_DELETE"),
-        (rf"^/api/v1/auths/oauth/{_ID}/token/exchange$", "POST", "AUTH_OAUTH_TOKEN"),
-        (rf"^/api/v1/auths/oauth/sessions/", "DELETE", "AUTH_LOGOUT"),          # OAuth session revoke (v0.9.3)
+        (rf'^/api/v1/auths/signin$', 'POST', 'AUTH_LOGIN'),
+        (rf'^/api/v1/auths/ldap$', 'POST', 'AUTH_LOGIN_LDAP'),
+        (rf'^/api/v1/auths/signup$', 'POST', 'AUTH_SIGNUP'),
+        (rf'^/api/v1/auths/signout$', 'POST', 'AUTH_LOGOUT'),
+        (rf'^/api/v1/auths/update/password$', 'POST', 'AUTH_PASSWORD_CHANGE'),
+        (rf'^/api/v1/auths/update/timezone$', 'POST', 'AUTH_TIMEZONE_UPDATE'),
+        (rf'^/api/v1/auths/update/profile$', 'POST', 'AUTH_PROFILE_UPDATE'),
+        (rf'^/api/v1/auths/api_key$', 'POST', 'AUTH_API_KEY_CREATE'),
+        (rf'^/api/v1/auths/api_key$', 'DELETE', 'AUTH_API_KEY_DELETE'),
+        (rf'^/api/v1/auths/oauth/{_ID}/token/exchange$', 'POST', 'AUTH_OAUTH_TOKEN'),
+        (rf'^/api/v1/auths/oauth/sessions/', 'DELETE', 'AUTH_LOGOUT'),  # OAuth session revoke (v0.9.3)
         # OIDC/OAuth2 callback endpoints (GET — browser redirect after IdP authentication)
-        (rf"^/oauth/{_ID}/login/callback$", "GET", "AUTH_OIDC_LOGIN"),
-        (rf"^/oauth/{_ID}/callback$", "GET", "AUTH_OIDC_LOGIN"),         # legacy path
-        (rf"^/oauth/clients/{_ID}/callback$", "GET", "AUTH_OIDC_LOGIN"),  # dynamic OAuth clients
+        (rf'^/oauth/{_ID}/login/callback$', 'GET', 'AUTH_OIDC_LOGIN'),
+        (rf'^/oauth/{_ID}/callback$', 'GET', 'AUTH_OIDC_LOGIN'),  # legacy path
+        (rf'^/oauth/clients/{_ID}/callback$', 'GET', 'AUTH_OIDC_LOGIN'),  # dynamic OAuth clients
         # MCP OAuth 2.1: client initiates authorization flow
-        (rf"^/oauth/clients/{_ID}/authorize$", "GET", "AUTH_OAUTH_AUTHORIZE"),
+        (rf'^/oauth/clients/{_ID}/authorize$', 'GET', 'AUTH_OAUTH_AUTHORIZE'),
         # IdP-initiated back-channel logout (RFC 7009 / OpenID Connect Back-Channel Logout)
-        (rf"^/oauth/backchannel-logout$", "POST", "AUTH_LOGOUT"),
-        (rf"^/api/v1/auths/admin/config/ldap/server$", "POST", "CONFIG_LDAP_SERVER"),
-        (rf"^/api/v1/auths/admin/config/ldap$", "POST", "CONFIG_LDAP"),
-        (rf"^/api/v1/auths/admin/config$", "POST", "CONFIG_AUTH"),
-        (rf"^/api/v1/auths/add$", "POST", "USER_CREATE"),
-
+        (rf'^/oauth/backchannel-logout$', 'POST', 'AUTH_LOGOUT'),
+        (rf'^/api/v1/auths/admin/config/ldap/server$', 'POST', 'CONFIG_LDAP_SERVER'),
+        (rf'^/api/v1/auths/admin/config/ldap$', 'POST', 'CONFIG_LDAP'),
+        (rf'^/api/v1/auths/admin/config$', 'POST', 'CONFIG_AUTH'),
+        (rf'^/api/v1/auths/add$', 'POST', 'USER_CREATE'),
         # ── User Management ──────────────────────────────────────────────
-        (rf"^/api/v1/users/default/permissions$", "POST", "USER_PERMISSIONS_DEFAULT"),
-        (rf"^/api/v1/users/{_ID}/update$", "POST", "USER_UPDATE"),
-        (rf"^/api/v1/users/{_ID}$", "DELETE", "USER_DELETE"),
-        (rf"^/api/v1/users/user/settings/update$", "POST", "USER_SETTINGS_UPDATE"),
-        (rf"^/api/v1/users/user/info/update$", "POST", "USER_INFO_UPDATE"),
-        (rf"^/api/v1/users/user/status/update$", "POST", "USER_STATUS_UPDATE"),
-        (rf"^/api/v1/users/{_ID}/oauth/sessions$", "GET", "USER_OAUTH_SESSIONS_VIEW"),
-        (rf"^/api/v1/users/{_ID}/preview$", "GET", "USER_ACCESS_PREVIEW"),
-
+        (rf'^/api/v1/users/default/permissions$', 'POST', 'USER_PERMISSIONS_DEFAULT'),
+        (rf'^/api/v1/users/{_ID}/update$', 'POST', 'USER_UPDATE'),
+        (rf'^/api/v1/users/{_ID}$', 'DELETE', 'USER_DELETE'),
+        (rf'^/api/v1/users/user/settings/update$', 'POST', 'USER_SETTINGS_UPDATE'),
+        (rf'^/api/v1/users/user/info/update$', 'POST', 'USER_INFO_UPDATE'),
+        (rf'^/api/v1/users/user/status/update$', 'POST', 'USER_STATUS_UPDATE'),
+        (rf'^/api/v1/users/{_ID}/oauth/sessions$', 'GET', 'USER_OAUTH_SESSIONS_VIEW'),
+        (rf'^/api/v1/users/{_ID}/preview$', 'GET', 'USER_ACCESS_PREVIEW'),
         # ── Group Management ─────────────────────────────────────────────
-        (rf"^/api/v1/groups/create$", "POST", "GROUP_CREATE"),
-        (rf"^/api/v1/groups/id/{_ID}/update$", "POST", "GROUP_UPDATE"),
-        (rf"^/api/v1/groups/id/{_ID}/delete$", "DELETE", "GROUP_DELETE"),
-        (rf"^/api/v1/groups/id/{_ID}/users/add$", "POST", "GROUP_MEMBER_ADD"),
-        (rf"^/api/v1/groups/id/{_ID}/users/remove$", "POST", "GROUP_MEMBER_REMOVE"),
-        (rf"^/api/v1/groups/id/{_ID}/export$", "GET", "DATA_EXPORT"),
-        (rf"^/api/v1/groups/id/{_ID}/preview$", "GET", "GROUP_ACCESS_PREVIEW"),
-
+        (rf'^/api/v1/groups/create$', 'POST', 'GROUP_CREATE'),
+        (rf'^/api/v1/groups/id/{_ID}/update$', 'POST', 'GROUP_UPDATE'),
+        (rf'^/api/v1/groups/id/{_ID}/delete$', 'DELETE', 'GROUP_DELETE'),
+        (rf'^/api/v1/groups/id/{_ID}/users/add$', 'POST', 'GROUP_MEMBER_ADD'),
+        (rf'^/api/v1/groups/id/{_ID}/users/remove$', 'POST', 'GROUP_MEMBER_REMOVE'),
+        (rf'^/api/v1/groups/id/{_ID}/export$', 'GET', 'DATA_EXPORT'),
+        (rf'^/api/v1/groups/id/{_ID}/preview$', 'GET', 'GROUP_ACCESS_PREVIEW'),
         # ── System Configuration ─────────────────────────────────────────
-        (rf"^/api/v1/configs/import$", "POST", "CONFIG_IMPORT"),
-        (rf"^/api/v1/configs/export$", "GET", "CONFIG_EXPORT"),
-        (rf"^/api/v1/configs/connections$", "POST", "CONFIG_CONNECTIONS"),
-        (rf"^/api/v1/configs/oauth/clients/register$", "POST", "CONFIG_OAUTH_CLIENT"),
-        (rf"^/api/v1/configs/tool_servers/verify$", "POST", "CONFIG_TOOL_SERVERS_VERIFY"),
-        (rf"^/api/v1/configs/tool_servers$", "POST", "CONFIG_TOOL_SERVERS"),
-        (rf"^/api/v1/configs/terminal_servers/verify$", "POST", "CONFIG_TERMINAL_SERVERS_VERIFY"),
-        (rf"^/api/v1/configs/terminal_servers/policy$", "POST", "CONFIG_TERMINAL_SERVERS_POLICY"),
-        (rf"^/api/v1/configs/terminal_servers$", "POST", "CONFIG_TERMINAL_SERVERS"),
-        (rf"^/api/v1/configs/code_execution$", "POST", "CONFIG_CODE_EXECUTION"),
-        (rf"^/api/v1/configs/models$", "POST", "CONFIG_MODELS"),
-        (rf"^/api/v1/configs/suggestions$", "POST", "CONFIG_SUGGESTIONS"),
-        (rf"^/api/v1/configs/banners$", "POST", "CONFIG_BANNERS"),
-
+        (rf'^/api/v1/configs/import$', 'POST', 'CONFIG_IMPORT'),
+        (rf'^/api/v1/configs/export$', 'GET', 'CONFIG_EXPORT'),
+        (rf'^/api/v1/configs/connections$', 'POST', 'CONFIG_CONNECTIONS'),
+        (rf'^/api/v1/configs/oauth/clients/register$', 'POST', 'CONFIG_OAUTH_CLIENT'),
+        (rf'^/api/v1/configs/tool_servers/verify$', 'POST', 'CONFIG_TOOL_SERVERS_VERIFY'),
+        (rf'^/api/v1/configs/tool_servers$', 'POST', 'CONFIG_TOOL_SERVERS'),
+        (rf'^/api/v1/configs/terminal_servers/verify$', 'POST', 'CONFIG_TERMINAL_SERVERS_VERIFY'),
+        (rf'^/api/v1/configs/terminal_servers/policy$', 'POST', 'CONFIG_TERMINAL_SERVERS_POLICY'),
+        (rf'^/api/v1/configs/terminal_servers$', 'POST', 'CONFIG_TERMINAL_SERVERS'),
+        (rf'^/api/v1/configs/code_execution$', 'POST', 'CONFIG_CODE_EXECUTION'),
+        (rf'^/api/v1/configs/models$', 'POST', 'CONFIG_MODELS'),
+        (rf'^/api/v1/configs/suggestions$', 'POST', 'CONFIG_SUGGESTIONS'),
+        (rf'^/api/v1/configs/banners$', 'POST', 'CONFIG_BANNERS'),
         # ── Retrieval / Audio / Images configuration (admin-only) ────────
-        (rf"^/api/v1/retrieval/embedding/update$", "POST", "CONFIG_RETRIEVAL_EMBEDDING"),
-        (rf"^/api/v1/retrieval/config/update$", "POST", "CONFIG_RETRIEVAL"),
-        (rf"^/api/v1/retrieval/reset/db$", "POST", "DATA_RESET_RETRIEVAL_DB"),
-        (rf"^/api/v1/retrieval/reset/uploads$", "POST", "DATA_RESET_RETRIEVAL_UPLOADS"),
-        (rf"^/api/v1/audio/config/update$", "POST", "CONFIG_AUDIO"),
-        (rf"^/api/v1/images/config/update$", "POST", "CONFIG_IMAGES"),
-
+        (rf'^/api/v1/retrieval/embedding/update$', 'POST', 'CONFIG_RETRIEVAL_EMBEDDING'),
+        (rf'^/api/v1/retrieval/config/update$', 'POST', 'CONFIG_RETRIEVAL'),
+        (rf'^/api/v1/retrieval/reset/db$', 'POST', 'DATA_RESET_RETRIEVAL_DB'),
+        (rf'^/api/v1/retrieval/reset/uploads$', 'POST', 'DATA_RESET_RETRIEVAL_UPLOADS'),
+        (rf'^/api/v1/audio/config/update$', 'POST', 'CONFIG_AUDIO'),
+        (rf'^/api/v1/images/config/update$', 'POST', 'CONFIG_IMAGES'),
         # ── Tasks (AI generation + config) ──────────────────────────────
-        (rf"^/api/v1/tasks/config/update$", "POST", "CONFIG_TASKS"),
-        (rf"^/api/v1/tasks/title/completions$", "POST", "TASK_TITLE_GENERATE"),
-        (rf"^/api/v1/tasks/follow_up/completions$", "POST", "TASK_FOLLOWUP_GENERATE"),
-        (rf"^/api/v1/tasks/tags/completions$", "POST", "TASK_TAGS_GENERATE"),
-        (rf"^/api/v1/tasks/image_prompt/completions$", "POST", "TASK_IMAGE_PROMPT_GENERATE"),
-        (rf"^/api/v1/tasks/queries/completions$", "POST", "TASK_QUERY_GENERATE"),
-        (rf"^/api/v1/tasks/auto/completions$", "POST", "TASK_AUTOCOMPLETE_GENERATE"),
-        (rf"^/api/v1/tasks/emoji/completions$", "POST", "TASK_EMOJI_GENERATE"),
-        (rf"^/api/v1/tasks/moa/completions$", "POST", "TASK_MOA_GENERATE"),
-
+        (rf'^/api/v1/tasks/config/update$', 'POST', 'CONFIG_TASKS'),
+        (rf'^/api/v1/tasks/title/completions$', 'POST', 'TASK_TITLE_GENERATE'),
+        (rf'^/api/v1/tasks/follow_up/completions$', 'POST', 'TASK_FOLLOWUP_GENERATE'),
+        (rf'^/api/v1/tasks/tags/completions$', 'POST', 'TASK_TAGS_GENERATE'),
+        (rf'^/api/v1/tasks/image_prompt/completions$', 'POST', 'TASK_IMAGE_PROMPT_GENERATE'),
+        (rf'^/api/v1/tasks/queries/completions$', 'POST', 'TASK_QUERY_GENERATE'),
+        (rf'^/api/v1/tasks/auto/completions$', 'POST', 'TASK_AUTOCOMPLETE_GENERATE'),
+        (rf'^/api/v1/tasks/emoji/completions$', 'POST', 'TASK_EMOJI_GENERATE'),
+        (rf'^/api/v1/tasks/moa/completions$', 'POST', 'TASK_MOA_GENERATE'),
         # ── Chat Operations ──────────────────────────────────────────────
-        (rf"^/api/v1/chats/new$", "POST", "CHAT_CREATE"),
-        (rf"^/api/v1/chats/import$", "POST", "DATA_IMPORT"),
-        (rf"^/api/v1/chats/{_ID}/share$", "POST", "ACCESS_SHARE_CHAT"),
-        (rf"^/api/v1/chats/{_ID}/share$", "DELETE", "ACCESS_UNSHARE_CHAT"),
-        (rf"^/api/v1/chats/{_ID}/archive$", "POST", "CHAT_ARCHIVE"),
-        (rf"^/api/v1/chats/archive/all$", "POST", "CHAT_ARCHIVE_ALL"),
-        (rf"^/api/v1/chats/unarchive/all$", "POST", "CHAT_UNARCHIVE_ALL"),
-        (rf"^/api/v1/chats/{_ID}/clone$", "POST", "CHAT_CLONE"),
-        (rf"^/api/v1/chats/{_ID}/clone/shared$", "POST", "CHAT_CLONE_SHARED"),
-        (rf"^/api/v1/chats/{_ID}$", "DELETE", "CHAT_DELETE"),
-        (rf"^/api/v1/chats/$", "DELETE", "CHAT_DELETE_ALL"),
-        (rf"^/api/v1/chats/{_ID}$", "POST", "CHAT_UPDATE"),
-        (rf"^/api/v1/chats/shared/{_ID}/access/update$", "POST", "ACCESS_SHARE_CHAT_UPDATE"),
-        (rf"^/api/v1/chats/{_ID}/pin$", "POST", "CHAT_PIN"),
-        (rf"^/api/v1/chats/{_ID}/folder$", "POST", "CHAT_MOVE_FOLDER"),
-        (rf"^/api/v1/chats/stats/export", "GET", "DATA_EXPORT"),
-
+        (rf'^/api/v1/chats/new$', 'POST', 'CHAT_CREATE'),
+        (rf'^/api/v1/chats/import$', 'POST', 'DATA_IMPORT'),
+        (rf'^/api/v1/chats/{_ID}/share$', 'POST', 'ACCESS_SHARE_CHAT'),
+        (rf'^/api/v1/chats/{_ID}/share$', 'DELETE', 'ACCESS_UNSHARE_CHAT'),
+        (rf'^/api/v1/chats/{_ID}/archive$', 'POST', 'CHAT_ARCHIVE'),
+        (rf'^/api/v1/chats/archive/all$', 'POST', 'CHAT_ARCHIVE_ALL'),
+        (rf'^/api/v1/chats/unarchive/all$', 'POST', 'CHAT_UNARCHIVE_ALL'),
+        (rf'^/api/v1/chats/{_ID}/clone$', 'POST', 'CHAT_CLONE'),
+        (rf'^/api/v1/chats/{_ID}/clone/shared$', 'POST', 'CHAT_CLONE_SHARED'),
+        # NOTE: literal-path rules below must precede the generic
+        # /chats/{id} rules (DELETE/POST), otherwise "share", "config" etc.
+        # would be swallowed as if they were a chat ID.
+        (rf'^/api/v1/chats/share/all$', 'DELETE', 'CHAT_DELETE_ALL_SHARED'),
+        (rf'^/api/v1/chats/config$', 'POST', 'CONFIG_CHATS'),
+        (rf'^/api/v1/chats/config$', 'GET', 'CONFIG_CHATS_READ'),
+        (rf'^/api/v1/chats/archived/count$', 'GET', 'CHAT_ARCHIVED_COUNT'),
+        (rf'^/api/v1/chats/{_ID}$', 'DELETE', 'CHAT_DELETE'),
+        (rf'^/api/v1/chats/$', 'DELETE', 'CHAT_DELETE_ALL'),
+        (rf'^/api/v1/chats/{_ID}$', 'POST', 'CHAT_UPDATE'),
+        (rf'^/api/v1/chats/shared/{_ID}/access/update$', 'POST', 'ACCESS_SHARE_CHAT_UPDATE'),
+        (rf'^/api/v1/chats/{_ID}/pin$', 'POST', 'CHAT_PIN'),
+        (rf'^/api/v1/chats/{_ID}/folder$', 'POST', 'CHAT_MOVE_FOLDER'),
+        (rf'^/api/v1/chats/stats/export', 'GET', 'DATA_EXPORT'),
         # ── Note Operations ──────────────────────────────────────────────
-        (rf"^/api/v1/notes/create$", "POST", "NOTE_CREATE"),
-        (rf"^/api/v1/notes/{_ID}/update$", "POST", "NOTE_UPDATE"),
-        (rf"^/api/v1/notes/{_ID}/access/update$", "POST", "ACCESS_NOTE_UPDATE"),
-        (rf"^/api/v1/notes/{_ID}/pin$", "POST", "NOTE_PIN"),
-        (rf"^/api/v1/notes/{_ID}/delete$", "DELETE", "NOTE_DELETE"),
-
+        (rf'^/api/v1/notes/create$', 'POST', 'NOTE_CREATE'),
+        (rf'^/api/v1/notes/{_ID}/update$', 'POST', 'NOTE_UPDATE'),
+        (rf'^/api/v1/notes/{_ID}/access/update$', 'POST', 'ACCESS_NOTE_UPDATE'),
+        (rf'^/api/v1/notes/{_ID}/pin$', 'POST', 'NOTE_PIN'),
+        (rf'^/api/v1/notes/{_ID}/delete$', 'DELETE', 'NOTE_DELETE'),
         # ── File Operations ──────────────────────────────────────────────
-        (rf"^/api/v1/files/$", "POST", "FILE_UPLOAD"),
-        (rf"^/api/v1/files/all$", "DELETE", "FILE_DELETE_ALL"),
-        (rf"^/api/v1/files/{_ID}$", "DELETE", "FILE_DELETE"),
-        (rf"^/api/v1/files/{_ID}/rename$", "POST", "FILE_RENAME"),
-        (rf"^/api/v1/files/{_ID}/data/content/update$", "POST", "FILE_CONTENT_UPDATE"),
-
+        (rf'^/api/v1/files/$', 'POST', 'FILE_UPLOAD'),
+        (rf'^/api/v1/files/all$', 'DELETE', 'FILE_DELETE_ALL'),
+        (rf'^/api/v1/files/{_ID}$', 'DELETE', 'FILE_DELETE'),
+        (rf'^/api/v1/files/{_ID}/rename$', 'POST', 'FILE_RENAME'),
+        (rf'^/api/v1/files/{_ID}/data/content/update$', 'POST', 'FILE_CONTENT_UPDATE'),
         # ── Knowledge Base ───────────────────────────────────────────────
-        (rf"^/api/v1/knowledge/create$", "POST", "KNOWLEDGE_CREATE"),
-        (rf"^/api/v1/knowledge/{_ID}/update$", "POST", "KNOWLEDGE_UPDATE"),
-        (rf"^/api/v1/knowledge/{_ID}/access/update$", "POST", "ACCESS_KNOWLEDGE_UPDATE"),
-        (rf"^/api/v1/knowledge/{_ID}/delete$", "DELETE", "KNOWLEDGE_DELETE"),
-        (rf"^/api/v1/knowledge/{_ID}/reset$", "POST", "KNOWLEDGE_RESET"),
-        (rf"^/api/v1/knowledge/{_ID}/file/add$", "POST", "KNOWLEDGE_FILE_ADD"),
-        (rf"^/api/v1/knowledge/{_ID}/file/update$", "POST", "KNOWLEDGE_FILE_UPDATE"),
-        (rf"^/api/v1/knowledge/{_ID}/file/remove$", "POST", "KNOWLEDGE_FILE_REMOVE"),
-        (rf"^/api/v1/knowledge/{_ID}/files/batch/add$", "POST", "KNOWLEDGE_FILE_ADD"),
-        (rf"^/api/v1/knowledge/{_ID}/files/pending$", "GET", "KNOWLEDGE_FILES_PENDING"),
-        (rf"^/api/v1/knowledge/{_ID}/sync/diff$", "POST", "KNOWLEDGE_SYNC_DIFF"),
-        (rf"^/api/v1/knowledge/{_ID}/sync/cleanup$", "POST", "KNOWLEDGE_SYNC_CLEANUP"),
-        (rf"^/api/v1/knowledge/{_ID}/export$", "GET", "DATA_EXPORT"),
-        (rf"^/api/v1/knowledge/metadata/reindex$", "POST", "KNOWLEDGE_REINDEX"),
-        (rf"^/api/v1/knowledge/reindex$", "POST", "KNOWLEDGE_REINDEX"),
-
+        (rf'^/api/v1/knowledge/create$', 'POST', 'KNOWLEDGE_CREATE'),
+        (rf'^/api/v1/knowledge/{_ID}/update$', 'POST', 'KNOWLEDGE_UPDATE'),
+        (rf'^/api/v1/knowledge/{_ID}/access/update$', 'POST', 'ACCESS_KNOWLEDGE_UPDATE'),
+        (rf'^/api/v1/knowledge/{_ID}/delete$', 'DELETE', 'KNOWLEDGE_DELETE'),
+        (rf'^/api/v1/knowledge/{_ID}/reset$', 'POST', 'KNOWLEDGE_RESET'),
+        (rf'^/api/v1/knowledge/{_ID}/file/add$', 'POST', 'KNOWLEDGE_FILE_ADD'),
+        (rf'^/api/v1/knowledge/{_ID}/file/update$', 'POST', 'KNOWLEDGE_FILE_UPDATE'),
+        (rf'^/api/v1/knowledge/{_ID}/file/remove$', 'POST', 'KNOWLEDGE_FILE_REMOVE'),
+        (rf'^/api/v1/knowledge/{_ID}/files/batch/add$', 'POST', 'KNOWLEDGE_FILE_ADD'),
+        (rf'^/api/v1/knowledge/{_ID}/files/pending$', 'GET', 'KNOWLEDGE_FILES_PENDING'),
+        (rf'^/api/v1/knowledge/{_ID}/sync/diff$', 'POST', 'KNOWLEDGE_SYNC_DIFF'),
+        (rf'^/api/v1/knowledge/{_ID}/sync/cleanup$', 'POST', 'KNOWLEDGE_SYNC_CLEANUP'),
+        (rf'^/api/v1/knowledge/{_ID}/export$', 'GET', 'DATA_EXPORT'),
+        (rf'^/api/v1/knowledge/metadata/reindex$', 'POST', 'KNOWLEDGE_REINDEX'),
+        (rf'^/api/v1/knowledge/reindex$', 'POST', 'KNOWLEDGE_REINDEX'),
         # ── Functions (Plugins) ──────────────────────────────────────────
-        (rf"^/api/v1/functions/create$", "POST", "RESOURCE_CREATE_FUNCTION"),
-        (rf"^/api/v1/functions/id/{_ID}/update$", "POST", "RESOURCE_UPDATE_FUNCTION"),
-        (rf"^/api/v1/functions/id/{_ID}/delete$", "DELETE", "RESOURCE_DELETE_FUNCTION"),
-        (rf"^/api/v1/functions/id/{_ID}/toggle$", "POST", "RESOURCE_TOGGLE_FUNCTION"),
-        (rf"^/api/v1/functions/id/{_ID}/toggle/global$", "POST", "RESOURCE_TOGGLE_FUNCTION_GLOBAL"),
-        (rf"^/api/v1/functions/id/{_ID}/valves/update$", "POST", "RESOURCE_UPDATE_FUNCTION_VALVES"),
-        (rf"^/api/v1/functions/sync$", "POST", "RESOURCE_SYNC_FUNCTIONS"),
-        (rf"^/api/v1/functions/export$", "GET", "DATA_EXPORT"),
-        (rf"^/api/v1/functions/load/url$", "POST", "RESOURCE_LOAD_FUNCTION_URL"),
-
+        (rf'^/api/v1/functions/create$', 'POST', 'RESOURCE_CREATE_FUNCTION'),
+        (rf'^/api/v1/functions/id/{_ID}/update$', 'POST', 'RESOURCE_UPDATE_FUNCTION'),
+        (rf'^/api/v1/functions/id/{_ID}/delete$', 'DELETE', 'RESOURCE_DELETE_FUNCTION'),
+        (rf'^/api/v1/functions/id/{_ID}/toggle$', 'POST', 'RESOURCE_TOGGLE_FUNCTION'),
+        (rf'^/api/v1/functions/id/{_ID}/toggle/global$', 'POST', 'RESOURCE_TOGGLE_FUNCTION_GLOBAL'),
+        (rf'^/api/v1/functions/id/{_ID}/valves/update$', 'POST', 'RESOURCE_UPDATE_FUNCTION_VALVES'),
+        (rf'^/api/v1/functions/sync$', 'POST', 'RESOURCE_SYNC_FUNCTIONS'),
+        (rf'^/api/v1/functions/export$', 'GET', 'DATA_EXPORT'),
+        (rf'^/api/v1/functions/load/url$', 'POST', 'RESOURCE_LOAD_FUNCTION_URL'),
         # ── Tools ────────────────────────────────────────────────────────
-        (rf"^/api/v1/tools/create$", "POST", "RESOURCE_CREATE_TOOL"),
-        (rf"^/api/v1/tools/id/{_ID}/update$", "POST", "RESOURCE_UPDATE_TOOL"),
-        (rf"^/api/v1/tools/id/{_ID}/access/update$", "POST", "ACCESS_TOOL_UPDATE"),
-        (rf"^/api/v1/tools/id/{_ID}/delete$", "DELETE", "RESOURCE_DELETE_TOOL"),
-        (rf"^/api/v1/tools/id/{_ID}/valves/update$", "POST", "RESOURCE_UPDATE_TOOL_VALVES"),
-        (rf"^/api/v1/tools/export$", "GET", "DATA_EXPORT"),
-        (rf"^/api/v1/tools/load/url$", "POST", "RESOURCE_LOAD_TOOL_URL"),
-
+        (rf'^/api/v1/tools/create$', 'POST', 'RESOURCE_CREATE_TOOL'),
+        (rf'^/api/v1/tools/id/{_ID}/update$', 'POST', 'RESOURCE_UPDATE_TOOL'),
+        (rf'^/api/v1/tools/id/{_ID}/access/update$', 'POST', 'ACCESS_TOOL_UPDATE'),
+        (rf'^/api/v1/tools/id/{_ID}/delete$', 'DELETE', 'RESOURCE_DELETE_TOOL'),
+        (rf'^/api/v1/tools/id/{_ID}/valves/update$', 'POST', 'RESOURCE_UPDATE_TOOL_VALVES'),
+        (rf'^/api/v1/tools/export$', 'GET', 'DATA_EXPORT'),
+        (rf'^/api/v1/tools/load/url$', 'POST', 'RESOURCE_LOAD_TOOL_URL'),
         # ── Models ───────────────────────────────────────────────────────
-        (rf"^/api/v1/models/create$", "POST", "RESOURCE_CREATE_MODEL"),
-        (rf"^/api/v1/models/model/update$", "POST", "RESOURCE_UPDATE_MODEL"),
-        (rf"^/api/v1/models/model/access/update$", "POST", "ACCESS_MODEL_UPDATE"),
-        (rf"^/api/v1/models/model/delete$", "POST", "RESOURCE_DELETE_MODEL"),
-        (rf"^/api/v1/models/model/toggle$", "POST", "RESOURCE_TOGGLE_MODEL"),
-        (rf"^/api/v1/models/delete/all$", "DELETE", "RESOURCE_DELETE_ALL_MODELS"),
-        (rf"^/api/v1/models/import$", "POST", "DATA_IMPORT"),
-        (rf"^/api/v1/models/export$", "GET", "DATA_EXPORT"),
-        (rf"^/api/v1/models/sync$", "POST", "RESOURCE_SYNC_MODELS"),
-
+        (rf'^/api/v1/models/create$', 'POST', 'RESOURCE_CREATE_MODEL'),
+        (rf'^/api/v1/models/model/update$', 'POST', 'RESOURCE_UPDATE_MODEL'),
+        (rf'^/api/v1/models/model/access/update$', 'POST', 'ACCESS_MODEL_UPDATE'),
+        (rf'^/api/v1/models/model/delete$', 'POST', 'RESOURCE_DELETE_MODEL'),
+        (rf'^/api/v1/models/model/toggle$', 'POST', 'RESOURCE_TOGGLE_MODEL'),
+        (rf'^/api/v1/models/delete/all$', 'DELETE', 'RESOURCE_DELETE_ALL_MODELS'),
+        (rf'^/api/v1/models/import$', 'POST', 'DATA_IMPORT'),
+        (rf'^/api/v1/models/export$', 'GET', 'DATA_EXPORT'),
+        (rf'^/api/v1/models/sync$', 'POST', 'RESOURCE_SYNC_MODELS'),
         # ── SCIM 2.0 Identity Provisioning ─────────────────────────────
         # SCIM endpoints are used by IdPs (ManageEngine ADSSPM, Entra ID,
         # Okta, etc.) to sync users and groups. All write operations are
         # NIS2-critical because they modify the identity store.
-        (rf"^/api/v1/scim/v2/Users$", "POST", "SCIM_USER_CREATE"),
-        (rf"^/api/v1/scim/v2/Users/{_ID}$", "PUT", "SCIM_USER_UPDATE"),
-        (rf"^/api/v1/scim/v2/Users/{_ID}$", "PATCH", "SCIM_USER_PATCH"),
-        (rf"^/api/v1/scim/v2/Users/{_ID}$", "DELETE", "SCIM_USER_DELETE"),
-        (rf"^/api/v1/scim/v2/Groups$", "POST", "SCIM_GROUP_CREATE"),
-        (rf"^/api/v1/scim/v2/Groups/{_ID}$", "PUT", "SCIM_GROUP_UPDATE"),
-        (rf"^/api/v1/scim/v2/Groups/{_ID}$", "PATCH", "SCIM_GROUP_PATCH"),
-        (rf"^/api/v1/scim/v2/Groups/{_ID}$", "DELETE", "SCIM_GROUP_DELETE"),
-
+        (rf'^/api/v1/scim/v2/Users$', 'POST', 'SCIM_USER_CREATE'),
+        (rf'^/api/v1/scim/v2/Users/{_ID}$', 'PUT', 'SCIM_USER_UPDATE'),
+        (rf'^/api/v1/scim/v2/Users/{_ID}$', 'PATCH', 'SCIM_USER_PATCH'),
+        (rf'^/api/v1/scim/v2/Users/{_ID}$', 'DELETE', 'SCIM_USER_DELETE'),
+        (rf'^/api/v1/scim/v2/Groups$', 'POST', 'SCIM_GROUP_CREATE'),
+        (rf'^/api/v1/scim/v2/Groups/{_ID}$', 'PUT', 'SCIM_GROUP_UPDATE'),
+        (rf'^/api/v1/scim/v2/Groups/{_ID}$', 'PATCH', 'SCIM_GROUP_PATCH'),
+        (rf'^/api/v1/scim/v2/Groups/{_ID}$', 'DELETE', 'SCIM_GROUP_DELETE'),
         # ── Pipelines (code execution risk) ──────────────────────────────
-        (rf"^/api/v1/pipelines/upload$", "POST", "PIPELINE_UPLOAD"),
-        (rf"^/api/v1/pipelines/add$", "POST", "PIPELINE_ADD"),
-        (rf"^/api/v1/pipelines/delete$", "DELETE", "PIPELINE_DELETE"),
-        (rf"^/api/v1/pipelines/{_ID}/valves/update$", "POST", "PIPELINE_VALVES_UPDATE"),
-
+        (rf'^/api/v1/pipelines/upload$', 'POST', 'PIPELINE_UPLOAD'),
+        (rf'^/api/v1/pipelines/add$', 'POST', 'PIPELINE_ADD'),
+        (rf'^/api/v1/pipelines/delete$', 'DELETE', 'PIPELINE_DELETE'),
+        (rf'^/api/v1/pipelines/{_ID}/valves/update$', 'POST', 'PIPELINE_VALVES_UPDATE'),
         # ── Skills (code execution risk — same profile as Functions/Tools) ─
-        (rf"^/api/v1/skills/create$", "POST", "RESOURCE_CREATE_SKILL"),
-        (rf"^/api/v1/skills/id/{_ID}/update$", "POST", "RESOURCE_UPDATE_SKILL"),
-        (rf"^/api/v1/skills/id/{_ID}/access/update$", "POST", "ACCESS_SKILL_UPDATE"),
-        (rf"^/api/v1/skills/id/{_ID}/toggle$", "POST", "RESOURCE_TOGGLE_SKILL"),
-        (rf"^/api/v1/skills/id/{_ID}/delete$", "DELETE", "RESOURCE_DELETE_SKILL"),
-        (rf"^/api/v1/skills/export$", "GET", "DATA_EXPORT"),
-
+        (rf'^/api/v1/skills/create$', 'POST', 'RESOURCE_CREATE_SKILL'),
+        (rf'^/api/v1/skills/id/{_ID}/update$', 'POST', 'RESOURCE_UPDATE_SKILL'),
+        (rf'^/api/v1/skills/id/{_ID}/access/update$', 'POST', 'ACCESS_SKILL_UPDATE'),
+        (rf'^/api/v1/skills/id/{_ID}/toggle$', 'POST', 'RESOURCE_TOGGLE_SKILL'),
+        (rf'^/api/v1/skills/id/{_ID}/delete$', 'DELETE', 'RESOURCE_DELETE_SKILL'),
+        (rf'^/api/v1/skills/export$', 'GET', 'DATA_EXPORT'),
         # ── Prompts ──────────────────────────────────────────────────────
-        (rf"^/api/v1/prompts/create$", "POST", "RESOURCE_CREATE_PROMPT"),
-        (rf"^/api/v1/prompts/id/{_ID}/update$", "POST", "RESOURCE_UPDATE_PROMPT"),
-        (rf"^/api/v1/prompts/id/{_ID}/update/meta$", "POST", "RESOURCE_UPDATE_PROMPT_META"),
-        (rf"^/api/v1/prompts/id/{_ID}/update/version$", "POST", "RESOURCE_UPDATE_PROMPT_VERSION"),
-        (rf"^/api/v1/prompts/id/{_ID}/access/update$", "POST", "ACCESS_PROMPT_UPDATE"),
-        (rf"^/api/v1/prompts/id/{_ID}/toggle$", "POST", "RESOURCE_TOGGLE_PROMPT"),
-        (rf"^/api/v1/prompts/id/{_ID}/delete$", "DELETE", "RESOURCE_DELETE_PROMPT"),
-        (rf"^/api/v1/prompts/id/{_ID}/history/{_ID}$", "DELETE", "RESOURCE_DELETE_PROMPT_HISTORY"),
-
+        (rf'^/api/v1/prompts/create$', 'POST', 'RESOURCE_CREATE_PROMPT'),
+        (rf'^/api/v1/prompts/id/{_ID}/update$', 'POST', 'RESOURCE_UPDATE_PROMPT'),
+        (rf'^/api/v1/prompts/id/{_ID}/update/meta$', 'POST', 'RESOURCE_UPDATE_PROMPT_META'),
+        (rf'^/api/v1/prompts/id/{_ID}/update/version$', 'POST', 'RESOURCE_UPDATE_PROMPT_VERSION'),
+        (rf'^/api/v1/prompts/id/{_ID}/access/update$', 'POST', 'ACCESS_PROMPT_UPDATE'),
+        (rf'^/api/v1/prompts/id/{_ID}/toggle$', 'POST', 'RESOURCE_TOGGLE_PROMPT'),
+        (rf'^/api/v1/prompts/id/{_ID}/delete$', 'DELETE', 'RESOURCE_DELETE_PROMPT'),
+        (rf'^/api/v1/prompts/id/{_ID}/history/{_ID}$', 'DELETE', 'RESOURCE_DELETE_PROMPT_HISTORY'),
         # ── Evaluations & Feedback ───────────────────────────────────────
-        (rf"^/api/v1/evaluations/config$", "POST", "CONFIG_EVALUATIONS"),
-        (rf"^/api/v1/evaluations/feedbacks/all$", "DELETE", "EVAL_DELETE_ALL_FEEDBACKS"),
-        (rf"^/api/v1/evaluations/feedbacks$", "DELETE", "EVAL_DELETE_FEEDBACKS"),
-        (rf"^/api/v1/evaluations/feedback/{_ID}$", "POST", "EVAL_UPDATE_FEEDBACK"),
-        (rf"^/api/v1/evaluations/feedback/{_ID}$", "DELETE", "EVAL_DELETE_FEEDBACK"),
-        (rf"^/api/v1/evaluations/feedback$", "POST", "EVAL_CREATE_FEEDBACK"),
-
+        (rf'^/api/v1/evaluations/config$', 'POST', 'CONFIG_EVALUATIONS'),
+        (rf'^/api/v1/evaluations/feedbacks/all$', 'DELETE', 'EVAL_DELETE_ALL_FEEDBACKS'),
+        (rf'^/api/v1/evaluations/feedbacks$', 'DELETE', 'EVAL_DELETE_FEEDBACKS'),
+        (rf'^/api/v1/evaluations/feedback/{_ID}$', 'POST', 'EVAL_UPDATE_FEEDBACK'),
+        (rf'^/api/v1/evaluations/feedback/{_ID}$', 'DELETE', 'EVAL_DELETE_FEEDBACK'),
+        (rf'^/api/v1/evaluations/feedback$', 'POST', 'EVAL_CREATE_FEEDBACK'),
         # ── Memories ─────────────────────────────────────────────────────
-        (rf"^/api/v1/memories/add$", "POST", "MEMORY_ADD"),
-        (rf"^/api/v1/memories/reset$", "POST", "MEMORY_RESET"),
-        (rf"^/api/v1/memories/delete/user$", "DELETE", "MEMORY_DELETE_ALL"),
-        (rf"^/api/v1/memories/{_ID}/update$", "POST", "MEMORY_UPDATE"),
-        (rf"^/api/v1/memories/{_ID}$", "DELETE", "MEMORY_DELETE"),
-
+        (rf'^/api/v1/memories/add$', 'POST', 'MEMORY_ADD'),
+        (rf'^/api/v1/memories/reset$', 'POST', 'MEMORY_RESET'),
+        (rf'^/api/v1/memories/delete/user$', 'DELETE', 'MEMORY_DELETE_ALL'),
+        (rf'^/api/v1/memories/{_ID}/update$', 'POST', 'MEMORY_UPDATE'),
+        (rf'^/api/v1/memories/{_ID}$', 'DELETE', 'MEMORY_DELETE'),
         # ── Folders ──────────────────────────────────────────────────────
-        (rf"^/api/v1/folders/$", "POST", "FOLDER_CREATE"),
-        (rf"^/api/v1/folders/{_ID}/update$", "POST", "FOLDER_UPDATE"),
-        (rf"^/api/v1/folders/{_ID}/update/parent$", "POST", "FOLDER_MOVE"),
-        (rf"^/api/v1/folders/{_ID}$", "DELETE", "FOLDER_DELETE"),
-
+        (rf'^/api/v1/folders/$', 'POST', 'FOLDER_CREATE'),
+        (rf'^/api/v1/folders/{_ID}/update$', 'POST', 'FOLDER_UPDATE'),
+        (rf'^/api/v1/folders/{_ID}/update/parent$', 'POST', 'FOLDER_MOVE'),
+        (rf'^/api/v1/folders/{_ID}$', 'DELETE', 'FOLDER_DELETE'),
         # ── Automations (code execution risk) ───────────────────────────
         # RESOURCE_RUN_AUTOMATION is NIS2-critical: it triggers server-side
         # code/workflow execution and can modify system state.
-        (rf"^/api/v1/automations/create$", "POST", "RESOURCE_CREATE_AUTOMATION"),
-        (rf"^/api/v1/automations/{_ID}/update$", "POST", "RESOURCE_UPDATE_AUTOMATION"),
-        (rf"^/api/v1/automations/{_ID}/run$", "POST", "RESOURCE_RUN_AUTOMATION"),
-        (rf"^/api/v1/automations/{_ID}/toggle$", "POST", "RESOURCE_TOGGLE_AUTOMATION"),
-        (rf"^/api/v1/automations/{_ID}/delete$", "DELETE", "RESOURCE_DELETE_AUTOMATION"),
-        (rf"^/api/v1/automations/{_ID}/runs$", "GET", "RESOURCE_VIEW_AUTOMATION_RUNS"),
-
+        (rf'^/api/v1/automations/create$', 'POST', 'RESOURCE_CREATE_AUTOMATION'),
+        (rf'^/api/v1/automations/{_ID}/update$', 'POST', 'RESOURCE_UPDATE_AUTOMATION'),
+        (rf'^/api/v1/automations/{_ID}/run$', 'POST', 'RESOURCE_RUN_AUTOMATION'),
+        (rf'^/api/v1/automations/{_ID}/toggle$', 'POST', 'RESOURCE_TOGGLE_AUTOMATION'),
+        (rf'^/api/v1/automations/{_ID}/delete$', 'DELETE', 'RESOURCE_DELETE_AUTOMATION'),
+        (rf'^/api/v1/automations/{_ID}/runs$', 'GET', 'RESOURCE_VIEW_AUTOMATION_RUNS'),
         # ── Calendar ─────────────────────────────────────────────────────
-        (rf"^/api/v1/calendars/events/create$", "POST", "CALENDAR_EVENT_CREATE"),
-        (rf"^/api/v1/calendars/events/{_ID}/update$", "POST", "CALENDAR_EVENT_UPDATE"),
-        (rf"^/api/v1/calendars/events/{_ID}/rsvp$", "POST", "CALENDAR_EVENT_RSVP"),
-        (rf"^/api/v1/calendars/events/{_ID}/delete$", "DELETE", "CALENDAR_EVENT_DELETE"),
-        (rf"^/api/v1/calendars/create$", "POST", "CALENDAR_CREATE"),
-        (rf"^/api/v1/calendars/{_ID}/update$", "POST", "CALENDAR_UPDATE"),
-        (rf"^/api/v1/calendars/{_ID}/default$", "POST", "CALENDAR_SET_DEFAULT"),
-        (rf"^/api/v1/calendars/{_ID}/delete$", "DELETE", "CALENDAR_DELETE"),
-
+        (rf'^/api/v1/calendars/events/create$', 'POST', 'CALENDAR_EVENT_CREATE'),
+        (rf'^/api/v1/calendars/events/{_ID}/update$', 'POST', 'CALENDAR_EVENT_UPDATE'),
+        (rf'^/api/v1/calendars/events/{_ID}/rsvp$', 'POST', 'CALENDAR_EVENT_RSVP'),
+        (rf'^/api/v1/calendars/events/{_ID}/delete$', 'DELETE', 'CALENDAR_EVENT_DELETE'),
+        (rf'^/api/v1/calendars/create$', 'POST', 'CALENDAR_CREATE'),
+        (rf'^/api/v1/calendars/{_ID}/update$', 'POST', 'CALENDAR_UPDATE'),
+        (rf'^/api/v1/calendars/{_ID}/default$', 'POST', 'CALENDAR_SET_DEFAULT'),
+        (rf'^/api/v1/calendars/{_ID}/delete$', 'DELETE', 'CALENDAR_DELETE'),
         # ── Channels ─────────────────────────────────────────────────────
-        (rf"^/api/v1/channels/create$", "POST", "CHANNEL_CREATE"),
-        (rf"^/api/v1/channels/{_ID}/update$", "POST", "CHANNEL_UPDATE"),
-        (rf"^/api/v1/channels/{_ID}/delete$", "DELETE", "CHANNEL_DELETE"),
-        (rf"^/api/v1/channels/{_ID}/update/members/add$", "POST", "CHANNEL_MEMBER_ADD"),
-        (rf"^/api/v1/channels/{_ID}/update/members/remove$", "POST", "CHANNEL_MEMBER_REMOVE"),
-        (rf"^/api/v1/channels/{_ID}/webhooks/create$", "POST", "CHANNEL_WEBHOOK_CREATE"),
-        (rf"^/api/v1/channels/{_ID}/webhooks/{_ID}/update$", "POST", "CHANNEL_WEBHOOK_UPDATE"),
-        (rf"^/api/v1/channels/{_ID}/webhooks/{_ID}/delete$", "DELETE", "CHANNEL_WEBHOOK_DELETE"),
-        (rf"^/api/v1/channels/{_ID}/messages/post$", "POST", "CHANNEL_MESSAGE_POST"),
-        (rf"^/api/v1/channels/{_ID}/messages/{_ID}/delete$", "DELETE", "CHANNEL_MESSAGE_DELETE"),
-        (rf"^/api/v1/channels/{_ID}/messages/{_ID}/update$", "POST", "CHANNEL_MESSAGE_UPDATE"),
-
+        (rf'^/api/v1/channels/create$', 'POST', 'CHANNEL_CREATE'),
+        (rf'^/api/v1/channels/{_ID}/update$', 'POST', 'CHANNEL_UPDATE'),
+        (rf'^/api/v1/channels/{_ID}/delete$', 'DELETE', 'CHANNEL_DELETE'),
+        (rf'^/api/v1/channels/{_ID}/update/members/add$', 'POST', 'CHANNEL_MEMBER_ADD'),
+        (rf'^/api/v1/channels/{_ID}/update/members/remove$', 'POST', 'CHANNEL_MEMBER_REMOVE'),
+        (rf'^/api/v1/channels/{_ID}/webhooks/create$', 'POST', 'CHANNEL_WEBHOOK_CREATE'),
+        (rf'^/api/v1/channels/{_ID}/webhooks/{_ID}/update$', 'POST', 'CHANNEL_WEBHOOK_UPDATE'),
+        (rf'^/api/v1/channels/{_ID}/webhooks/{_ID}/delete$', 'DELETE', 'CHANNEL_WEBHOOK_DELETE'),
+        (rf'^/api/v1/channels/{_ID}/messages/post$', 'POST', 'CHANNEL_MESSAGE_POST'),
+        (rf'^/api/v1/channels/{_ID}/messages/{_ID}/delete$', 'DELETE', 'CHANNEL_MESSAGE_DELETE'),
+        (rf'^/api/v1/channels/{_ID}/messages/{_ID}/update$', 'POST', 'CHANNEL_MESSAGE_UPDATE'),
+        # ── New API surfaces added after v0.9.6 (v0.9.7–v0.10.1) ─────────
+        (rf'^/api/v1/analytics/routing/events$', 'GET', 'ANALYTICS_ROUTING_EVENTS'),
+        (rf'^/api/v1/analytics/routing/summary$', 'GET', 'ANALYTICS_ROUTING_SUMMARY'),
+        (rf'^/api/v1/auths/admin/config/oauth$', 'POST', 'CONFIG_OAUTH_ADMIN'),
+        (rf'^/api/v1/auths/admin/config/oauth$', 'GET', 'CONFIG_OAUTH_ADMIN_READ'),
+        (rf'^/api/v1/chats/{_ID}/messages/{_ID}$', 'DELETE', 'CHAT_MESSAGE_DELETE'),
+        (rf'^/api/v1/chats/{_ID}/compact$', 'POST', 'CHAT_COMPACT'),
+        (rf'^/api/v1/configs/terminal_servers/lifecycle$', 'POST', 'CONFIG_TERMINAL_SERVERS_LIFECYCLE'),
+        (rf'^/api/v1/configs/terminal_servers/refresh$', 'POST', 'CONFIG_TERMINAL_SERVERS_REFRESH'),
+        (rf'^/api/v1/configs/namespace/{_ID}$', 'GET', 'CONFIG_NAMESPACE_READ'),
+        (rf'^/api/v1/files/count$', 'GET', 'FILE_COUNT'),
+        (rf'^/api/v1/folders/{_ID}/access/update$', 'POST', 'ACCESS_FOLDER_UPDATE'),
+        (rf'^/api/v1/folders/shared$', 'GET', 'FOLDER_SHARED_READ'),
+        (rf'^/api/v1/folders/{_ID}/shared/chats$', 'GET', 'FOLDER_SHARED_CHATS_READ'),
+        (
+            rf'^/api/v1/knowledge/external/connections/{_ID}/retrieve-test$',
+            'POST',
+            'KNOWLEDGE_EXTERNAL_CONNECTION_RETRIEVE_TEST',
+        ),
+        (rf'^/api/v1/knowledge/external/connections/{_ID}/test$', 'POST', 'KNOWLEDGE_EXTERNAL_CONNECTION_TEST'),
+        (rf'^/api/v1/knowledge/external/connections/{_ID}$', 'PATCH', 'KNOWLEDGE_EXTERNAL_CONNECTION_UPDATE'),
+        (rf'^/api/v1/knowledge/external/connections/{_ID}$', 'DELETE', 'KNOWLEDGE_EXTERNAL_CONNECTION_DELETE'),
+        (rf'^/api/v1/knowledge/external/connections/{_ID}$', 'GET', 'KNOWLEDGE_EXTERNAL_CONNECTION_READ'),
+        (rf'^/api/v1/knowledge/external/connections$', 'POST', 'KNOWLEDGE_EXTERNAL_CONNECTION_CREATE'),
+        (rf'^/api/v1/knowledge/external/connections$', 'GET', 'KNOWLEDGE_EXTERNAL_CONNECTION_LIST'),
+        (rf'^/api/v1/knowledge/external/source/test$', 'POST', 'KNOWLEDGE_EXTERNAL_SOURCE_TEST'),
+        (rf'^/api/v1/knowledge/external/source/create$', 'POST', 'KNOWLEDGE_EXTERNAL_SOURCE_CREATE'),
+        (rf'^/api/v1/knowledge/external/source/{_ID}$', 'PATCH', 'KNOWLEDGE_EXTERNAL_SOURCE_UPDATE'),
+        (rf'^/api/v1/knowledge/external/knowledge/create$', 'POST', 'KNOWLEDGE_EXTERNAL_KNOWLEDGE_CREATE'),
+        (rf'^/api/v1/memories/search$', 'POST', 'MEMORY_SEARCH'),
+        (rf'^/api/v1/memories/paths$', 'POST', 'MEMORY_PATHS'),
+        (rf'^/api/v1/memories/path$', 'POST', 'MEMORY_PATH'),
+        (rf'^/api/v1/memories/update$', 'POST', 'MEMORY_UPDATE_BULK'),
+        (rf'^/api/v1/models/base/tags$', 'GET', 'MODEL_BASE_TAGS_READ'),
+        (rf'^/api/v1/users/default/permissions/defaults$', 'GET', 'USER_PERMISSIONS_DEFAULTS_READ'),
         # ── Catch-all for remaining API write operations ─────────────────
         # These catch any unmatched POST/PUT/PATCH/DELETE on /api/ paths
-        (rf"^/api/", "DELETE", "DELETE_OTHER"),
-        (rf"^/api/", "POST", "WRITE_OTHER"),
-        (rf"^/api/", "PUT", "WRITE_OTHER"),
-        (rf"^/api/", "PATCH", "WRITE_OTHER"),
-
+        (rf'^/api/', 'DELETE', 'DELETE_OTHER'),
+        (rf'^/api/', 'POST', 'WRITE_OTHER'),
+        (rf'^/api/', 'PUT', 'WRITE_OTHER'),
+        (rf'^/api/', 'PATCH', 'WRITE_OTHER'),
         # ── Read operations ──────────────────────────────────────────────
-        (rf"^/api/", "GET", "READ"),
+        (rf'^/api/', 'GET', 'READ'),
     ]
 
-    return [
-        (re.compile(pattern, re.IGNORECASE), method, action)
-        for pattern, method, action in raw_rules
-    ]
+    return [(re.compile(pattern, re.IGNORECASE), method, action) for pattern, method, action in raw_rules]
 
 
 _NIS2_ACTION_RULES = _compile_action_rules()
 
 # Pre-computed set of action types that are NIS2 security-relevant
 # (higher severity — should be flagged in SIEM/audit tools)
-_NIS2_SECURITY_ACTIONS = frozenset({
-    # Authentication
-    "AUTH_LOGIN", "AUTH_LOGIN_LDAP", "AUTH_SIGNUP", "AUTH_LOGOUT",
-    "AUTH_PASSWORD_CHANGE", "AUTH_API_KEY_CREATE", "AUTH_API_KEY_DELETE",
-    "AUTH_OAUTH_TOKEN", "AUTH_OIDC_LOGIN",
-    # User management
-    "USER_CREATE", "USER_UPDATE", "USER_DELETE", "USER_PERMISSIONS_DEFAULT",
-    "USER_ACCESS_PREVIEW",
-    # Group management
-    "GROUP_CREATE", "GROUP_UPDATE", "GROUP_DELETE",
-    "GROUP_MEMBER_ADD", "GROUP_MEMBER_REMOVE",
-    "GROUP_ACCESS_PREVIEW",
-    # SCIM 2.0 identity provisioning (IdP → Open WebUI sync)
-    "SCIM_USER_CREATE", "SCIM_USER_UPDATE", "SCIM_USER_PATCH", "SCIM_USER_DELETE",
-    "SCIM_GROUP_CREATE", "SCIM_GROUP_UPDATE", "SCIM_GROUP_PATCH", "SCIM_GROUP_DELETE",
-    # Configuration
-    "CONFIG_AUTH", "CONFIG_LDAP", "CONFIG_LDAP_SERVER",
-    "CONFIG_CONNECTIONS", "CONFIG_OAUTH_CLIENT", "CONFIG_TOOL_SERVERS",
-    "CONFIG_TOOL_SERVERS_VERIFY", "CONFIG_TERMINAL_SERVERS",
-    "CONFIG_CODE_EXECUTION", "CONFIG_MODELS", "CONFIG_IMPORT",
-    "CONFIG_EVALUATIONS", "CONFIG_RETRIEVAL", "CONFIG_RETRIEVAL_EMBEDDING",
-    "CONFIG_AUDIO", "CONFIG_IMAGES", "CONFIG_TASKS",
-    # Access control / sharing
-    "ACCESS_SHARE_CHAT", "ACCESS_UNSHARE_CHAT", "ACCESS_SHARE_CHAT_UPDATE",
-    "ACCESS_NOTE_UPDATE", "ACCESS_KNOWLEDGE_UPDATE",
-    "ACCESS_TOOL_UPDATE", "ACCESS_MODEL_UPDATE",
-    "ACCESS_PROMPT_UPDATE", "ACCESS_SKILL_UPDATE",
-    # Data export (potential data exfiltration)
-    "CONFIG_EXPORT", "DATA_EXPORT", "DATA_IMPORT",
-    # Destructive operations
-    "CHAT_DELETE_ALL", "FILE_DELETE_ALL", "RESOURCE_DELETE_ALL_MODELS",
-    "KNOWLEDGE_DELETE", "KNOWLEDGE_RESET",
-    "KNOWLEDGE_SYNC_DIFF", "KNOWLEDGE_SYNC_CLEANUP",
-    "EVAL_DELETE_ALL_FEEDBACKS", "EVAL_DELETE_FEEDBACKS",
-    "MEMORY_RESET", "MEMORY_DELETE_ALL",
-    "DATA_RESET_RETRIEVAL_DB", "DATA_RESET_RETRIEVAL_UPLOADS",
-    # Resource management with security implications
-    "RESOURCE_CREATE_FUNCTION", "RESOURCE_UPDATE_FUNCTION",
-    "RESOURCE_DELETE_FUNCTION", "RESOURCE_LOAD_FUNCTION_URL",
-    "RESOURCE_CREATE_TOOL", "RESOURCE_UPDATE_TOOL",
-    "RESOURCE_DELETE_TOOL", "RESOURCE_LOAD_TOOL_URL",
-    # Skills (code execution — same risk profile as functions/tools)
-    "RESOURCE_CREATE_SKILL", "RESOURCE_UPDATE_SKILL", "RESOURCE_DELETE_SKILL",
-    # Automations (server-side code/workflow execution)
-    "RESOURCE_CREATE_AUTOMATION", "RESOURCE_UPDATE_AUTOMATION",
-    "RESOURCE_DELETE_AUTOMATION", "RESOURCE_RUN_AUTOMATION",
-    # OAuth MCP authorization flow
-    "AUTH_OAUTH_AUTHORIZE",
-    # Terminal server policy (execution environment config)
-    "CONFIG_TERMINAL_SERVERS_VERIFY", "CONFIG_TERMINAL_SERVERS_POLICY",
-    # Pipelines (code execution — upload/manage executable code)
-    "PIPELINE_UPLOAD", "PIPELINE_ADD", "PIPELINE_DELETE", "PIPELINE_VALVES_UPDATE",
-    # Channel/webhook (external integrations)
-    "CHANNEL_WEBHOOK_CREATE", "CHANNEL_WEBHOOK_UPDATE", "CHANNEL_WEBHOOK_DELETE",
-    # Calendar (destructive)
-    "CALENDAR_DELETE",
-    # Scheduled automations (background code execution — no HTTP triggerer)
-    "TASK_AUTOMATION_SCHEDULED", "TASK_AUTOMATION_SCHEDULED_ERROR",
-})
+_NIS2_SECURITY_ACTIONS = frozenset(
+    {
+        # Authentication
+        'AUTH_LOGIN',
+        'AUTH_LOGIN_LDAP',
+        'AUTH_SIGNUP',
+        'AUTH_LOGOUT',
+        'AUTH_PASSWORD_CHANGE',
+        'AUTH_API_KEY_CREATE',
+        'AUTH_API_KEY_DELETE',
+        'AUTH_OAUTH_TOKEN',
+        'AUTH_OIDC_LOGIN',
+        # User management
+        'USER_CREATE',
+        'USER_UPDATE',
+        'USER_DELETE',
+        'USER_PERMISSIONS_DEFAULT',
+        'USER_ACCESS_PREVIEW',
+        # Group management
+        'GROUP_CREATE',
+        'GROUP_UPDATE',
+        'GROUP_DELETE',
+        'GROUP_MEMBER_ADD',
+        'GROUP_MEMBER_REMOVE',
+        'GROUP_ACCESS_PREVIEW',
+        # SCIM 2.0 identity provisioning (IdP → Open WebUI sync)
+        'SCIM_USER_CREATE',
+        'SCIM_USER_UPDATE',
+        'SCIM_USER_PATCH',
+        'SCIM_USER_DELETE',
+        'SCIM_GROUP_CREATE',
+        'SCIM_GROUP_UPDATE',
+        'SCIM_GROUP_PATCH',
+        'SCIM_GROUP_DELETE',
+        # Configuration
+        'CONFIG_AUTH',
+        'CONFIG_LDAP',
+        'CONFIG_LDAP_SERVER',
+        'CONFIG_CONNECTIONS',
+        'CONFIG_OAUTH_CLIENT',
+        'CONFIG_TOOL_SERVERS',
+        'CONFIG_TOOL_SERVERS_VERIFY',
+        'CONFIG_TERMINAL_SERVERS',
+        'CONFIG_CODE_EXECUTION',
+        'CONFIG_MODELS',
+        'CONFIG_IMPORT',
+        'CONFIG_EVALUATIONS',
+        'CONFIG_RETRIEVAL',
+        'CONFIG_RETRIEVAL_EMBEDDING',
+        'CONFIG_AUDIO',
+        'CONFIG_IMAGES',
+        'CONFIG_TASKS',
+        # Access control / sharing
+        'ACCESS_SHARE_CHAT',
+        'ACCESS_UNSHARE_CHAT',
+        'ACCESS_SHARE_CHAT_UPDATE',
+        'ACCESS_NOTE_UPDATE',
+        'ACCESS_KNOWLEDGE_UPDATE',
+        'ACCESS_TOOL_UPDATE',
+        'ACCESS_MODEL_UPDATE',
+        'ACCESS_PROMPT_UPDATE',
+        'ACCESS_SKILL_UPDATE',
+        # Data export (potential data exfiltration)
+        'CONFIG_EXPORT',
+        'DATA_EXPORT',
+        'DATA_IMPORT',
+        # Destructive operations
+        'CHAT_DELETE_ALL',
+        'FILE_DELETE_ALL',
+        'RESOURCE_DELETE_ALL_MODELS',
+        'KNOWLEDGE_DELETE',
+        'KNOWLEDGE_RESET',
+        'KNOWLEDGE_SYNC_DIFF',
+        'KNOWLEDGE_SYNC_CLEANUP',
+        'EVAL_DELETE_ALL_FEEDBACKS',
+        'EVAL_DELETE_FEEDBACKS',
+        'MEMORY_RESET',
+        'MEMORY_DELETE_ALL',
+        'DATA_RESET_RETRIEVAL_DB',
+        'DATA_RESET_RETRIEVAL_UPLOADS',
+        # Resource management with security implications
+        'RESOURCE_CREATE_FUNCTION',
+        'RESOURCE_UPDATE_FUNCTION',
+        'RESOURCE_DELETE_FUNCTION',
+        'RESOURCE_LOAD_FUNCTION_URL',
+        'RESOURCE_CREATE_TOOL',
+        'RESOURCE_UPDATE_TOOL',
+        'RESOURCE_DELETE_TOOL',
+        'RESOURCE_LOAD_TOOL_URL',
+        # Skills (code execution — same risk profile as functions/tools)
+        'RESOURCE_CREATE_SKILL',
+        'RESOURCE_UPDATE_SKILL',
+        'RESOURCE_DELETE_SKILL',
+        # Automations (server-side code/workflow execution)
+        'RESOURCE_CREATE_AUTOMATION',
+        'RESOURCE_UPDATE_AUTOMATION',
+        'RESOURCE_DELETE_AUTOMATION',
+        'RESOURCE_RUN_AUTOMATION',
+        # OAuth MCP authorization flow
+        'AUTH_OAUTH_AUTHORIZE',
+        # Terminal server policy (execution environment config)
+        'CONFIG_TERMINAL_SERVERS_VERIFY',
+        'CONFIG_TERMINAL_SERVERS_POLICY',
+        # Pipelines (code execution — upload/manage executable code)
+        'PIPELINE_UPLOAD',
+        'PIPELINE_ADD',
+        'PIPELINE_DELETE',
+        'PIPELINE_VALVES_UPDATE',
+        # Channel/webhook (external integrations)
+        'CHANNEL_WEBHOOK_CREATE',
+        'CHANNEL_WEBHOOK_UPDATE',
+        'CHANNEL_WEBHOOK_DELETE',
+        # Calendar (destructive)
+        'CALENDAR_DELETE',
+        # Scheduled automations (background code execution — no HTTP triggerer)
+        'TASK_AUTOMATION_SCHEDULED',
+        'TASK_AUTOMATION_SCHEDULED_ERROR',
+        # New API surfaces added after v0.9.6 (v0.9.7–v0.10.1)
+        'CONFIG_OAUTH_ADMIN',
+        'CHAT_DELETE_ALL_SHARED',
+        'CONFIG_CHATS',
+        'CONFIG_TERMINAL_SERVERS_LIFECYCLE',
+        'CONFIG_TERMINAL_SERVERS_REFRESH',
+        'ACCESS_FOLDER_UPDATE',
+        'KNOWLEDGE_EXTERNAL_CONNECTION_CREATE',
+        'KNOWLEDGE_EXTERNAL_CONNECTION_UPDATE',
+        'KNOWLEDGE_EXTERNAL_CONNECTION_DELETE',
+        'KNOWLEDGE_EXTERNAL_SOURCE_CREATE',
+        'KNOWLEDGE_EXTERNAL_SOURCE_UPDATE',
+        'KNOWLEDGE_EXTERNAL_KNOWLEDGE_CREATE',
+    }
+)
 
 
 def _classify_action(method: str, path: str) -> tuple[str, bool]:
@@ -554,7 +656,7 @@ def _classify_action(method: str, path: str) -> tuple[str, bool]:
             continue
         if pattern.search(path):
             return action, action in _NIS2_SECURITY_ACTIONS
-    return "-", False
+    return '-', False
 
 
 # ---------------------------------------------------------------------------
@@ -574,33 +676,36 @@ def _compile_object_id_patterns() -> list[tuple[re.Pattern, str]]:
     Returns list of (compiled_regex, object_type) where the regex has a
     named group 'oid' that captures the object ID.
     """
-    _ID = r"(?P<oid>[^/]+)"
+    _ID = r'(?P<oid>[^/]+)'
 
     raw = [
         # More-specific patterns MUST come before generic ones to avoid false
         # matches.  E.g. /scim/v2/Users/{id} must precede /users/{id}$,
         # and /calendars/events/{id} must precede /calendars/{id}.
-        (rf"/scim/v2/Users/{_ID}", "scim_user"),
-        (rf"/scim/v2/Groups/{_ID}", "scim_group"),
-        (rf"/calendars/events/{_ID}", "calendar_event"),
-        (rf"/evaluations/feedback/{_ID}", "feedback"),
-        (rf"/groups/id/{_ID}", "group"),
-        (rf"/users/{_ID}/update", "user"),
-        (rf"/users/{_ID}$", "user"),
-        (rf"/chats/{_ID}", "chat"),
-        (rf"/notes/{_ID}", "note"),
-        (rf"/files/{_ID}", "file"),
-        (rf"/knowledge/{_ID}", "knowledge"),
-        (rf"/functions/id/{_ID}", "function"),
-        (rf"/tools/id/{_ID}", "tool"),
-        (rf"/skills/id/{_ID}", "skill"),
-        (rf"/channels/{_ID}", "channel"),
-        (rf"/pipelines/{_ID}", "pipeline"),
-        (rf"/prompts/id/{_ID}", "prompt"),
-        (rf"/memories/{_ID}", "memory"),
-        (rf"/folders/{_ID}", "folder"),
-        (rf"/automations/{_ID}", "automation"),
-        (rf"/calendars/{_ID}", "calendar"),
+        (rf'/scim/v2/Users/{_ID}', 'scim_user'),
+        (rf'/scim/v2/Groups/{_ID}', 'scim_group'),
+        (rf'/calendars/events/{_ID}', 'calendar_event'),
+        (rf'/evaluations/feedback/{_ID}', 'feedback'),
+        (rf'/groups/id/{_ID}', 'group'),
+        (rf'/users/{_ID}/update', 'user'),
+        (rf'/users/{_ID}$', 'user'),
+        (rf'/chats/{_ID}', 'chat'),
+        (rf'/notes/{_ID}', 'note'),
+        (rf'/files/{_ID}', 'file'),
+        # external connections/source must precede the generic /knowledge/{id}
+        (rf'/knowledge/external/connections/{_ID}', 'external_connection'),
+        (rf'/knowledge/external/source/{_ID}', 'external_source'),
+        (rf'/knowledge/{_ID}', 'knowledge'),
+        (rf'/functions/id/{_ID}', 'function'),
+        (rf'/tools/id/{_ID}', 'tool'),
+        (rf'/skills/id/{_ID}', 'skill'),
+        (rf'/channels/{_ID}', 'channel'),
+        (rf'/pipelines/{_ID}', 'pipeline'),
+        (rf'/prompts/id/{_ID}', 'prompt'),
+        (rf'/memories/{_ID}', 'memory'),
+        (rf'/folders/{_ID}', 'folder'),
+        (rf'/automations/{_ID}', 'automation'),
+        (rf'/calendars/{_ID}', 'calendar'),
     ]
 
     return [(re.compile(p, re.IGNORECASE), obj_type) for p, obj_type in raw]
@@ -619,13 +724,14 @@ def _extract_object_ref(path: str) -> tuple[Optional[str], Optional[str]]:
     for pattern, obj_type in _OBJECT_ID_PATTERNS:
         m = pattern.search(path)
         if m:
-            return obj_type, m.group("oid")
+            return obj_type, m.group('oid')
     return None, None
 
 
 # ---------------------------------------------------------------------------
 # Outcome mapping  (Log360 outcome / CEF outcome)
 # ---------------------------------------------------------------------------
+
 
 def _outcome_from_status(status_code: int) -> str:
     """Map HTTP status code to Log360-compatible outcome string.
@@ -640,13 +746,13 @@ def _outcome_from_status(status_code: int) -> str:
       redirect — 3xx redirects (OAuth flows, etc.)
     """
     if 200 <= status_code < 300:
-        return "success"
+        return 'success'
     elif 300 <= status_code < 400:
-        return "redirect"
+        return 'redirect'
     elif 400 <= status_code < 500:
-        return "failure"
+        return 'failure'
     else:
-        return "error"
+        return 'error'
 
 
 class _UserContext(NamedTuple):
@@ -670,7 +776,7 @@ def invalidate_user_cache(user_id: str) -> None:
     """
     with _cache_lock:
         _cache_data.pop(user_id, None)
-    _log.debug("Invalidated access-log cache for user %s", user_id)
+    _log.debug('Invalidated access-log cache for user %s', user_id)
 
 
 # ---------------------------------------------------------------------------
@@ -680,11 +786,11 @@ def invalidate_user_cache(user_id: str) -> None:
 #   acr  — Authentication Context Class Reference — alternative MFA signal
 # If any of these are absent the access-log cannot be fully NIS2-compliant.
 # ---------------------------------------------------------------------------
-_NIS2_REQUIRED_CLAIMS = ("sub",)
-_NIS2_MFA_CLAIMS = ("amr", "acr")  # at least one must be present
+_NIS2_REQUIRED_CLAIMS = ('sub',)
+_NIS2_MFA_CLAIMS = ('amr', 'acr')  # at least one must be present
 
 
-def _decode_id_token_claims(id_token_raw: str, user_hint: str = "") -> tuple[Optional[str], Optional[str]]:
+def _decode_id_token_claims(id_token_raw: str, user_hint: str = '') -> tuple[Optional[str], Optional[str]]:
     """Decode an OIDC id_token (without signature verification) and extract sub + MFA claims.
 
     Emits a WARNING when claims required for NIS2 compliance are missing.
@@ -695,8 +801,8 @@ def _decode_id_token_claims(id_token_raw: str, user_hint: str = "") -> tuple[Opt
     try:
         decoded = pyjwt.decode(
             id_token_raw,
-            options={"verify_signature": False},
-            algorithms=["RS256", "HS256", "ES256", "PS256", "EdDSA"],
+            options={'verify_signature': False},
+            algorithms=['RS256', 'HS256', 'ES256', 'PS256', 'EdDSA'],
         )
 
         # --- NIS2 compliance check ----------------------------------------
@@ -705,29 +811,29 @@ def _decode_id_token_claims(id_token_raw: str, user_hint: str = "") -> tuple[Opt
 
         if missing_required:
             _log.warning(
-                "NIS2-COMPLIANCE: OIDC id_token for user [%s] is missing required claim(s): %s. "
-                "The IdP (ManageEngine ADSSPM) must be configured to include these claims. "
-                "Available claims: %s",
-                user_hint or "unknown",
-                ", ".join(missing_required),
-                ", ".join(sorted(decoded.keys())),
+                'NIS2-COMPLIANCE: OIDC id_token for user [%s] is missing required claim(s): %s. '
+                'The IdP (ManageEngine ADSSPM) must be configured to include these claims. '
+                'Available claims: %s',
+                user_hint or 'unknown',
+                ', '.join(missing_required),
+                ', '.join(sorted(decoded.keys())),
             )
         if not has_mfa_claim:
             _log.warning(
                 "NIS2-COMPLIANCE: OIDC id_token for user [%s] contains neither 'amr' nor 'acr'. "
-                "MFA status cannot be determined. "
+                'MFA status cannot be determined. '
                 "Configure the IdP (ManageEngine ADSSPM) to emit 'amr' (RFC 8176) or 'acr' claims. "
-                "Available claims: %s",
-                user_hint or "unknown",
-                ", ".join(sorted(decoded.keys())),
+                'Available claims: %s',
+                user_hint or 'unknown',
+                ', '.join(sorted(decoded.keys())),
             )
         # ------------------------------------------------------------------
 
-        oidc_sub = decoded.get("sub")
-        amr = decoded.get("amr")
-        acr = decoded.get("acr")
+        oidc_sub = decoded.get('sub')
+        amr = decoded.get('amr')
+        acr = decoded.get('acr')
         if amr:
-            mfa_status = ",".join(amr) if isinstance(amr, list) else str(amr)
+            mfa_status = ','.join(amr) if isinstance(amr, list) else str(amr)
         elif acr:
             mfa_status = str(acr)
         else:
@@ -735,16 +841,17 @@ def _decode_id_token_claims(id_token_raw: str, user_hint: str = "") -> tuple[Opt
         return oidc_sub, mfa_status
     except Exception as e:
         _log.warning(
-            "NIS2-COMPLIANCE: Failed to decode OIDC id_token for user [%s]: %s. "
-            "OIDC sub and MFA status will be unavailable.",
-            user_hint or "unknown", e,
+            'NIS2-COMPLIANCE: Failed to decode OIDC id_token for user [%s]: %s. '
+            'OIDC sub and MFA status will be unavailable.',
+            user_hint or 'unknown',
+            e,
         )
         return None, None
 
 
 # Claims to redact from the full token dump to avoid leaking opaque tokens
 # into the log (they add noise and may trigger WAF/DLP rules).
-_REDACTED_CLAIMS = frozenset({"at_hash", "c_hash", "nonce", "jti"})
+_REDACTED_CLAIMS = frozenset({'at_hash', 'c_hash', 'nonce', 'jti'})
 
 
 def _decode_full_id_token(id_token_raw: str) -> Optional[dict]:
@@ -758,8 +865,8 @@ def _decode_full_id_token(id_token_raw: str) -> Optional[dict]:
     try:
         decoded = pyjwt.decode(
             id_token_raw,
-            options={"verify_signature": False},
-            algorithms=["RS256", "HS256", "ES256", "PS256", "EdDSA"],
+            options={'verify_signature': False},
+            algorithms=['RS256', 'HS256', 'ES256', 'PS256', 'EdDSA'],
         )
         return {k: v for k, v in decoded.items() if k not in _REDACTED_CLAIMS}
     except Exception:
@@ -795,11 +902,12 @@ def _resolve_user_context(user_id: str) -> _UserContext:
     # 1) Resolve email + role from Users table (Log360: duser + spriv)
     try:
         from open_webui.models.users import Users
+
         user = Users.get_user_by_id(user_id)
         if user:
-            if getattr(user, "email", None):
+            if getattr(user, 'email', None):
                 email = str(user.email)
-            if getattr(user, "role", None):
+            if getattr(user, 'role', None):
                 role = str(user.role)
     except Exception:
         pass
@@ -807,38 +915,37 @@ def _resolve_user_context(user_id: str) -> _UserContext:
     # 2) Resolve OIDC claims from server-side OAuth session
     try:
         from open_webui.models.oauth_sessions import OAuthSessions
+
         sessions = OAuthSessions.get_sessions_by_user_id(user_id)
         if sessions:
             # Take the most recent session
             session = sessions[0]
             token_dict = session.token  # already decrypted by the model
             if isinstance(token_dict, dict):
-                id_token_raw = token_dict.get("id_token")
+                id_token_raw = token_dict.get('id_token')
                 if id_token_raw and isinstance(id_token_raw, str):
-                    oidc_sub, mfa_status = _decode_id_token_claims(
-                        id_token_raw, user_hint=email or user_id
-                    )
+                    oidc_sub, mfa_status = _decode_id_token_claims(id_token_raw, user_hint=email or user_id)
                 else:
                     _log.warning(
-                        "NIS2-COMPLIANCE: OAuth session for user [%s] does not contain an id_token. "
-                        "The IdP (ManageEngine ADSSPM) token response must include an id_token "
-                        "for NIS2-compliant logging. Token keys present: %s",
+                        'NIS2-COMPLIANCE: OAuth session for user [%s] does not contain an id_token. '
+                        'The IdP (ManageEngine ADSSPM) token response must include an id_token '
+                        'for NIS2-compliant logging. Token keys present: %s',
                         email or user_id,
-                        ", ".join(sorted(token_dict.keys())) if token_dict else "(empty)",
+                        ', '.join(sorted(token_dict.keys())) if token_dict else '(empty)',
                     )
                 # Fallback: some providers put userinfo directly in the token response
                 if not oidc_sub:
-                    userinfo = token_dict.get("userinfo")
+                    userinfo = token_dict.get('userinfo')
                     if isinstance(userinfo, dict):
-                        oidc_sub = userinfo.get("sub")
+                        oidc_sub = userinfo.get('sub')
         else:
             # User is authenticated but has no OAuth session — local account or API key
             _log.debug(
-                "No OAuth session found for user %s — OIDC claims unavailable (local auth?)",
+                'No OAuth session found for user %s — OIDC claims unavailable (local auth?)',
                 user_id,
             )
     except Exception as e:
-        _log.debug("Failed to resolve OIDC claims from OAuth session for user %s: %s", user_id, e)
+        _log.debug('Failed to resolve OIDC claims from OAuth session for user %s: %s', user_id, e)
 
     ctx = _UserContext(email=email, oidc_sub=oidc_sub, mfa_status=mfa_status, role=role)
 
@@ -884,20 +991,20 @@ def log_scheduled_activity(
         meta:        Optional pipe-separated key=value pairs, e.g.
                      "trigger=scheduler|name=Daily Report|chat_id=<uuid>".
     """
-    logger = logging.getLogger("open_webui.access")
+    logger = logging.getLogger('open_webui.access')
     outcome = _outcome_from_status(status_code)
     log_msg = (
-        f"email={user_email} | session_id=scheduler | "
-        f"correlation_id=- | oidc_sub=- | mfa=- | "
-        f"role={user_role} | "
-        f"action={action} | outcome={outcome} | nis2=Y | "
-        f"object={object_type}:{object_id} | "
-        f"ua=scheduler | "
-        f"scheduler - \"SCHEDULER /api/v1/automations/{object_id}/run\" {status_code} | "
-        f"time={duration_s:.3f}s"
+        f'email={user_email} | session_id=scheduler | '
+        f'correlation_id=- | oidc_sub=- | mfa=- | '
+        f'role={user_role} | '
+        f'action={action} | outcome={outcome} | nis2=Y | '
+        f'object={object_type}:{object_id} | '
+        f'ua=scheduler | '
+        f'scheduler - "SCHEDULER /api/v1/automations/{object_id}/run" {status_code} | '
+        f'time={duration_s:.3f}s'
     )
     if meta:
-        log_msg += f" | meta={meta}"
+        log_msg += f' | meta={meta}'
     logger.warning(log_msg)
 
 
@@ -920,21 +1027,21 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
       object          → cs4+cs5     (target resource type:id)
       ua              → requestClientApplication (device fingerprint for UEBA)
     """
-    
-    def __init__(self, app, logger_name: str = "open_webui.access", exclude_paths: list = None):
+
+    def __init__(self, app, logger_name: str = 'open_webui.access', exclude_paths: list = None):
         super().__init__(app)
         self.logger = logging.getLogger(logger_name)
         # Percorsi da escludere dal logging (es. health checks)
-        self.exclude_paths = exclude_paths or ["/health", "/api/health"]
-        
+        self.exclude_paths = exclude_paths or ['/health', '/api/health']
+
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         # Salta logging per percorsi esclusi (opzionale)
         if request.url.path in self.exclude_paths:
             return await call_next(request)
-        
+
         # Genera o recupera session_id
         session_id = self._get_session_id(request)
-        
+
         # Estrai user UUID dal JWT, poi risolvi email + OIDC claims dal DB (con cache)
         user_uuid = self._extract_user_uuid(request)
         if user_uuid:
@@ -944,7 +1051,7 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
             mfa_status = ctx.mfa_status
             role = ctx.role
         else:
-            user_display = "anonymous"
+            user_display = 'anonymous'
             role = None
             # Fast path: try to extract OIDC claims from cookies (pre-login, API keys, etc.)
             oidc_sub, mfa_status = self._get_oidc_claims_from_cookies(request)
@@ -959,32 +1066,35 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
         object_type, object_id = _extract_object_ref(request.url.path)
 
         # Log360 UEBA: Capture User-Agent for anomaly detection
-        user_agent = request.headers.get("user-agent", "-")
+        user_agent = request.headers.get('user-agent', '-')
         # Truncate to avoid log injection; Log360 parses first ~200 chars
         if len(user_agent) > 200:
-            user_agent = user_agent[:200] + "…"
+            user_agent = user_agent[:200] + '…'
         # Sanitise: replace pipe characters to preserve log field delimiters
-        user_agent = user_agent.replace("|", "/")
+        user_agent = user_agent.replace('|', '/')
 
         # Client info: prefer Azure WAF / proxy headers over direct connection
         client_host = self._get_client_ip(request)
         # Only append port if using direct connection (not proxy headers)
         # Proxy headers like X-Forwarded-For may already include port info
         _has_proxy_header = any(
-            request.headers.get(h) for h in (
-                "X-Azure-ClientIP", "X-Original-Forwarded-For",
-                "X-Forwarded-For", "X-Real-IP",
+            request.headers.get(h)
+            for h in (
+                'X-Azure-ClientIP',
+                'X-Original-Forwarded-For',
+                'X-Forwarded-For',
+                'X-Real-IP',
             )
         )
         if _has_proxy_header:
             client_display = client_host
         else:
             client_port = request.client.port if request.client else 0
-            client_display = f"{client_host}:{client_port}"
-        
+            client_display = f'{client_host}:{client_port}'
+
         # Timestamp inizio
         start_time = time.time()
-        
+
         # Esegui la richiesta
         try:
             response = await call_next(request)
@@ -995,13 +1105,13 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
             # Set-Cookie response headers so that oidc_sub and mfa are visible in the
             # AUTH_OIDC_LOGIN log line itself, not only in subsequent requests.
             oidc_raw_id_token: Optional[str] = None
-            if action_type == "AUTH_OIDC_LOGIN" and not oidc_sub:
+            if action_type == 'AUTH_OIDC_LOGIN' and not oidc_sub:
                 resp_sub, resp_mfa = self._extract_oidc_from_response_cookies(response)
                 if resp_sub:
                     oidc_sub = resp_sub
                     mfa_status = resp_mfa
                     # grab the raw token from response cookie for full-claims dump
-                    for hdr in response.headers.getlist("set-cookie"):
+                    for hdr in response.headers.getlist('set-cookie'):
                         m = re.search(r'(?:^|;\s*)oauth_id_token=([^;]+)', hdr, re.IGNORECASE)
                         if m:
                             oidc_raw_id_token = m.group(1).strip()
@@ -1010,7 +1120,7 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
                     # Failure case: no cookie was issued. oauth.py stores the raw id_token
                     # in request.state after a successful token exchange so we can still
                     # log the identity of who failed to authenticate.
-                    raw = getattr(request.state, "oidc_raw_id_token", None)
+                    raw = getattr(request.state, 'oidc_raw_id_token', None)
                     if raw:
                         state_sub, state_mfa = _decode_id_token_claims(raw)
                         if state_sub:
@@ -1022,19 +1132,19 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
             # Log anche in caso di eccezione
             process_time = time.time() - start_time
             self.logger.error(
-                f"email={user_display} | session_id={session_id[:8]} | "
-                f"correlation_id={correlation_id or '-'} | "
-                f"oidc_sub={oidc_sub or '-'} | mfa={mfa_status or '-'} | "
-                f"role={role or '-'} | "
-                f"action={action_type} | outcome=error | nis2={'Y' if is_nis2 else 'N'} | "
-                f"object={object_type or '-'}:{object_id or '-'} | "
-                f"ua={user_agent} | "
-                f"{client_display} - "
+                f'email={user_display} | session_id={session_id[:8]} | '
+                f'correlation_id={correlation_id or "-"} | '
+                f'oidc_sub={oidc_sub or "-"} | mfa={mfa_status or "-"} | '
+                f'role={role or "-"} | '
+                f'action={action_type} | outcome=error | nis2={"Y" if is_nis2 else "N"} | '
+                f'object={object_type or "-"}:{object_id or "-"} | '
+                f'ua={user_agent} | '
+                f'{client_display} - '
                 f'"{request.method} {request.url.path}" EXCEPTION - '
-                f"{str(e)[:100]} | time={process_time:.3f}s"
+                f'{str(e)[:100]} | time={process_time:.3f}s'
             )
             raise
-        
+
         # Calcola tempo di elaborazione
         process_time = time.time() - start_time
 
@@ -1043,53 +1153,53 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
 
         # Detect failed auth attempts (NIS2 Art.21 — incident detection)
         # AUTH_OIDC_LOGIN: success = 302 redirect to app; failure = 4xx
-        if action_type in ("AUTH_LOGIN", "AUTH_LOGIN_LDAP", "AUTH_SIGNUP", "AUTH_OIDC_LOGIN") and status_code >= 400:
-            effective_action = f"{action_type}_FAIL"
+        if action_type in ('AUTH_LOGIN', 'AUTH_LOGIN_LDAP', 'AUTH_SIGNUP', 'AUTH_OIDC_LOGIN') and status_code >= 400:
+            effective_action = f'{action_type}_FAIL'
             effective_nis2 = True
         else:
             effective_action = action_type
             effective_nis2 = is_nis2
-        
+
         # Log NIS2-compliant con tutti i campi richiesti da Log360 SIEM
         # Campi: duser, cs3, externalId, cs9, cs8, spriv, act, outcome, cs10,
         #        cs4+cs5, requestClientApplication, src, request, cs6, cs7
         log_msg = (
-            f"email={user_display} | session_id={session_id[:8]} | "
-            f"correlation_id={correlation_id or '-'} | "
-            f"oidc_sub={oidc_sub or '-'} | mfa={mfa_status or '-'} | "
-            f"role={role or '-'} | "
-            f"action={effective_action} | outcome={outcome} | nis2={'Y' if effective_nis2 else 'N'} | "
-            f"object={object_type or '-'}:{object_id or '-'} | "
-            f"ua={user_agent} | "
-            f"{client_display} - "
+            f'email={user_display} | session_id={session_id[:8]} | '
+            f'correlation_id={correlation_id or "-"} | '
+            f'oidc_sub={oidc_sub or "-"} | mfa={mfa_status or "-"} | '
+            f'role={role or "-"} | '
+            f'action={effective_action} | outcome={outcome} | nis2={"Y" if effective_nis2 else "N"} | '
+            f'object={object_type or "-"}:{object_id or "-"} | '
+            f'ua={user_agent} | '
+            f'{client_display} - '
             f'"{request.method} {request.url.path}" {status_code} | '
-            f"time={process_time:.3f}s"
+            f'time={process_time:.3f}s'
         )
 
         # For OIDC login events append the full decoded token claims for debug/audit.
         # The raw id_token is decoded here (no signature verification) and the result
         # is appended as a JSON field so that claim mapping issues are immediately visible.
-        if action_type == "AUTH_OIDC_LOGIN":
+        if action_type == 'AUTH_OIDC_LOGIN':
             claims_dict = _decode_full_id_token(oidc_raw_id_token) if oidc_raw_id_token else None
-            log_msg += f" | claims={json.dumps(claims_dict, default=str) if claims_dict else '-'}"
+            log_msg += f' | claims={json.dumps(claims_dict, default=str) if claims_dict else "-"}'
 
         # Use WARNING level for NIS2 security-relevant actions to aid SIEM/alerting
         if effective_nis2:
             self.logger.warning(log_msg)
         else:
             self.logger.info(log_msg)
-        
+
         # Aggiungi header alla risposta (opzionale)
-        response.headers["X-Session-ID"] = session_id
-        
+        response.headers['X-Session-ID'] = session_id
+
         return response
-    
+
     def _get_correlation_id(self, request: Request) -> Optional[str]:
         """Extract correlation ID from WAF/ADSSPM/Azure Front Door."""
         return (
-            request.headers.get("X-Request-ID")
-            or request.headers.get("X-Correlation-ID")
-            or request.headers.get("X-Azure-Ref")
+            request.headers.get('X-Request-ID')
+            or request.headers.get('X-Correlation-ID')
+            or request.headers.get('X-Azure-Ref')
             or None
         )
 
@@ -1105,16 +1215,16 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
           5. request.client.host — direct ASGI connection (container-internal)
         """
         for header in (
-            "X-Azure-ClientIP",
-            "X-Original-Forwarded-For",
-            "X-Forwarded-For",
-            "X-Real-IP",
+            'X-Azure-ClientIP',
+            'X-Original-Forwarded-For',
+            'X-Forwarded-For',
+            'X-Real-IP',
         ):
             value = request.headers.get(header)
             if value:
-                return value.split(",")[0].strip()
+                return value.split(',')[0].strip()
 
-        return request.client.host if request.client else "-"
+        return request.client.host if request.client else '-'
 
     def _get_oidc_claims_from_cookies(self, request: Request) -> tuple[Optional[str], Optional[str]]:
         """
@@ -1124,15 +1234,15 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
         """
         tokens_to_try = []
 
-        oauth_id_token = request.cookies.get("oauth_id_token")
+        oauth_id_token = request.cookies.get('oauth_id_token')
         if oauth_id_token:
-            tokens_to_try.append(("oauth_id_token cookie", oauth_id_token))
+            tokens_to_try.append(('oauth_id_token cookie', oauth_id_token))
 
-        auth_header = request.headers.get("Authorization")
-        if auth_header and auth_header.startswith("Bearer "):
-            bearer = auth_header[len("Bearer "):]
-            if not bearer.startswith("sk-"):
-                tokens_to_try.append(("Bearer token", bearer))
+        auth_header = request.headers.get('Authorization')
+        if auth_header and auth_header.startswith('Bearer '):
+            bearer = auth_header[len('Bearer ') :]
+            if not bearer.startswith('sk-'):
+                tokens_to_try.append(('Bearer token', bearer))
 
         for source, token_value in tokens_to_try:
             oidc_sub, mfa_status = _decode_id_token_claims(token_value)
@@ -1150,7 +1260,7 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
         Returns (None, None) when no matching cookie is found (e.g. failed login
         where no cookie was issued).
         """
-        for cookie_header in response.headers.getlist("set-cookie"):
+        for cookie_header in response.headers.getlist('set-cookie'):
             m = re.search(r'(?:^|;\s*)oauth_id_token=([^;]+)', cookie_header, re.IGNORECASE)
             if m:
                 return _decode_id_token_claims(m.group(1).strip())
@@ -1164,17 +1274,17 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
         """
         try:
             # Method 1: request.state.user (set by auth middleware upstream)
-            if hasattr(request.state, "user") and request.state.user:
+            if hasattr(request.state, 'user') and request.state.user:
                 user = request.state.user
-                uid = user.get("id") if isinstance(user, dict) else getattr(user, "id", None)
+                uid = user.get('id') if isinstance(user, dict) else getattr(user, 'id', None)
                 if uid:
                     return str(uid)
 
             # Method 2: decode session JWT cookie
-            token = request.cookies.get("token")
+            token = request.cookies.get('token')
             if token and pyjwt is not None:
-                decoded = pyjwt.decode(token, options={"verify_signature": False})
-                uid = decoded.get("id")
+                decoded = pyjwt.decode(token, options={'verify_signature': False})
+                uid = decoded.get('id')
                 if uid:
                     return str(uid)
         except Exception:
@@ -1187,70 +1297,66 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
         La session_id dovrebbe essere persistente per tutta la sessione dell'utente
         """
         # PRIORITÀ 1: Cookie 'session_id' (più persistente)
-        session_id = request.cookies.get("session_id")
+        session_id = request.cookies.get('session_id')
         if session_id:
             return session_id
-        
+
         # PRIORITÀ 2: Cookie 'token' (JWT token come session ID)
-        token = request.cookies.get("token")
+        token = request.cookies.get('token')
         if token:
             return hashlib.md5(token.encode()).hexdigest()[:16]
-        
+
         # PRIORITÀ 3: Header 'X-Session-ID'
-        session_id = request.headers.get("X-Session-ID")
+        session_id = request.headers.get('X-Session-ID')
         if session_id:
             return session_id
-        
+
         # PRIORITÀ 4: Combinazione IP + User-Agent come identificatore temporaneo
         try:
-            user_agent = request.headers.get("user-agent", "")
-            client_ip = request.client.host if request.client else "unknown"
-            composite = f"{client_ip}:{user_agent}"
+            user_agent = request.headers.get('user-agent', '')
+            client_ip = request.client.host if request.client else 'unknown'
+            composite = f'{client_ip}:{user_agent}'
             return hashlib.md5(composite.encode()).hexdigest()[:16]
         except Exception:
             pass
-        
+
         # FALLBACK: Genera nuovo UUID
         return str(uuid.uuid4())[:16]
-    
 
-def setup_access_logging(app, log_level: str = "INFO", exclude_paths: list = None):
+
+def setup_access_logging(app, log_level: str = 'INFO', exclude_paths: list = None):
     """
     Setup del logging per l'applicazione
     Da chiamare in main.py DOPO aver creato l'app FastAPI
-    
+
     Args:
         app: FastAPI application
         log_level: Livello di logging (INFO, DEBUG, WARNING, ERROR)
         exclude_paths: Lista di percorsi da escludere dal logging (es. ["/health"])
     """
     # Crea logger personalizzato
-    logger = logging.getLogger("open_webui.access")
+    logger = logging.getLogger('open_webui.access')
     logger.setLevel(getattr(logging, log_level.upper()))
-    
+
     # Handler per stdout (esplicito sys.stdout per Azure Container Apps console)
     handler = logging.StreamHandler(sys.stdout)
     handler.setLevel(getattr(logging, log_level.upper()))
-    
+
     # Formato semplice e leggibile
-    formatter = logging.Formatter(
-        "%(asctime)s | %(levelname)-8s | %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S"
-    )
+    formatter = logging.Formatter('%(asctime)s | %(levelname)-8s | %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
     handler.setFormatter(formatter)
-    
+
     logger.addHandler(handler)
     logger.propagate = False
-    
+
     # Aggiungi il middleware all'app con percorsi da escludere
     if exclude_paths is None:
-        exclude_paths = ["/health", "/api/health"]
-    
-    app.add_middleware(AccessLogMiddleware, exclude_paths=exclude_paths)
-    
-    # DISABILITA il logging di Uvicorn per evitare duplicati
-    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
-    logging.getLogger("uvicorn.access").propagate = False
-    
-    logger.info(f"Custom access logging attivato - Percorsi esclusi: {exclude_paths}")
+        exclude_paths = ['/health', '/api/health']
 
+    app.add_middleware(AccessLogMiddleware, exclude_paths=exclude_paths)
+
+    # DISABILITA il logging di Uvicorn per evitare duplicati
+    logging.getLogger('uvicorn.access').setLevel(logging.WARNING)
+    logging.getLogger('uvicorn.access').propagate = False
+
+    logger.info(f'Custom access logging attivato - Percorsi esclusi: {exclude_paths}')

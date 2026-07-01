@@ -199,10 +199,7 @@
 	});
 
 	const submitHandler = async () => {
-		const [openaiOk, ollamaOk] = await Promise.all([
-			updateOpenAIHandler(),
-			updateOllamaHandler()
-		]);
+		const [openaiOk, ollamaOk] = await Promise.all([updateOpenAIHandler(), updateOllamaHandler()]);
 
 		if (openaiOk || ollamaOk) {
 			dispatch('save');
@@ -273,7 +270,7 @@
 											bind:key={OPENAI_API_KEYS[idx]}
 											bind:config={OPENAI_API_CONFIGS[idx]}
 											pipeline={pipelineUrls[url] ? true : false}
-										onSubmit={() => updateOpenAIHandler()}
+											onSubmit={() => updateOpenAIHandler()}
 											onDelete={() => {
 												OPENAI_API_BASE_URLS = OPENAI_API_BASE_URLS.filter(
 													(url, urlIdx) => idx !== urlIdx

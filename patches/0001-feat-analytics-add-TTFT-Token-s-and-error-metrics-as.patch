@@ -1,19 +1,26 @@
-From 18b45bec4ba869b4b6e5df54f389b044d77f8132 Mon Sep 17 00:00:00 2001
+From 5777fd2a69cde6e7df9ef6964c71d3adcaa26c8f Mon Sep 17 00:00:00 2001
 From: Fabio Paracchini <fparacchini@alteanet.it>
-Date: Wed, 22 Apr 2026 15:48:02 +0200
-Subject: [PATCH 1/8] feat(analytics): add TTFT, Token/s and error metrics
- (async, delta from 0019-0020)
+Date: Tue, 30 Jun 2026 21:34:36 +0200
+Subject: [PATCH 01/10] feat(analytics): add TTFT, Token/s and error metrics as
+ per patch 0001
 
+- Add get_performance_metrics_by_model() to ChatMessageTable
+- Add get_performance_metrics() to ChatMessageTable
+- Extend ModelAnalyticsEntry with avg_ttft_ms, avg_tokens_per_second, error_requests, total_requests, error_rate
+- Extend SummaryResponse with same performance fields
+- Wire performance metrics into /models and /summary endpoints
+
+Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>
 ---
  backend/open_webui/models/chat_messages.py | 157 +++++++++++++++++++++
- backend/open_webui/routers/analytics.py    |  19 ++-
- 2 files changed, 175 insertions(+), 1 deletion(-)
+ backend/open_webui/routers/analytics.py    |  18 +++
+ 2 files changed, 175 insertions(+)
 
 diff --git a/backend/open_webui/models/chat_messages.py b/backend/open_webui/models/chat_messages.py
-index 8660e1e98..34f2b1c50 100644
+index 5579bdbe9..5021b9b39 100644
 --- a/backend/open_webui/models/chat_messages.py
 +++ b/backend/open_webui/models/chat_messages.py
-@@ -639,6 +639,163 @@ class ChatMessageTable:
+@@ -685,6 +685,163 @@ class ChatMessageTable:
  
              return daily_counts
  
@@ -178,13 +185,13 @@ index 8660e1e98..34f2b1c50 100644
          self,
          start_date: Optional[int] = None,
 diff --git a/backend/open_webui/routers/analytics.py b/backend/open_webui/routers/analytics.py
-index fcef30342..093af9a49 100644
+index d9cf8e0a6..fb30476c7 100644
 --- a/backend/open_webui/routers/analytics.py
 +++ b/backend/open_webui/routers/analytics.py
-@@ -28,6 +28,11 @@ router = APIRouter()
- class ModelAnalyticsEntry(BaseModel):
-     model_id: str
+@@ -30,6 +30,11 @@ class ModelAnalyticsEntry(BaseModel):
      count: int
+     unique_users: int = 0
+     unique_chats: int = 0
 +    avg_ttft_ms: Optional[float] = None
 +    avg_tokens_per_second: Optional[float] = None
 +    error_requests: int = 0
@@ -193,20 +200,24 @@ index fcef30342..093af9a49 100644
  
  
  class ModelAnalyticsResponse(BaseModel):
-@@ -65,8 +70,11 @@ async def get_model_analytics(
-     counts = await ChatMessages.get_message_count_by_model(
+@@ -70,12 +75,16 @@ async def get_model_analytics(
+     unique_counts = await ChatMessages.get_unique_counts_by_model(
          start_date=start_date, end_date=end_date, group_id=group_id, db=db
      )
 +    perf = await ChatMessages.get_performance_metrics_by_model(
 +        start_date=start_date, end_date=end_date, group_id=group_id, db=db
 +    )
      models = [
--        ModelAnalyticsEntry(model_id=model_id, count=count)
-+        ModelAnalyticsEntry(model_id=model_id, count=count, **perf.get(model_id, {}))
+         ModelAnalyticsEntry(
+             model_id=model_id,
+             count=count,
+             unique_users=unique_counts.get(model_id, {}).get('unique_users', 0),
+             unique_chats=unique_counts.get(model_id, {}).get('unique_chats', 0),
++            **perf.get(model_id, {}),
+         )
          for model_id, count in sorted(counts.items(), key=lambda x: -x[1])
      ]
-     return ModelAnalyticsResponse(models=models)
-@@ -148,6 +156,11 @@ class SummaryResponse(BaseModel):
+@@ -158,6 +167,11 @@ class SummaryResponse(BaseModel):
      total_chats: int
      total_models: int
      total_users: int
@@ -218,7 +229,7 @@ index fcef30342..093af9a49 100644
  
  
  @router.get('/summary', response_model=SummaryResponse)
-@@ -168,12 +181,16 @@ async def get_summary(
+@@ -178,12 +192,16 @@ async def get_summary(
      chat_counts = await ChatMessages.get_message_count_by_chat(
          start_date=start_date, end_date=end_date, group_id=group_id, db=db
      )

@@ -34,13 +34,21 @@
 	// Time period - persist in localStorage
 	let selectedPeriod =
 		(typeof localStorage !== 'undefined' && localStorage.getItem('analyticsPeriod')) || '7d';
+
+	// Custom date range (YYYY-MM-DD) - persist in localStorage
+	let customStart =
+		(typeof localStorage !== 'undefined' && localStorage.getItem('analyticsCustomStart')) || '';
+	let customEnd =
+		(typeof localStorage !== 'undefined' && localStorage.getItem('analyticsCustomEnd')) || '';
+
 	$: periods = [
 		{ value: '1h', label: $i18n.t('Last 1 hour') },
 		{ value: '24h', label: $i18n.t('Last 24 hours') },
 		{ value: '7d', label: $i18n.t('Last 7 days') },
 		{ value: '30d', label: $i18n.t('Last 30 days') },
 		{ value: '90d', label: $i18n.t('Last 90 days') },
-		{ value: 'all', label: $i18n.t('All time') }
+		{ value: 'all', label: $i18n.t('All time') },
+		{ value: 'custom', label: $i18n.t('Custom range') }
 	];
 
 	// User group filter
@@ -62,6 +70,12 @@
 				return { start: now - 30 * day, end: now };
 			case '90d':
 				return { start: now - 90 * day, end: now };
+			case 'custom': {
+				// Parse YYYY-MM-DD inputs; end date is inclusive (covers the full day)
+				const start = customStart ? Math.floor(new Date(customStart).getTime() / 1000) : null;
+				const end = customEnd ? Math.floor(new Date(customEnd).getTime() / 1000) + day - 1 : null;
+				return { start, end };
+			}
 			default:
 				return { start: null, end: null };
 		}
@@ -92,6 +106,8 @@
 	let modelStats: Array<{
 		model_id: string;
 		count: number;
+		unique_users?: number;
+		unique_chats?: number;
 		name?: string;
 		avg_ttft_ms?: number | null;
 		avg_tokens_per_second?: number | null;
@@ -109,6 +125,55 @@
 
 	let loading = true;
 
+	// Cross-filter: selecting a model filters the user table; selecting a user filters the model table
+
+	const loadRoutingAnalytics = async () => {
+		loadingRouting = true;
+		const requestId = routingTracker.next();
+		try {
+			const { modelSelected, modelRequested } = deriveRoutingFilters({
+				routingSelectedPair,
+				filterByModelId: filterByModelId,
+				routingModelMode
+			});
+			const { start, end } = getDateRange(selectedPeriod);
+			const [summaryRes, eventsRes] = await Promise.all([
+				getRoutingSummary(localStorage.token, {
+					startDate: start,
+					endDate: end,
+					groupId: selectedGroupId,
+					userId: filterByUserId,
+					modelSelected,
+					modelRequested,
+					modelMode: routingModelMode
+				}),
+				getRoutingEvents(localStorage.token, {
+					startDate: start,
+					endDate: end,
+					groupId: selectedGroupId,
+					userId: filterByUserId,
+					modelSelected,
+					modelRequested,
+					modelMode: routingModelMode,
+					limit: 100
+				})
+			]);
+			if (!routingTracker.isLatest(requestId)) return;
+			routingPairs = summaryRes ?? [];
+			routingEvents = eventsRes ?? [];
+		} catch (err) {
+			console.error('Routing analytics load failed:', err);
+			if (routingTracker.isLatest(requestId)) {
+				routingPairs = [];
+				routingEvents = [];
+			}
+		} finally {
+			if (routingTracker.isLatest(requestId)) {
+				loadingRouting = false;
+			}
+		}
+	};
+
 	// Selected model for drill-down
 	let selectedModel: { id: string; name: string } | null = null;
 	let showModelModal = false;
@@ -121,8 +186,6 @@
 	let loadingModels = false;
 	let loadingUsers = false;
 	let loadingRouting = false;
-
-	let routingModelMode: 'or' | 'and' | 'selected' | 'requested' = 'or';
 	let routingPairs: Array<{
 		requested_model_id: string;
 		selected_model_id: string;
@@ -170,7 +233,10 @@
 	};
 
 	const onSelectPair = (requestedModelId: string, selectedModelId: string) => {
-		routingSelectedPair = { requested_model_id: requestedModelId, selected_model_id: selectedModelId };
+		routingSelectedPair = {
+			requested_model_id: requestedModelId,
+			selected_model_id: selectedModelId
+		};
 		filterByModelId = selectedModelId;
 		reloadModelTable();
 		reloadUserTable();
@@ -196,7 +262,14 @@
 				getModelAnalytics(localStorage.token, start, end, selectedGroupId, filterByUserId),
 				getUserAnalytics(localStorage.token, start, end, 50, selectedGroupId, filterByModelId),
 				getDailyStats(localStorage.token, start, end, granularity, selectedGroupId),
-				getTokenUsage(localStorage.token, start, end, selectedGroupId, filterByUserId, filterByModelId)
+				getTokenUsage(
+					localStorage.token,
+					start,
+					end,
+					selectedGroupId,
+					filterByUserId,
+					filterByModelId
+				)
 			]);
 
 			if (!dashboardTracker.isLatest(requestId)) return;
@@ -244,7 +317,14 @@
 			const { start, end } = getDateRange(selectedPeriod);
 			const [modelsRes, tokensRes] = await Promise.all([
 				getModelAnalytics(localStorage.token, start, end, selectedGroupId, filterByUserId),
-				getTokenUsage(localStorage.token, start, end, selectedGroupId, filterByUserId, filterByModelId)
+				getTokenUsage(
+					localStorage.token,
+					start,
+					end,
+					selectedGroupId,
+					filterByUserId,
+					filterByModelId
+				)
 			]);
 			if (!modelTracker.isLatest(requestId)) return;
 			const modelsMap = new Map($models.map((m) => [m.id, m.name || m.id]));
@@ -302,61 +382,15 @@
 		}
 	};
 
-	const loadRoutingAnalytics = async () => {
-		loadingRouting = true;
-		const requestId = routingTracker.next();
-		try {
-			const { start, end } = getDateRange(selectedPeriod);
-			const { modelSelected, modelRequested } = deriveRoutingFilters({
-				routingSelectedPair,
-				filterByModelId,
-				routingModelMode
-			});
-
-			const [summaryRes, eventsRes] = await Promise.all([
-				getRoutingSummary(localStorage.token, {
-					startDate: start,
-					endDate: end,
-					groupId: selectedGroupId,
-					userId: filterByUserId,
-					modelSelected,
-					modelRequested,
-					modelMode: routingModelMode
-				}),
-				getRoutingEvents(localStorage.token, {
-					startDate: start,
-					endDate: end,
-					groupId: selectedGroupId,
-					userId: filterByUserId,
-					modelSelected,
-					modelRequested,
-					modelMode: routingModelMode,
-					skip: 0,
-					limit: 20
-				})
-			]);
-
-			// Only update state if this is still the latest request
-			if (!routingTracker.isLatest(requestId)) return;
-
-			routingPairs = summaryRes ?? [];
-			routingEvents = eventsRes ?? [];
-		} catch (err) {
-			console.error('Routing analytics load failed:', err);
-			if (routingTracker.isLatest(requestId)) {
-				routingPairs = [];
-				routingEvents = [];
-			}
-		} finally {
-			if (routingTracker.isLatest(requestId)) {
-				loadingRouting = false;
-			}
-		}
-	};
-
-	$: if (selectedPeriod || selectedGroupId !== undefined) {
-		routingSelectedPair = null;
-		filterByModelId = null;
+	// Reload when the period, group, custom range, or cross-filter changes.
+	// In custom mode, wait until both dates are set to avoid a half-specified query.
+	$: if (selectedPeriod === 'custom' ? customStart && customEnd : selectedPeriod) {
+		// reference all filter variables so this block reruns when they change
+		customStart;
+		customEnd;
+		selectedGroupId;
+		filterByUserId;
+		filterByModelId;
 		loadDashboard();
 		loadRoutingAnalytics();
 	}
@@ -380,6 +414,16 @@
 			const bTokens = tokenStats[b.model_id]?.total_tokens ?? 0;
 			return modelDirection === 'asc' ? aTokens - bTokens : bTokens - aTokens;
 		}
+		if (modelOrderBy === 'users') {
+			const aUsers = a.unique_users ?? 0;
+			const bUsers = b.unique_users ?? 0;
+			return modelDirection === 'asc' ? aUsers - bUsers : bUsers - aUsers;
+		}
+		if (modelOrderBy === 'chats') {
+			const aChats = a.unique_chats ?? 0;
+			const bChats = b.unique_chats ?? 0;
+			return modelDirection === 'asc' ? aChats - bChats : bChats - aChats;
+		}
 		if (modelOrderBy === 'ttft') {
 			const aV = a.avg_ttft_ms ?? (modelDirection === 'asc' ? Infinity : -Infinity);
 			const bV = b.avg_ttft_ms ?? (modelDirection === 'asc' ? Infinity : -Infinity);
@@ -390,10 +434,10 @@
 			const bV = b.avg_tokens_per_second ?? (modelDirection === 'asc' ? -Infinity : Infinity);
 			return modelDirection === 'asc' ? aV - bV : bV - aV;
 		}
-		if (modelOrderBy === 'errors') {
-			const aV = a.error_requests ?? 0;
-			const bV = b.error_requests ?? 0;
-			return modelDirection === 'asc' ? aV - bV : bV - aV;
+		if (modelOrderBy === 'error_rate') {
+			const aT = a.error_rate ?? 0;
+			const bT = b.error_rate ?? 0;
+			return modelDirection === 'asc' ? aT - bT : bT - aT;
 		}
 		return modelDirection === 'asc' ? a.count - b.count : b.count - a.count;
 	});
@@ -419,6 +463,11 @@
 		localStorage.setItem('analyticsPeriod', selectedPeriod);
 	}
 
+	// Persist custom date range
+	$: if (typeof localStorage !== 'undefined') {
+		localStorage.setItem('analyticsCustomStart', customStart);
+		localStorage.setItem('analyticsCustomEnd', customEnd);
+	}
 </script>
 
 <!-- Header with title and period selector -->
@@ -439,6 +488,21 @@
 					<option value={group.id}>{group.name}</option>
 				{/each}
 			</select>
+		{/if}
+		{#if selectedPeriod === 'custom'}
+			<input
+				type="date"
+				bind:value={customStart}
+				max={customEnd || undefined}
+				class="w-fit rounded-sm px-2 text-xs bg-transparent outline-none"
+			/>
+			<span class="text-xs text-gray-400">–</span>
+			<input
+				type="date"
+				bind:value={customEnd}
+				min={customStart || undefined}
+				class="w-fit rounded-sm px-2 text-xs bg-transparent outline-none"
+			/>
 		{/if}
 		<select
 			bind:value={selectedPeriod}
@@ -537,7 +601,14 @@
 			'#06b6d4',
 			'#84cc16'
 		]}
-		{@const periodMap = { '1h': 'hour', '24h': 'hour', '7d': 'week', '30d': 'month', '90d': 'year', all: 'all' }}
+		{@const periodMap = {
+			'1h': 'hour',
+			'24h': 'hour',
+			'7d': 'week',
+			'30d': 'month',
+			'90d': 'year',
+			all: 'all'
+		}}
 		<div class="mb-4">
 			<div class="text-xs font-medium text-gray-600 dark:text-gray-400 mb-2 px-0.5">
 				{selectedPeriod === '1h' || selectedPeriod === '24h'
@@ -563,7 +634,9 @@
 	<div class="grid md:grid-cols-2 gap-4">
 		<!-- Model Usage Table -->
 		<div>
-			<div class="flex items-center justify-between text-xs font-medium text-gray-700 dark:text-gray-300 mb-1 px-0.5">
+			<div
+				class="flex items-center justify-between text-xs font-medium text-gray-700 dark:text-gray-300 mb-1 px-0.5"
+			>
 				<span>{$i18n.t('Model Usage')}</span>
 				{#if filterByUserId}
 					<span class="flex items-center gap-1 text-blue-500 font-normal">
@@ -576,8 +649,8 @@
 								filterByUserName = null;
 								reloadModelTable();
 							}}
-							title={$i18n.t('Clear filter')}
-						>✕</button>
+							title={$i18n.t('Clear filter')}>✕</button
+						>
 					</span>
 				{/if}
 			</div>
@@ -625,11 +698,101 @@
 							<th
 								scope="col"
 								class="px-2.5 py-2 cursor-pointer select-none text-right"
+								on:click={() => toggleModelSort('users')}
+							>
+								<div class="flex gap-1.5 items-center justify-end">
+									{$i18n.t('Users')}
+									{#if modelOrderBy === 'users'}
+										<span class="font-normal">
+											{#if modelDirection === 'asc'}<ChevronUp
+													className="size-2"
+												/>{:else}<ChevronDown className="size-2" />{/if}
+										</span>
+									{:else}
+										<span class="invisible"><ChevronUp className="size-2" /></span>
+									{/if}
+								</div>
+							</th>
+							<th
+								scope="col"
+								class="px-2.5 py-2 cursor-pointer select-none text-right"
+								on:click={() => toggleModelSort('chats')}
+							>
+								<div class="flex gap-1.5 items-center justify-end">
+									{$i18n.t('Chats')}
+									{#if modelOrderBy === 'chats'}
+										<span class="font-normal">
+											{#if modelDirection === 'asc'}<ChevronUp
+													className="size-2"
+												/>{:else}<ChevronDown className="size-2" />{/if}
+										</span>
+									{:else}
+										<span class="invisible"><ChevronUp className="size-2" /></span>
+									{/if}
+								</div>
+							</th>
+							<th
+								scope="col"
+								class="px-2.5 py-2 cursor-pointer select-none text-right"
 								on:click={() => toggleModelSort('tokens')}
 							>
 								<div class="flex gap-1.5 items-center justify-end">
 									{$i18n.t('Tokens')}
 									{#if modelOrderBy === 'tokens'}
+										<span class="font-normal">
+											{#if modelDirection === 'asc'}<ChevronUp
+													className="size-2"
+												/>{:else}<ChevronDown className="size-2" />{/if}
+										</span>
+									{:else}
+										<span class="invisible"><ChevronUp className="size-2" /></span>
+									{/if}
+								</div>
+							</th>
+							<th
+								scope="col"
+								class="px-2.5 py-2 cursor-pointer select-none text-right"
+								on:click={() => toggleModelSort('ttft')}
+							>
+								<div class="flex gap-1.5 items-center justify-end">
+									{$i18n.t('TTFT')}
+									{#if modelOrderBy === 'ttft'}
+										<span class="font-normal">
+											{#if modelDirection === 'asc'}<ChevronUp
+													className="size-2"
+												/>{:else}<ChevronDown className="size-2" />{/if}
+										</span>
+									{:else}
+										<span class="invisible"><ChevronUp className="size-2" /></span>
+									{/if}
+								</div>
+							</th>
+							<th
+								scope="col"
+								class="px-2.5 py-2 cursor-pointer select-none text-right"
+								on:click={() => toggleModelSort('tps')}
+							>
+								<div class="flex gap-1.5 items-center justify-end">
+									{$i18n.t('Tok/s')}
+									{#if modelOrderBy === 'tps'}
+										<span class="font-normal">
+											{#if modelDirection === 'asc'}<ChevronUp
+													className="size-2"
+												/>{:else}<ChevronDown className="size-2" />{/if}
+										</span>
+									{:else}
+										<span class="invisible"><ChevronUp className="size-2" /></span>
+									{/if}
+								</div>
+							</th>
+							<th
+								scope="col"
+								class="px-2.5 py-2 cursor-pointer select-none text-right"
+								on:click={() => toggleModelSort('error_rate')}
+							>
+								<div class="flex gap-1.5 items-center justify-end">
+									{$i18n.t('Err%')}
+									{#if modelOrderBy === 'error_rate'}
 										<span class="font-normal">
 											{#if modelDirection === 'asc'}<ChevronUp
 													className="size-2"
@@ -689,37 +852,56 @@
 											class="ml-auto text-gray-300 hover:text-blue-500 transition shrink-0"
 											title={$i18n.t('View details')}
 											on:click|stopPropagation={() => {
-											selectedModel = { id: model.model_id, name: model.name ?? model.model_id };
+												selectedModel = { id: model.model_id, name: model.name ?? model.model_id };
 												showModelModal = true;
-											}}
-										>→</button>
+											}}>→</button
+										>
 									</div>
 								</td>
 								<td class="px-3 py-1 text-right">{model.count.toLocaleString()}</td>
+								<td class="px-3 py-1 text-right">{(model.unique_users ?? 0).toLocaleString()}</td>
+								<td class="px-3 py-1 text-right">{(model.unique_chats ?? 0).toLocaleString()}</td>
 								<td class="px-3 py-1 text-right"
 									>{formatNumber(tokenStats[model.model_id]?.total_tokens ?? 0)}</td
 								>
 								<td class="px-3 py-1 text-right text-gray-400">
+									{model.avg_ttft_ms != null ? model.avg_ttft_ms.toFixed(0) + ' ms' : '—'}
+								</td>
+								<td class="px-3 py-1 text-right text-gray-400">
+									{model.avg_tokens_per_second != null
+										? model.avg_tokens_per_second.toFixed(1)
+										: '—'}
+								</td>
+								<td class="px-3 py-1 text-right text-gray-400">
+									{model.error_rate != null ? (model.error_rate * 100).toFixed(1) + '%' : '—'}
+								</td>
+								<td class="px-3 py-1 text-right text-gray-400">
 									{totalModelMessages > 0
 										? ((model.count / totalModelMessages) * 100).toFixed(1)
 										: 0}%
-								</td>							<td class="px-3 py-1 text-right text-gray-500">
-								{model.avg_ttft_ms != null ? `${model.avg_ttft_ms.toFixed(0)} ms` : '—'}
-							</td>
-							<td class="px-3 py-1 text-right text-gray-500">
-								{model.avg_tokens_per_second != null
-									? `${model.avg_tokens_per_second.toFixed(1)}/s`
-									: '—'}
-							</td>
-							<td class="px-3 py-1 text-right {model.error_requests > 0 ? 'text-red-400' : 'text-gray-400'}">
-								{model.error_requests > 0
-									? `${model.error_requests} (${model.error_rate.toFixed(1)}%)`
-									: '—'}
-							</td>							</tr>
+								</td>
+								<td class="px-3 py-1 text-right text-gray-500">
+									{model.avg_ttft_ms != null ? `${model.avg_ttft_ms.toFixed(0)} ms` : '—'}
+								</td>
+								<td class="px-3 py-1 text-right text-gray-500">
+									{model.avg_tokens_per_second != null
+										? `${model.avg_tokens_per_second.toFixed(1)}/s`
+										: '—'}
+								</td>
+								<td
+									class="px-3 py-1 text-right {model.error_requests > 0
+										? 'text-red-400'
+										: 'text-gray-400'}"
+								>
+									{model.error_requests > 0
+										? `${model.error_requests} (${model.error_rate.toFixed(1)}%)`
+										: '—'}
+								</td>
+							</tr>
 						{/each}
 						{#if sortedModels.length === 0}
 							<tr
-								><td colspan="8" class="px-3 py-2 text-center text-gray-400"
+								><td colspan="10" class="px-3 py-2 text-center text-gray-400"
 									>{$i18n.t('No data')}</td
 								></tr
 							>
@@ -731,7 +913,9 @@
 
 		<!-- User Activity Table -->
 		<div>
-			<div class="flex items-center justify-between text-xs font-medium text-gray-700 dark:text-gray-300 mb-1 px-0.5">
+			<div
+				class="flex items-center justify-between text-xs font-medium text-gray-700 dark:text-gray-300 mb-1 px-0.5"
+			>
 				<span>{$i18n.t('User Activity')}</span>
 				{#if filterByModelId}
 					<span class="flex items-center gap-1 text-blue-500 font-normal">
@@ -744,8 +928,8 @@
 								filterByModelName = null;
 								reloadUserTable();
 							}}
-							title={$i18n.t('Clear filter')}
-						>✕</button>
+							title={$i18n.t('Clear filter')}>✕</button
+						>
 					</span>
 				{/if}
 			</div>
@@ -819,7 +1003,9 @@
 								on:click={() => {
 									const next = toggleSelection(filterByUserId, user.user_id);
 									filterByUserId = next;
-									filterByUserName = next ? (user.name || user.email || user.user_id.substring(0, 8)) : null;
+									filterByUserName = next
+										? user.name || user.email || user.user_id.substring(0, 8)
+										: null;
 									reloadModelTable();
 								}}
 							>
@@ -870,8 +1056,8 @@
 				routingSelectedPair = null;
 				loadRoutingAnalytics();
 			}}
-			onSelectPair={onSelectPair}
-			onClearPair={onClearPair}
+			{onSelectPair}
+			{onClearPair}
 		/>
 	</div>
 
