@@ -357,7 +357,7 @@ async def _set_terminal_cwd(app, server_id: str, user, cwd: str, chat_id: str) -
         log.warning(f'Failed to set terminal CWD: {e}')
 
 
-async def execute_automation(app, automation: AutomationModel, trigger: str = "scheduler") -> None:
+async def execute_automation(app, automation: AutomationModel, trigger: str = 'scheduler') -> None:
     """Execute an automation through the full chat completion pipeline.
 
     Creates a real chat, then calls chat_completion exactly like the frontend:
@@ -372,7 +372,7 @@ async def execute_automation(app, automation: AutomationModel, trigger: str = "s
     """
     # Lazy import to avoid circular imports at module load time.
     # access_log is only needed for scheduler-triggered runs.
-    if trigger == "scheduler":
+    if trigger == 'scheduler':
         from open_webui.middleware.access_log import log_scheduled_activity
     else:
         log_scheduled_activity = None
@@ -392,9 +392,12 @@ async def execute_automation(app, automation: AutomationModel, trigger: str = "s
             if log_scheduled_activity:
                 log_scheduled_activity(
                     'TASK_AUTOMATION_SCHEDULED_ERROR',
-                    'unknown', 'unknown',
-                    automation.id, 'automation',
-                    500, 0.0,
+                    'unknown',
+                    'unknown',
+                    automation.id,
+                    'automation',
+                    500,
+                    0.0,
                     meta=f'trigger={trigger}|name={automation.name}|error=user_not_found',
                 )
             return
@@ -478,9 +481,12 @@ async def execute_automation(app, automation: AutomationModel, trigger: str = "s
             if log_scheduled_activity:
                 log_scheduled_activity(
                     'TASK_AUTOMATION_SCHEDULED_ERROR',
-                    user.email, user.role,
-                    automation.id, 'automation',
-                    500, time.time() - _start_time,
+                    user.email,
+                    user.role,
+                    automation.id,
+                    'automation',
+                    500,
+                    time.time() - _start_time,
                     meta=f'trigger={trigger}|name={automation.name}|error=chat_create_failed',
                 )
             return
@@ -570,9 +576,12 @@ async def execute_automation(app, automation: AutomationModel, trigger: str = "s
         if log_scheduled_activity:
             log_scheduled_activity(
                 'TASK_AUTOMATION_SCHEDULED',
-                user.email, user.role,
-                automation.id, 'automation',
-                200, time.time() - _start_time,
+                user.email,
+                user.role,
+                automation.id,
+                'automation',
+                200,
+                time.time() - _start_time,
                 meta=f'trigger={trigger}|name={automation.name}|chat_id={chat.id}',
             )
 
@@ -591,8 +600,10 @@ async def execute_automation(app, automation: AutomationModel, trigger: str = "s
                 'TASK_AUTOMATION_SCHEDULED_ERROR',
                 getattr(user, 'email', 'unknown'),
                 getattr(user, 'role', 'unknown'),
-                automation.id, 'automation',
-                500, time.time() - _start_time,
+                automation.id,
+                'automation',
+                500,
+                time.time() - _start_time,
                 meta=f'trigger={trigger}|name={automation.name}|error={str(e)[:200]}',
             )
 

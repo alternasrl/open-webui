@@ -37,11 +37,12 @@ if TYPE_CHECKING:
 @dataclass(frozen=True)
 class OIDCClaims:
     """OIDC claims extracted from JWT for NIS2-compliant audit logging."""
-    sub: Optional[str] = None            # OIDC persistent subject identifier
-    auth_time: Optional[int] = None      # Timestamp of IdP authentication
-    amr: Optional[list] = None           # Authentication Methods References (MFA)
-    acr: Optional[str] = None            # Authentication Context Class Reference
-    ad_groups: Optional[list] = None     # AD groups from token claims
+
+    sub: Optional[str] = None  # OIDC persistent subject identifier
+    auth_time: Optional[int] = None  # Timestamp of IdP authentication
+    amr: Optional[list] = None  # Authentication Methods References (MFA)
+    acr: Optional[str] = None  # Authentication Context Class Reference
+    ad_groups: Optional[list] = None  # AD groups from token claims
 
 
 @dataclass(frozen=True)
@@ -53,7 +54,7 @@ class AuditLogEntry:
     verb: str
     request_uri: str
     # NIS2 compliance fields
-    correlation_id: Optional[str] = None       # X-Request-ID from WAF/ADSSPM
+    correlation_id: Optional[str] = None  # X-Request-ID from WAF/ADSSPM
     oidc_claims: Optional[dict[str, Any]] = None  # OIDC claims for identity assurance
     user_agent: Optional[str] = None
     source_ip: Optional[str] = None
@@ -223,9 +224,9 @@ class AuditLoggingMiddleware:
     def _extract_correlation_id(self, request: Request) -> Optional[str]:
         """Extract X-Request-ID header passed by WAF/ADSSPM for NIS2 correlation."""
         return (
-            request.headers.get("X-Request-ID")
-            or request.headers.get("X-Correlation-ID")
-            or request.headers.get("X-Azure-Ref")
+            request.headers.get('X-Request-ID')
+            or request.headers.get('X-Correlation-ID')
+            or request.headers.get('X-Azure-Ref')
             or None
         )
 
@@ -241,15 +242,15 @@ class AuditLoggingMiddleware:
           5. request.client.host — direct ASGI connection IP (container-internal)
         """
         for header in (
-            "X-Azure-ClientIP",
-            "X-Original-Forwarded-For",
-            "X-Forwarded-For",
-            "X-Real-IP",
+            'X-Azure-ClientIP',
+            'X-Original-Forwarded-For',
+            'X-Forwarded-For',
+            'X-Real-IP',
         ):
             value = request.headers.get(header)
             if value:
                 # X-Forwarded-For can be comma-separated; first entry is the real client
-                return value.split(",")[0].strip()
+                return value.split(',')[0].strip()
 
         return request.client.host if request.client else None
 
@@ -267,20 +268,20 @@ class AuditLoggingMiddleware:
         tokens_to_try = []
 
         # Priority 1: OIDC ID token cookie (set by OAuth flow)
-        oauth_id_token = request.cookies.get("oauth_id_token")
+        oauth_id_token = request.cookies.get('oauth_id_token')
         if oauth_id_token:
             tokens_to_try.append(oauth_id_token)
 
         # Priority 2: Authorization ******
-        auth_header = request.headers.get("Authorization")
-        if auth_header and auth_header.startswith("Bearer "):
-            bearer_token = auth_header[len("Bearer "):]
+        auth_header = request.headers.get('Authorization')
+        if auth_header and auth_header.startswith('Bearer '):
+            bearer_token = auth_header[len('Bearer ') :]
             # Skip API keys
-            if not bearer_token.startswith("sk-"):
+            if not bearer_token.startswith('sk-'):
                 tokens_to_try.append(bearer_token)
 
         # Priority 3: Session token cookie
-        session_token = request.cookies.get("token")
+        session_token = request.cookies.get('token')
         if session_token:
             tokens_to_try.append(session_token)
 
@@ -299,20 +300,17 @@ class AuditLoggingMiddleware:
         try:
             decoded = pyjwt.decode(
                 token,
-                options={"verify_signature": False},
-                algorithms=["RS256", "HS256", "ES256"],
+                options={'verify_signature': False},
+                algorithms=['RS256', 'HS256', 'ES256'],
             )
 
             claims = OIDCClaims(
-                sub=decoded.get("sub"),
-                auth_time=decoded.get("auth_time"),
-                amr=decoded.get("amr"),
-                acr=decoded.get("acr"),
+                sub=decoded.get('sub'),
+                auth_time=decoded.get('auth_time'),
+                amr=decoded.get('amr'),
+                acr=decoded.get('acr'),
                 ad_groups=(
-                    decoded.get("groups")
-                    or decoded.get("ad_groups")
-                    or decoded.get("roles")
-                    or decoded.get("wids")
+                    decoded.get('groups') or decoded.get('ad_groups') or decoded.get('roles') or decoded.get('wids')
                 ),
             )
 
@@ -323,9 +321,9 @@ class AuditLoggingMiddleware:
                 return {k: v for k, v in claims_dict.items() if v is not None}
 
         except pyjwt.exceptions.DecodeError:
-            logger.debug("Failed to decode JWT for OIDC claims extraction")
+            logger.debug('Failed to decode JWT for OIDC claims extraction')
         except Exception as e:
-            logger.debug(f"Unexpected error extracting OIDC claims: {str(e)}")
+            logger.debug(f'Unexpected error extracting OIDC claims: {str(e)}')
 
         return None
 

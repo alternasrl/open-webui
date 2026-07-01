@@ -1175,6 +1175,7 @@ class OAuthClientManager:
                     # Invalidate access-log cache so subsequent requests pick up OIDC claims
                     try:
                         from open_webui.middleware.access_log import invalidate_user_cache
+
                         invalidate_user_cache(user_id)
                     except Exception:
                         pass
@@ -2036,6 +2037,7 @@ class OAuthManager:
                 # Invalidate access-log cache so subsequent requests pick up OIDC claims
                 try:
                     from open_webui.middleware.access_log import invalidate_user_cache
+
                     invalidate_user_cache(user.id)
                 except Exception:
                     pass

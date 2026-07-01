@@ -159,7 +159,7 @@ def output_id(prefix: str) -> str:
 
 def merge_routing_usage(usage: dict | None, metadata: dict | None) -> dict:
     usage = usage or {}
-    routing = ((metadata or {}).get('routing') or {})
+    routing = (metadata or {}).get('routing') or {}
     requested_model_id = routing.get('requested_model_id')
     if not requested_model_id:
         return usage
