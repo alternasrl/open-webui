@@ -1167,6 +1167,9 @@ async def transcription(
         from pathlib import Path
         import re
 
+        # Sanitized display name (for audit/event logging only; never used for filesystem paths)
+        safe_name = os.path.basename(file.filename) if file.filename else ''
+
         # Sanitize extension: extract only alphanumeric characters to prevent path traversal
         raw_ext = Path(file.filename).suffix.lstrip('.') if file.filename else ''
         # Allow only safe characters in extension (alphanumeric)
