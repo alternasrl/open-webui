@@ -363,14 +363,17 @@ export const getRoutingSummary = async (
 	if (modelRequested) searchParams.append('model_requested', modelRequested);
 	if (modelMode) searchParams.append('model_mode', modelMode);
 
-	const res = await fetch(`${WEBUI_API_BASE_URL}/analytics/routing/summary?${searchParams.toString()}`, {
-		method: 'GET',
-		headers: {
-			Accept: 'application/json',
-			'Content-Type': 'application/json',
-			authorization: `Bearer ${token}`
+	const res = await fetch(
+		`${WEBUI_API_BASE_URL}/analytics/routing/summary?${searchParams.toString()}`,
+		{
+			method: 'GET',
+			headers: {
+				Accept: 'application/json',
+				'Content-Type': 'application/json',
+				authorization: `Bearer ${token}`
+			}
 		}
-	})
+	)
 		.then(async (res) => {
 			if (!res.ok) throw await res.json();
 			return res.json();
@@ -427,14 +430,17 @@ export const getRoutingEvents = async (
 	if (skip) searchParams.append('skip', skip.toString());
 	if (limit) searchParams.append('limit', limit.toString());
 
-	const res = await fetch(`${WEBUI_API_BASE_URL}/analytics/routing/events?${searchParams.toString()}`, {
-		method: 'GET',
-		headers: {
-			Accept: 'application/json',
-			'Content-Type': 'application/json',
-			authorization: `Bearer ${token}`
+	const res = await fetch(
+		`${WEBUI_API_BASE_URL}/analytics/routing/events?${searchParams.toString()}`,
+		{
+			method: 'GET',
+			headers: {
+				Accept: 'application/json',
+				'Content-Type': 'application/json',
+				authorization: `Bearer ${token}`
+			}
 		}
-	})
+	)
 		.then(async (res) => {
 			if (!res.ok) throw await res.json();
 			return res.json();

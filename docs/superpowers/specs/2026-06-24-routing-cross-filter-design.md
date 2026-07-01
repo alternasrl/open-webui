@@ -59,6 +59,7 @@ Enable users to click on a routing pair (e.g., "gpt-4 → mistral") in the Routi
 #### **Dashboard.svelte**
 
 **New state:**
+
 ```typescript
 let routingSelectedPair: { requested_model_id: string; selected_model_id: string } | null = null;
 ```
@@ -66,25 +67,30 @@ let routingSelectedPair: { requested_model_id: string; selected_model_id: string
 **Modified handlers:**
 
 1. **onSelectPair()** (called from RoutingUsage.svelte):
+
    ```typescript
    const onSelectPair = (requestedModelId: string, selectedModelId: string) => {
-     routingSelectedPair = { requested_model_id: requestedModelId, selected_model_id: selectedModelId };
-     filterByModelId = selectedModelId; // Extract selected model and apply as filter
-     // Race guards ensure reloads use latest request IDs
-     reloadModelTable();
-     reloadUserTable();
-     loadRoutingAnalytics();
+   	routingSelectedPair = {
+   		requested_model_id: requestedModelId,
+   		selected_model_id: selectedModelId
+   	};
+   	filterByModelId = selectedModelId; // Extract selected model and apply as filter
+   	// Race guards ensure reloads use latest request IDs
+   	reloadModelTable();
+   	reloadUserTable();
+   	loadRoutingAnalytics();
    };
    ```
 
 2. **onClearPair()** (called from RoutingUsage.svelte):
+
    ```typescript
    const onClearPair = () => {
-     routingSelectedPair = null;
-     filterByModelId = null;
-     reloadModelTable();
-     reloadUserTable();
-     loadRoutingAnalytics();
+   	routingSelectedPair = null;
+   	filterByModelId = null;
+   	reloadModelTable();
+   	reloadUserTable();
+   	loadRoutingAnalytics();
    };
    ```
 
@@ -92,12 +98,14 @@ let routingSelectedPair: { requested_model_id: string; selected_model_id: string
    - Auto-clear: `routingSelectedPair = null` when `selectedPeriod` or `selectedGroupId` changes
 
 **Prop updates:**
+
 - Pass `onSelectPair` and `onClearPair` callbacks to RoutingUsage component
 - Pass `routingSelectedPair` for visual highlighting (already done)
 
 #### **RoutingUsage.svelte**
 
 **No structural changes required:**
+
 - Component already has `onSelectPair` and `onClearPair` callbacks exported
 - Component already highlights selected pair
 - Just ensure Dashboard passes the callbacks
@@ -130,6 +138,7 @@ UI renders with filter badge and highlighted pair
 ### API Requirements
 
 **Existing API already supports routing filter:**
+
 - `getRoutingEvents()` accepts `modelSelected` parameter (filters events by selected model)
 - `getModelAnalytics()` accepts `user_id` parameter (filters models by user)
 - `getUserAnalytics()` accepts `model_id` parameter (filters users by model)
@@ -172,16 +181,19 @@ UI renders with filter badge and highlighted pair
 ## Testing Strategy
 
 ### Unit Tests
+
 - `cross-filter-state.test.ts`: Add test case for routing pair filter extraction
 - Verify `deriveRoutingFilters()` correctly extracts `selected_model_id` when routing pair is selected
 
 ### Integration Tests
+
 - Click routing pair → verify state updates (filterByModelId set correctly)
 - Clear pair → verify state resets
 - Period change → verify routing pair clears
 - Rapid clicks → verify race guards prevent stale updates
 
 ### Manual Testing Scenarios
+
 1. **Scenario A: Basic routing filter**
    - Select a high-traffic routing pair (e.g., "gpt-4 → mistral")
    - Verify User Activity shows only users who received mistral
@@ -247,12 +259,12 @@ UI renders with filter badge and highlighted pair
 
 ## Risks and Mitigation
 
-| Risk | Mitigation |
-|------|-----------|
-| Race condition between routing selection and other filter changes | Race guards + request ID tracking already in place |
-| User confusion about filter scope | Clear visual badge + "Clear pair" button |
-| Performance impact of frequent filter changes | Existing debouncing + request tracking prevents duplicate calls |
-| Stale data from previous routing pair | Latest request ID check before state update (already implemented) |
+| Risk                                                              | Mitigation                                                        |
+| ----------------------------------------------------------------- | ----------------------------------------------------------------- |
+| Race condition between routing selection and other filter changes | Race guards + request ID tracking already in place                |
+| User confusion about filter scope                                 | Clear visual badge + "Clear pair" button                          |
+| Performance impact of frequent filter changes                     | Existing debouncing + request tracking prevents duplicate calls   |
+| Stale data from previous routing pair                             | Latest request ID check before state update (already implemented) |
 
 ---
 

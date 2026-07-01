@@ -12,17 +12,18 @@
 
 ## File Structure
 
-| File | Responsibility |
-|------|-----------------|
-| `src/lib/components/admin/Analytics/Dashboard.svelte` | Add `routingSelectedPair` state, `onSelectPair()`, `onClearPair()` handlers, and auto-clear logic |
-| `src/lib/components/admin/Analytics/RoutingUsage.svelte` | Add visual routing filter badge (optional, nice-to-have) |
-| `src/lib/components/admin/Analytics/cross-filter-state.test.ts` | Add unit test for routing pair filter extraction |
+| File                                                            | Responsibility                                                                                    |
+| --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `src/lib/components/admin/Analytics/Dashboard.svelte`           | Add `routingSelectedPair` state, `onSelectPair()`, `onClearPair()` handlers, and auto-clear logic |
+| `src/lib/components/admin/Analytics/RoutingUsage.svelte`        | Add visual routing filter badge (optional, nice-to-have)                                          |
+| `src/lib/components/admin/Analytics/cross-filter-state.test.ts` | Add unit test for routing pair filter extraction                                                  |
 
 ---
 
 ## Task 1: Add State Variables and Handlers to Dashboard.svelte
 
 **Files:**
+
 - Modify: `src/lib/components/admin/Analytics/Dashboard.svelte` (lines 140-170)
 
 - [ ] **Step 1: Locate current state variables section**
@@ -30,6 +31,7 @@
 Open the file and find the section where `filterByUserId`, `filterByModelId`, and other state variables are declared (around line 140-170).
 
 Expected section:
+
 ```svelte
 let filterByUserId: string | null = null;
 let filterByModelId: string | null = null;
@@ -39,6 +41,7 @@ let routingSelectedPair: { requested_model_id: string; selected_model_id: string
 - [ ] **Step 2: Add routing state variable**
 
 Add after `filterByModelId`:
+
 ```typescript
 let routingSelectedPair: { requested_model_id: string; selected_model_id: string } | null = null;
 ```
@@ -49,7 +52,10 @@ Add after the existing filter handlers (around line 160-170), before `loadDashbo
 
 ```typescript
 const onSelectPair = (requestedModelId: string, selectedModelId: string) => {
-	routingSelectedPair = { requested_model_id: requestedModelId, selected_model_id: selectedModelId };
+	routingSelectedPair = {
+		requested_model_id: requestedModelId,
+		selected_model_id: selectedModelId
+	};
 	filterByModelId = selectedModelId;
 	reloadModelTable();
 	reloadUserTable();
@@ -90,6 +96,7 @@ Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
 ## Task 2: Auto-Clear Routing Filter on Period/Group Change
 
 **Files:**
+
 - Modify: `src/lib/components/admin/Analytics/Dashboard.svelte` (reactive statement around line 320-340)
 
 - [ ] **Step 1: Find the period/group change reactive statement**
@@ -97,6 +104,7 @@ Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
 Locate the reactive statement that triggers `loadDashboard()` and `loadRoutingAnalytics()` when period or group changes (look for `$: if (selectedPeriod || selectedGroupId !== undefined)`).
 
 Expected around line 330:
+
 ```typescript
 $: if (selectedPeriod || selectedGroupId !== undefined) {
 	loadDashboard();
@@ -107,6 +115,7 @@ $: if (selectedPeriod || selectedGroupId !== undefined) {
 - [ ] **Step 2: Add routing clear to reactive statement**
 
 Modify to auto-clear routing filter:
+
 ```typescript
 $: if (selectedPeriod || selectedGroupId !== undefined) {
 	routingSelectedPair = null;
@@ -119,6 +128,7 @@ $: if (selectedPeriod || selectedGroupId !== undefined) {
 - [ ] **Step 3: Verify syntax**
 
 Check that the reactive statement has no TypeScript errors. Run:
+
 ```bash
 npm run check 2>&1 | grep -i "dashboard" | head -10
 ```
@@ -142,6 +152,7 @@ Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
 ## Task 3: Pass Callbacks to RoutingUsage Component
 
 **Files:**
+
 - Modify: `src/lib/components/admin/Analytics/Dashboard.svelte` (RoutingUsage component usage around line 600-650)
 
 - [ ] **Step 1: Find RoutingUsage component in Dashboard template**
@@ -164,6 +175,7 @@ Search for `<RoutingUsage` in the template section (usually near end of file):
 - [ ] **Step 2: Wire onSelectPair callback**
 
 Replace the empty `onSelectPair={() => {}}` with:
+
 ```svelte
 onSelectPair={onSelectPair}
 ```
@@ -171,11 +183,13 @@ onSelectPair={onSelectPair}
 - [ ] **Step 3: Wire onClearPair callback**
 
 Replace the empty `onClearPair={() => {}}` with:
+
 ```svelte
 onClearPair={onClearPair}
 ```
 
 Full result should be:
+
 ```svelte
 <RoutingUsage
 	pairs={routingPairs}
@@ -184,14 +198,15 @@ Full result should be:
 	modelMode={routingModelMode}
 	selectedPair={routingSelectedPair}
 	onModelModeChange={handleRoutingModeChange}
-	onSelectPair={onSelectPair}
-	onClearPair={onClearPair}
+	{onSelectPair}
+	{onClearPair}
 />
 ```
 
 - [ ] **Step 4: Verify syntax**
 
 Run type check:
+
 ```bash
 npm run check 2>&1 | grep -i "dashboard" | head -10
 ```
@@ -215,6 +230,7 @@ Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
 ## Task 4: Add Visual Routing Filter Badge
 
 **Files:**
+
 - Modify: `src/lib/components/admin/Analytics/RoutingUsage.svelte` (header around lines 31-54)
 
 - [ ] **Step 1: Locate the Routing section header**
@@ -238,12 +254,17 @@ Find the header div that contains "Routing (Requested → Selected)" text (aroun
 After the `userFilterLabel` conditional block and before the mode selector, add:
 
 ```svelte
-		{#if selectedPair}
-			<span class="text-blue-500 font-normal ml-2">Routing filter: <span class="font-medium">{selectedPair.requested_model_id} → {selectedPair.selected_model_id}</span></span>
-		{/if}
+{#if selectedPair}
+	<span class="text-blue-500 font-normal ml-2"
+		>Routing filter: <span class="font-medium"
+			>{selectedPair.requested_model_id} → {selectedPair.selected_model_id}</span
+		></span
+	>
+{/if}
 ```
 
 Result should be:
+
 ```svelte
 <div class="flex items-center justify-between text-xs font-medium text-gray-700 dark:text-gray-300 mb-1 px-0.5">
 	<span>Routing (Requested → Selected)</span>
@@ -263,6 +284,7 @@ Result should be:
 - [ ] **Step 3: Verify syntax**
 
 Run type check:
+
 ```bash
 npm run check 2>&1 | grep -i "RoutingUsage" | head -10
 ```
@@ -286,6 +308,7 @@ Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
 ## Task 5: Add Unit Test for Routing Filter Extraction
 
 **Files:**
+
 - Modify: `src/lib/components/admin/Analytics/cross-filter-state.test.ts`
 - Test: Same file (add test case)
 
@@ -305,10 +328,10 @@ Add this test case at the end of the test file:
 test('extracts selected_model_id from routing pair for filtering', () => {
 	// Simulate selecting a routing pair: gpt-4 → mistral
 	const routingPair = { requested_model_id: 'gpt-4', selected_model_id: 'mistral' };
-	
+
 	// Extract the selected model to use as filter
 	const filterByModelId = routingPair.selected_model_id;
-	
+
 	// Verify correct model is extracted
 	expect(filterByModelId).toBe('mistral');
 });
@@ -347,11 +370,13 @@ Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
 ## Task 6: Manual Integration Test - Click Routing Pair
 
 **Files:**
+
 - Test manually in running application
 
 - [ ] **Step 1: Start dev server**
 
 In one terminal:
+
 ```bash
 npm run dev
 ```
@@ -361,6 +386,7 @@ Wait for "http://localhost:5173" to appear. Leave running.
 - [ ] **Step 2: Start backend in another terminal**
 
 In a new terminal (in the repo root):
+
 ```bash
 cd backend && python -m uvicorn open_webui.main:app --reload --port 8000
 ```
@@ -382,6 +408,7 @@ In the Routing table, find a pair with count > 10 (e.g., "gpt-4 → mistral"). N
 Click on the row in the Routing table.
 
 Expected:
+
 - Row highlights with blue background
 - "Routing filter: [requested → selected]" badge appears in header
 - Model Usage table reloads
@@ -390,6 +417,7 @@ Expected:
 - [ ] **Step 6: Verify User Activity filter**
 
 In User Activity table:
+
 - Scroll to see if users are displayed
 - Each user should have interaction with `selected_model_id` (from your clicked pair)
 
@@ -398,6 +426,7 @@ Expected: Users shown, no error messages
 - [ ] **Step 7: Verify Model Usage filter**
 
 In Model Usage section:
+
 - Check if models are filtered to show only those used by users receiving `selected_model_id`
 
 Expected: Model list matches the routing selection
@@ -405,6 +434,7 @@ Expected: Model list matches the routing selection
 - [ ] **Step 8: Verify Token Stats**
 
 In Token Usage section:
+
 - Token consumption should show data only for `selected_model_id`
 
 Expected: Token stats reflect only the selected model's consumption
@@ -414,6 +444,7 @@ Expected: Token stats reflect only the selected model's consumption
 Click "Clear pair" button in Routing header.
 
 Expected:
+
 - Routing pair highlighting disappears
 - "Routing filter" badge disappears
 - All tables reload with unfiltered data
@@ -424,6 +455,7 @@ Expected:
 Adjust the period filter (e.g., 24h → 7d).
 
 Expected:
+
 - Routing pair selection clears automatically
 - Tables reload fresh
 - "Routing filter" badge not shown
@@ -433,6 +465,7 @@ Expected:
 Rapidly click different routing pairs 5+ times.
 
 Expected:
+
 - Each click filters tables correctly
 - No stale data from previous selections
 - No errors in browser console
@@ -442,6 +475,7 @@ Expected:
 ## Task 7: Verify No Regressions in Cross-Filter Tests
 
 **Files:**
+
 - Test: `src/lib/components/admin/Analytics/cross-filter-state.test.ts`
 
 - [ ] **Step 1: Run full cross-filter test suite**
@@ -473,6 +507,7 @@ Expected: 0 new errors (pre-existing errors are ok, verify none are from Dashboa
 ## Task 8: Final Integration and Cleanup
 
 **Files:**
+
 - Verify: All components in Dashboard.svelte and RoutingUsage.svelte
 
 - [ ] **Step 1: Build frontend**
@@ -504,11 +539,13 @@ pkill -f "uvicorn"
 - [ ] **Step 4: Final commit summary**
 
 Verify all task commits are present:
+
 ```bash
 git log --oneline | head -10
 ```
 
 Expected output includes:
+
 ```
 - feat(analytics): add routing pair state and handlers
 - feat(analytics): auto-clear routing filter on period/group change
@@ -524,6 +561,7 @@ git log --oneline $(git describe --tags --abbrev=0)..HEAD | wc -l
 ```
 
 If more than 5 commits for this feature, create a summary:
+
 ```bash
 git log --oneline | head -6
 # Copy the commits and create a summary message
@@ -534,6 +572,7 @@ git log --oneline | head -6
 ## Self-Review Against Spec
 
 **Spec Coverage:**
+
 - ✅ Routing Selection Trigger: Task 1, 3 (onSelectPair handler + callbacks)
 - ✅ Filter Application: Task 1 (extract selected_model_id, set filterByModelId)
 - ✅ Filter Clearing: Task 2 (auto-clear), Task 1 (onClearPair handler)
@@ -542,18 +581,21 @@ git log --oneline | head -6
 - ✅ No Regressions: Task 7 (cross-filter test verification)
 
 **Placeholder Scan:**
+
 - ✅ No "TBD", "TODO", or vague steps
 - ✅ All code blocks complete with exact syntax
 - ✅ All commands have expected output descriptions
 - ✅ No "similar to Task X" references
 
 **Type Consistency:**
+
 - ✅ `routingSelectedPair: { requested_model_id: string; selected_model_id: string } | null`
 - ✅ `onSelectPair(requestedModelId, selectedModelId)` parameters match
 - ✅ `filterByModelId = selectedModelId` type matches existing
 - ✅ Badge displays `${selectedPair.requested_model_id} → ${selectedPair.selected_model_id}`
 
 **Scope Check:**
+
 - ✅ Feature focused, no scope creep
 - ✅ All tasks are testable independently
 - ✅ Incremental commits allow rollback if needed
@@ -580,6 +622,7 @@ After completing all tasks:
 ## Execution Readiness
 
 This plan is ready for implementation. All tasks are:
+
 - **Bite-sized** (each takes 2-5 minutes)
 - **Self-contained** (testable independently)
 - **Sequential** (later tasks depend on earlier ones completing)

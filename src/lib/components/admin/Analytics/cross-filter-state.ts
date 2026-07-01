@@ -1,8 +1,8 @@
 export type RoutingMode = 'or' | 'and' | 'selected' | 'requested';
 
 export type RoutingPair = {
-  requested_model_id: string;
-  selected_model_id: string;
+	requested_model_id: string;
+	selected_model_id: string;
 };
 
 /**
@@ -21,32 +21,32 @@ export type RoutingPair = {
  *   leaves room for divergent semantics in future query builders.
  */
 export function deriveRoutingFilters(input: {
-  routingSelectedPair: RoutingPair | null;
-  filterByModelId: string | null;
-  routingModelMode: RoutingMode;
+	routingSelectedPair: RoutingPair | null;
+	filterByModelId: string | null;
+	routingModelMode: RoutingMode;
 }): { modelSelected: string | null; modelRequested: string | null } {
-  const { routingSelectedPair, filterByModelId, routingModelMode } = input;
+	const { routingSelectedPair, filterByModelId, routingModelMode } = input;
 
-  if (routingSelectedPair) {
-    return {
-      modelSelected: routingSelectedPair.selected_model_id,
-      modelRequested: routingSelectedPair.requested_model_id
-    };
-  }
+	if (routingSelectedPair) {
+		return {
+			modelSelected: routingSelectedPair.selected_model_id,
+			modelRequested: routingSelectedPair.requested_model_id
+		};
+	}
 
-  if (!filterByModelId) {
-    return { modelSelected: null, modelRequested: null };
-  }
+	if (!filterByModelId) {
+		return { modelSelected: null, modelRequested: null };
+	}
 
-  if (routingModelMode === 'selected') {
-    return { modelSelected: filterByModelId, modelRequested: null };
-  }
+	if (routingModelMode === 'selected') {
+		return { modelSelected: filterByModelId, modelRequested: null };
+	}
 
-  if (routingModelMode === 'requested') {
-    return { modelSelected: null, modelRequested: filterByModelId };
-  }
+	if (routingModelMode === 'requested') {
+		return { modelSelected: null, modelRequested: filterByModelId };
+	}
 
-  return { modelSelected: filterByModelId, modelRequested: filterByModelId };
+	return { modelSelected: filterByModelId, modelRequested: filterByModelId };
 }
 
 /**
@@ -55,16 +55,16 @@ export function deriveRoutingFilters(input: {
  * Use this to ignore stale async responses and only apply the latest request.
  */
 export function createRequestTracker() {
-  let current = 0;
-  return {
-    next() {
-      current += 1;
-      return current;
-    },
-    isLatest(id: number) {
-      return id === current;
-    }
-  };
+	let current = 0;
+	return {
+		next() {
+			current += 1;
+			return current;
+		},
+		isLatest(id: number) {
+			return id === current;
+		}
+	};
 }
 
 /**
@@ -74,5 +74,5 @@ export function createRequestTracker() {
  * `next` (select or switch selection).
  */
 export function toggleSelection(current: string | null, next: string): string | null {
-  return current === next ? null : next;
+	return current === next ? null : next;
 }

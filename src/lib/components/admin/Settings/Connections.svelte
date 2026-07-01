@@ -199,10 +199,7 @@
 	});
 
 	const submitHandler = async () => {
-		const [openaiOk, ollamaOk] = await Promise.all([
-			updateOpenAIHandler(),
-			updateOllamaHandler()
-		]);
+		const [openaiOk, ollamaOk] = await Promise.all([updateOpenAIHandler(), updateOllamaHandler()]);
 
 		if (openaiOk || ollamaOk) {
 			dispatch('save');

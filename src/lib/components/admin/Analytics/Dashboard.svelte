@@ -233,7 +233,10 @@
 	};
 
 	const onSelectPair = (requestedModelId: string, selectedModelId: string) => {
-		routingSelectedPair = { requested_model_id: requestedModelId, selected_model_id: selectedModelId };
+		routingSelectedPair = {
+			requested_model_id: requestedModelId,
+			selected_model_id: selectedModelId
+		};
 		filterByModelId = selectedModelId;
 		reloadModelTable();
 		reloadUserTable();
@@ -259,7 +262,14 @@
 				getModelAnalytics(localStorage.token, start, end, selectedGroupId, filterByUserId),
 				getUserAnalytics(localStorage.token, start, end, 50, selectedGroupId, filterByModelId),
 				getDailyStats(localStorage.token, start, end, granularity, selectedGroupId),
-				getTokenUsage(localStorage.token, start, end, selectedGroupId, filterByUserId, filterByModelId)
+				getTokenUsage(
+					localStorage.token,
+					start,
+					end,
+					selectedGroupId,
+					filterByUserId,
+					filterByModelId
+				)
 			]);
 
 			if (!dashboardTracker.isLatest(requestId)) return;
@@ -307,7 +317,14 @@
 			const { start, end } = getDateRange(selectedPeriod);
 			const [modelsRes, tokensRes] = await Promise.all([
 				getModelAnalytics(localStorage.token, start, end, selectedGroupId, filterByUserId),
-				getTokenUsage(localStorage.token, start, end, selectedGroupId, filterByUserId, filterByModelId)
+				getTokenUsage(
+					localStorage.token,
+					start,
+					end,
+					selectedGroupId,
+					filterByUserId,
+					filterByModelId
+				)
 			]);
 			if (!modelTracker.isLatest(requestId)) return;
 			const modelsMap = new Map($models.map((m) => [m.id, m.name || m.id]));
@@ -584,7 +601,14 @@
 			'#06b6d4',
 			'#84cc16'
 		]}
-		{@const periodMap = { '1h': 'hour', '24h': 'hour', '7d': 'week', '30d': 'month', '90d': 'year', all: 'all' }}
+		{@const periodMap = {
+			'1h': 'hour',
+			'24h': 'hour',
+			'7d': 'week',
+			'30d': 'month',
+			'90d': 'year',
+			all: 'all'
+		}}
 		<div class="mb-4">
 			<div class="text-xs font-medium text-gray-600 dark:text-gray-400 mb-2 px-0.5">
 				{selectedPeriod === '1h' || selectedPeriod === '24h'
@@ -610,7 +634,9 @@
 	<div class="grid md:grid-cols-2 gap-4">
 		<!-- Model Usage Table -->
 		<div>
-			<div class="flex items-center justify-between text-xs font-medium text-gray-700 dark:text-gray-300 mb-1 px-0.5">
+			<div
+				class="flex items-center justify-between text-xs font-medium text-gray-700 dark:text-gray-300 mb-1 px-0.5"
+			>
 				<span>{$i18n.t('Model Usage')}</span>
 				{#if filterByUserId}
 					<span class="flex items-center gap-1 text-blue-500 font-normal">
@@ -623,8 +649,8 @@
 								filterByUserName = null;
 								reloadModelTable();
 							}}
-							title={$i18n.t('Clear filter')}
-						>✕</button>
+							title={$i18n.t('Clear filter')}>✕</button
+						>
 					</span>
 				{/if}
 			</div>
@@ -826,10 +852,10 @@
 											class="ml-auto text-gray-300 hover:text-blue-500 transition shrink-0"
 											title={$i18n.t('View details')}
 											on:click|stopPropagation={() => {
-											selectedModel = { id: model.model_id, name: model.name ?? model.model_id };
+												selectedModel = { id: model.model_id, name: model.name ?? model.model_id };
 												showModelModal = true;
-											}}
-										>→</button>
+											}}>→</button
+										>
 									</div>
 								</td>
 								<td class="px-3 py-1 text-right">{model.count.toLocaleString()}</td>
@@ -853,19 +879,25 @@
 									{totalModelMessages > 0
 										? ((model.count / totalModelMessages) * 100).toFixed(1)
 										: 0}%
-								</td>							<td class="px-3 py-1 text-right text-gray-500">
-								{model.avg_ttft_ms != null ? `${model.avg_ttft_ms.toFixed(0)} ms` : '—'}
-							</td>
-							<td class="px-3 py-1 text-right text-gray-500">
-								{model.avg_tokens_per_second != null
-									? `${model.avg_tokens_per_second.toFixed(1)}/s`
-									: '—'}
-							</td>
-							<td class="px-3 py-1 text-right {model.error_requests > 0 ? 'text-red-400' : 'text-gray-400'}">
-								{model.error_requests > 0
-									? `${model.error_requests} (${model.error_rate.toFixed(1)}%)`
-									: '—'}
-							</td>							</tr>
+								</td>
+								<td class="px-3 py-1 text-right text-gray-500">
+									{model.avg_ttft_ms != null ? `${model.avg_ttft_ms.toFixed(0)} ms` : '—'}
+								</td>
+								<td class="px-3 py-1 text-right text-gray-500">
+									{model.avg_tokens_per_second != null
+										? `${model.avg_tokens_per_second.toFixed(1)}/s`
+										: '—'}
+								</td>
+								<td
+									class="px-3 py-1 text-right {model.error_requests > 0
+										? 'text-red-400'
+										: 'text-gray-400'}"
+								>
+									{model.error_requests > 0
+										? `${model.error_requests} (${model.error_rate.toFixed(1)}%)`
+										: '—'}
+								</td>
+							</tr>
 						{/each}
 						{#if sortedModels.length === 0}
 							<tr
@@ -881,7 +913,9 @@
 
 		<!-- User Activity Table -->
 		<div>
-			<div class="flex items-center justify-between text-xs font-medium text-gray-700 dark:text-gray-300 mb-1 px-0.5">
+			<div
+				class="flex items-center justify-between text-xs font-medium text-gray-700 dark:text-gray-300 mb-1 px-0.5"
+			>
 				<span>{$i18n.t('User Activity')}</span>
 				{#if filterByModelId}
 					<span class="flex items-center gap-1 text-blue-500 font-normal">
@@ -894,8 +928,8 @@
 								filterByModelName = null;
 								reloadUserTable();
 							}}
-							title={$i18n.t('Clear filter')}
-						>✕</button>
+							title={$i18n.t('Clear filter')}>✕</button
+						>
 					</span>
 				{/if}
 			</div>
@@ -969,7 +1003,9 @@
 								on:click={() => {
 									const next = toggleSelection(filterByUserId, user.user_id);
 									filterByUserId = next;
-									filterByUserName = next ? (user.name || user.email || user.user_id.substring(0, 8)) : null;
+									filterByUserName = next
+										? user.name || user.email || user.user_id.substring(0, 8)
+										: null;
 									reloadModelTable();
 								}}
 							>
@@ -1020,8 +1056,8 @@
 				routingSelectedPair = null;
 				loadRoutingAnalytics();
 			}}
-			onSelectPair={onSelectPair}
-			onClearPair={onClearPair}
+			{onSelectPair}
+			{onClearPair}
 		/>
 	</div>
 
