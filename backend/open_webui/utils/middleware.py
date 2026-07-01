@@ -3480,6 +3480,7 @@ async def non_streaming_chat_response_handler(response, ctx):
 
                     # Save message in the database
                     usage = normalize_usage(response_data.get('usage', {}) or {})
+                    usage = merge_routing_usage(usage, metadata)
 
                     if not metadata.get('chat_id', '').startswith('channel:'):
                         await Chats.upsert_message_to_chat_by_id_and_message_id(
@@ -4071,6 +4072,7 @@ async def streaming_chat_response_handler(response, ctx):
                                         # Normalize and capture usage for DB persistence
                                         if response_metadata.get('usage'):
                                             usage = merge_usage(usage, response_metadata['usage'])
+                                            usage = merge_routing_usage(usage, metadata)
                                             response_metadata['usage'] = usage
 
                                         processed_data.update(response_metadata)
@@ -4100,6 +4102,7 @@ async def streaming_chat_response_handler(response, ctx):
                                     raw_usage.update(data.get('timings', {}))  # llama.cpp
                                     if raw_usage:
                                         usage = merge_usage(usage, raw_usage)
+                                        usage = merge_routing_usage(usage, metadata)
                                         await event_emitter(
                                             {
                                                 'type': 'chat:completion',

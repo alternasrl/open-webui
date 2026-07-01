@@ -142,3 +142,116 @@ This document provides essential guidance for AI assistants working on the Open 
 - **Message Brokers**: Redis (sessions, caching), Socket.IO (WebSocket)
 
 All integrations are optional and configurable via environment variables.
+## Tag & Release Naming Convention
+
+  Always apply these rules when creating git tags or GitHub releases.ENFORCED ### 
+
+#### 1. Source release tags (git tags on `alternasrl/open-webui`)
+
+**Format:** `v{MAJOR}.{MINOR}.{PATCH}-{YYMMDD}[{letter}]`
+
+| Component | Format | Description |
+|-----------|--------|-------------|
+| `v{semver}` | `v0.9.6` | Upstream open-webui version |
+ `260604` |
+| `{letter}` | *(omit)*, `b`, ` | Same-day re-iterations only; first tag has NO suffix |c`
+
+**Examples:**
+```
+v0.9.5- v0.9.5, May 12 2026 (first tag that day)260512    
+v0.9.5- v0.9.5, May 20 2026260520    
+v0.9.6- v0.9.6, June 4 2026 (CORRECT form)260604    
+v0.9.6- v0.9.6, June 4 2026, second iteration260604b   
+v0.9.6- v0.9.6, June 4 2026, third iteration260604c   
+```
+
+ **Known deviation:** Tags `v0.9.6-040626` and `v0.9.6-040626b` exist in the repo with the wrong DDMMYY order. They remain for backwards compat but MUST NOT be used as a model for new tags. Always use **YYMMDD**.> 
+
+**Regex to validate:** `^v\d+\.\d+\.\d+(-[a-z0-9]+)?-\d{6}[b-z]?$`
+
+#### 2. Docker image tags (produced by `giada/build_image.py`)
+
+**Format:** `{source-release-tag}-build-{YYYYMMDD}.{NN}`
+
+| Component | Format | Description |
+|-----------|--------|-------------|
+| `{source-release-tag}` | `v0.9.6-260604` | Full source release tag (YYMMDD) |
+| `build` | literal | Separator |
+| `{YYYYMMDD}` | `20260604` | ISO date with **4-digit year** |
+| `{NN}` | `01`, ` | Zero-padded sequential build number for the day |02`
+
+**Examples:**
+```
+v0.9.6-260604-build-20260604.01
+v0.9.6-260604-build-20260604.02
+v0.9.6-260604b-build-20260604.01
+```
+
+**ACR full reference:** `craltea.azurecr.io/open-webui:{docker-image-tag}`
+
+#### 3. GitHub releases (`alternasrl/open-webui`)
+
+- **Tag:** source release tag (e.g. `v0.9.6-260604`)
+- **Title:** same as tag
+- **Body:** changelog snippet for the version + custom patches list
+
+#### 4. Branch naming
+
+- Integration branches: `integration-v{MAJOR}.{MINOR}.{PATCH}`
+- Feature branches: `feat/{short-description}` from `dev`
+- Do NOT branch from `main` for  use `dev`features 
+
+#### Quick cheat-sheet
+
+```
+ YYMMDD = 260604
+
+New source tag:     v0.9.7-260604        (first this day)
+Second iteration:   v0.9.7-260604b
+Docker image tag:   v0.9.7-260604-build-20260604.01
+ACR ref:            craltea.azurecr.io/open-webui:v0.9.7-260604-build-20260604.01
+```
+
+
+<!-- headroom:rtk-instructions -->
+# RTK (Rust Token Killer) - Token-Optimized Commands
+
+When running shell commands, **always prefix with `rtk`**. This reduces context
+usage by 60-90% with zero behavior change. If rtk has no filter for a command,
+it passes through unchanged — so it is always safe to use.
+
+## Key Commands
+```bash
+# Git (59-80% savings)
+rtk git status          rtk git diff            rtk git log
+
+# Files & Search (60-75% savings)
+rtk ls <path>           rtk read <file>         rtk grep <pattern>
+rtk find <pattern>      rtk diff <file>
+
+# Test (90-99% savings) — shows failures only
+rtk pytest tests/       rtk cargo test          rtk test <cmd>
+
+# Build & Lint (80-90% savings) — shows errors only
+rtk tsc                 rtk lint                rtk cargo build
+rtk prettier --check    rtk mypy                rtk ruff check
+
+# Analysis (70-90% savings)
+rtk err <cmd>           rtk log <file>          rtk json <file>
+rtk summary <cmd>       rtk deps                rtk env
+
+# GitHub (26-87% savings)
+rtk gh pr view <n>      rtk gh run list         rtk gh issue list
+
+# Infrastructure (85% savings)
+rtk docker ps           rtk kubectl get         rtk docker logs <c>
+
+# Package managers (70-90% savings)
+rtk pip list            rtk pnpm install        rtk npm run <script>
+```
+
+## Rules
+- In command chains, prefix each segment: `rtk git add . && rtk git commit -m "msg"`
+- For debugging, use raw command without rtk prefix
+- `rtk proxy <cmd>` runs command without filtering but tracks usage
+<!-- /headroom:rtk-instructions -->

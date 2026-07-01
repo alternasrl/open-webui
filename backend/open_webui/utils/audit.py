@@ -14,7 +14,6 @@ from typing import (
 )
 
 import jwt as pyjwt
-
 from asgiref.typing import (
     ASGI3Application,
     ASGIReceiveCallable,
@@ -272,7 +271,7 @@ class AuditLoggingMiddleware:
         if oauth_id_token:
             tokens_to_try.append(oauth_id_token)
 
-        # Priority 2: Authorization Bearer token
+        # Priority 2: Authorization ******
         auth_header = request.headers.get("Authorization")
         if auth_header and auth_header.startswith("Bearer "):
             bearer_token = auth_header[len("Bearer "):]

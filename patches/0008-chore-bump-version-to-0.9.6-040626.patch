@@ -1,0 +1,22 @@
+From 1213ec137be766c9976e59bcaec03fd421c9691e Mon Sep 17 00:00:00 2001
+From: Fabio Paracchini <fparacchini@alteanet.it>
+Date: Thu, 4 Jun 2026 12:41:31 +0200
+Subject: [PATCH 8/8] chore: bump version to 0.9.6-040626
+
+Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>
+---
+ package.json | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/package.json b/package.json
+index 44cb94359..6ba88da32 100644
+--- a/package.json
++++ b/package.json
+@@ -1,6 +1,6 @@
+ {
+ 	"name": "open-webui",
+-	"version": "0.9.6",
++	"version": "0.9.6-040626",
+ 	"private": true,
+ 	"scripts": {
+ 		"dev": "npm run pyodide:fetch && vite dev --host",
