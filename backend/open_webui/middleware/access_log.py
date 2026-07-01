@@ -45,6 +45,20 @@ covered by this middleware:
   • ``/api/v1/retrieval/config/update`` + ``/embedding/update`` — retrieval config
   • ``/api/v1/audio/config/update``, ``/api/v1/images/config/update`` — media config
 
+New API surfaces added in v0.9.7–v0.10.1 and covered by this middleware:
+
+  • ``/api/v1/auths/admin/config/oauth``        — OAuth admin config (GET/POST)
+  • ``/api/v1/chats/config``                    — Chat feature config (GET/POST)
+  • ``/api/v1/chats/share/all``                 — Bulk delete of shared chats
+  • ``/api/v1/chats/{id}/compact``               — Chat history compaction
+  • ``/api/v1/chats/{id}/messages/{message_id}`` — Single message delete
+  • ``/api/v1/configs/terminal_servers/lifecycle`` + ``/refresh`` — terminal server ops
+  • ``/api/v1/folders/{id}/access/update``       — Folder sharing/access control
+  • ``/api/v1/knowledge/external/connections/*`` — External knowledge connections CRUD
+  • ``/api/v1/knowledge/external/source/*``      — External knowledge source CRUD
+  • ``/api/v1/memories/{search,path,paths,update}`` — Memory bulk operations
+  • ``/api/v1/analytics/routing/*``             — Model routing analytics (read-only)
+
 Azure WAF / Front Door Integration
 -----------------------------------
 When deployed behind Azure WAF, Application Gateway, or Front Door
@@ -301,6 +315,13 @@ def _compile_action_rules() -> list[tuple[re.Pattern, Optional[str], str]]:
         (rf"^/api/v1/chats/unarchive/all$", "POST", "CHAT_UNARCHIVE_ALL"),
         (rf"^/api/v1/chats/{_ID}/clone$", "POST", "CHAT_CLONE"),
         (rf"^/api/v1/chats/{_ID}/clone/shared$", "POST", "CHAT_CLONE_SHARED"),
+        # NOTE: literal-path rules below must precede the generic
+        # /chats/{id} rules (DELETE/POST), otherwise "share", "config" etc.
+        # would be swallowed as if they were a chat ID.
+        (rf"^/api/v1/chats/share/all$", "DELETE", "CHAT_DELETE_ALL_SHARED"),
+        (rf"^/api/v1/chats/config$", "POST", "CONFIG_CHATS"),
+        (rf"^/api/v1/chats/config$", "GET", "CONFIG_CHATS_READ"),
+        (rf"^/api/v1/chats/archived/count$", "GET", "CHAT_ARCHIVED_COUNT"),
         (rf"^/api/v1/chats/{_ID}$", "DELETE", "CHAT_DELETE"),
         (rf"^/api/v1/chats/$", "DELETE", "CHAT_DELETE_ALL"),
         (rf"^/api/v1/chats/{_ID}$", "POST", "CHAT_UPDATE"),
@@ -462,6 +483,38 @@ def _compile_action_rules() -> list[tuple[re.Pattern, Optional[str], str]]:
         (rf"^/api/v1/channels/{_ID}/messages/{_ID}/delete$", "DELETE", "CHANNEL_MESSAGE_DELETE"),
         (rf"^/api/v1/channels/{_ID}/messages/{_ID}/update$", "POST", "CHANNEL_MESSAGE_UPDATE"),
 
+        # ── New API surfaces added after v0.9.6 (v0.9.7–v0.10.1) ─────────
+        (rf"^/api/v1/analytics/routing/events$", "GET", "ANALYTICS_ROUTING_EVENTS"),
+        (rf"^/api/v1/analytics/routing/summary$", "GET", "ANALYTICS_ROUTING_SUMMARY"),
+        (rf"^/api/v1/auths/admin/config/oauth$", "POST", "CONFIG_OAUTH_ADMIN"),
+        (rf"^/api/v1/auths/admin/config/oauth$", "GET", "CONFIG_OAUTH_ADMIN_READ"),
+        (rf"^/api/v1/chats/{_ID}/messages/{_ID}$", "DELETE", "CHAT_MESSAGE_DELETE"),
+        (rf"^/api/v1/chats/{_ID}/compact$", "POST", "CHAT_COMPACT"),
+        (rf"^/api/v1/configs/terminal_servers/lifecycle$", "POST", "CONFIG_TERMINAL_SERVERS_LIFECYCLE"),
+        (rf"^/api/v1/configs/terminal_servers/refresh$", "POST", "CONFIG_TERMINAL_SERVERS_REFRESH"),
+        (rf"^/api/v1/configs/namespace/{_ID}$", "GET", "CONFIG_NAMESPACE_READ"),
+        (rf"^/api/v1/files/count$", "GET", "FILE_COUNT"),
+        (rf"^/api/v1/folders/{_ID}/access/update$", "POST", "ACCESS_FOLDER_UPDATE"),
+        (rf"^/api/v1/folders/shared$", "GET", "FOLDER_SHARED_READ"),
+        (rf"^/api/v1/folders/{_ID}/shared/chats$", "GET", "FOLDER_SHARED_CHATS_READ"),
+        (rf"^/api/v1/knowledge/external/connections/{_ID}/retrieve-test$", "POST", "KNOWLEDGE_EXTERNAL_CONNECTION_RETRIEVE_TEST"),
+        (rf"^/api/v1/knowledge/external/connections/{_ID}/test$", "POST", "KNOWLEDGE_EXTERNAL_CONNECTION_TEST"),
+        (rf"^/api/v1/knowledge/external/connections/{_ID}$", "PATCH", "KNOWLEDGE_EXTERNAL_CONNECTION_UPDATE"),
+        (rf"^/api/v1/knowledge/external/connections/{_ID}$", "DELETE", "KNOWLEDGE_EXTERNAL_CONNECTION_DELETE"),
+        (rf"^/api/v1/knowledge/external/connections/{_ID}$", "GET", "KNOWLEDGE_EXTERNAL_CONNECTION_READ"),
+        (rf"^/api/v1/knowledge/external/connections$", "POST", "KNOWLEDGE_EXTERNAL_CONNECTION_CREATE"),
+        (rf"^/api/v1/knowledge/external/connections$", "GET", "KNOWLEDGE_EXTERNAL_CONNECTION_LIST"),
+        (rf"^/api/v1/knowledge/external/source/test$", "POST", "KNOWLEDGE_EXTERNAL_SOURCE_TEST"),
+        (rf"^/api/v1/knowledge/external/source/create$", "POST", "KNOWLEDGE_EXTERNAL_SOURCE_CREATE"),
+        (rf"^/api/v1/knowledge/external/source/{_ID}$", "PATCH", "KNOWLEDGE_EXTERNAL_SOURCE_UPDATE"),
+        (rf"^/api/v1/knowledge/external/knowledge/create$", "POST", "KNOWLEDGE_EXTERNAL_KNOWLEDGE_CREATE"),
+        (rf"^/api/v1/memories/search$", "POST", "MEMORY_SEARCH"),
+        (rf"^/api/v1/memories/paths$", "POST", "MEMORY_PATHS"),
+        (rf"^/api/v1/memories/path$", "POST", "MEMORY_PATH"),
+        (rf"^/api/v1/memories/update$", "POST", "MEMORY_UPDATE_BULK"),
+        (rf"^/api/v1/models/base/tags$", "GET", "MODEL_BASE_TAGS_READ"),
+        (rf"^/api/v1/users/default/permissions/defaults$", "GET", "USER_PERMISSIONS_DEFAULTS_READ"),
+
         # ── Catch-all for remaining API write operations ─────────────────
         # These catch any unmatched POST/PUT/PATCH/DELETE on /api/ paths
         (rf"^/api/", "DELETE", "DELETE_OTHER"),
@@ -541,6 +594,13 @@ _NIS2_SECURITY_ACTIONS = frozenset({
     "CALENDAR_DELETE",
     # Scheduled automations (background code execution — no HTTP triggerer)
     "TASK_AUTOMATION_SCHEDULED", "TASK_AUTOMATION_SCHEDULED_ERROR",
+    # New API surfaces added after v0.9.6 (v0.9.7–v0.10.1)
+    "CONFIG_OAUTH_ADMIN", "CHAT_DELETE_ALL_SHARED", "CONFIG_CHATS",
+    "CONFIG_TERMINAL_SERVERS_LIFECYCLE", "CONFIG_TERMINAL_SERVERS_REFRESH",
+    "ACCESS_FOLDER_UPDATE",
+    "KNOWLEDGE_EXTERNAL_CONNECTION_CREATE", "KNOWLEDGE_EXTERNAL_CONNECTION_UPDATE",
+    "KNOWLEDGE_EXTERNAL_CONNECTION_DELETE", "KNOWLEDGE_EXTERNAL_SOURCE_CREATE",
+    "KNOWLEDGE_EXTERNAL_SOURCE_UPDATE", "KNOWLEDGE_EXTERNAL_KNOWLEDGE_CREATE",
 })
 
 
@@ -590,6 +650,9 @@ def _compile_object_id_patterns() -> list[tuple[re.Pattern, str]]:
         (rf"/chats/{_ID}", "chat"),
         (rf"/notes/{_ID}", "note"),
         (rf"/files/{_ID}", "file"),
+        # external connections/source must precede the generic /knowledge/{id}
+        (rf"/knowledge/external/connections/{_ID}", "external_connection"),
+        (rf"/knowledge/external/source/{_ID}", "external_source"),
         (rf"/knowledge/{_ID}", "knowledge"),
         (rf"/functions/id/{_ID}", "function"),
         (rf"/tools/id/{_ID}", "tool"),

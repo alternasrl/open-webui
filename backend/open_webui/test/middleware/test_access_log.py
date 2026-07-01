@@ -717,3 +717,85 @@ class TestInvalidateUserCache:
     def test_missing_key_is_noop(self):
         """Evicting a user not in cache must not raise."""
         invalidate_user_cache("nonexistent-user-id-xyz")
+
+
+# ---------------------------------------------------------------------------
+# New API surfaces added after v0.9.6 (v0.9.7–v0.10.1)
+# ---------------------------------------------------------------------------
+
+class TestClassifyPostV096Actions:
+
+    def test_oauth_admin_config_write_is_security_relevant(self):
+        assert action_of("POST", "/api/v1/auths/admin/config/oauth") == "CONFIG_OAUTH_ADMIN"
+        assert is_nis2("POST", "/api/v1/auths/admin/config/oauth")
+
+    def test_oauth_admin_config_read_is_not_security_relevant(self):
+        assert action_of("GET", "/api/v1/auths/admin/config/oauth") == "CONFIG_OAUTH_ADMIN_READ"
+        assert not is_nis2("GET", "/api/v1/auths/admin/config/oauth")
+
+    def test_chats_delete_all_shared_is_security_relevant(self):
+        assert action_of("DELETE", "/api/v1/chats/share/all") == "CHAT_DELETE_ALL_SHARED"
+        assert is_nis2("DELETE", "/api/v1/chats/share/all")
+
+    def test_chats_config_write_is_security_relevant(self):
+        assert action_of("POST", "/api/v1/chats/config") == "CONFIG_CHATS"
+        assert is_nis2("POST", "/api/v1/chats/config")
+
+    def test_chats_compact_is_not_security_relevant(self):
+        assert action_of("POST", "/api/v1/chats/some-chat-id/compact") == "CHAT_COMPACT"
+        assert not is_nis2("POST", "/api/v1/chats/some-chat-id/compact")
+
+    def test_terminal_servers_lifecycle_is_security_relevant(self):
+        assert action_of("POST", "/api/v1/configs/terminal_servers/lifecycle") == "CONFIG_TERMINAL_SERVERS_LIFECYCLE"
+        assert is_nis2("POST", "/api/v1/configs/terminal_servers/lifecycle")
+
+    def test_terminal_servers_refresh_is_security_relevant(self):
+        assert action_of("POST", "/api/v1/configs/terminal_servers/refresh") == "CONFIG_TERMINAL_SERVERS_REFRESH"
+        assert is_nis2("POST", "/api/v1/configs/terminal_servers/refresh")
+
+    def test_folder_access_update_is_security_relevant(self):
+        assert action_of("POST", "/api/v1/folders/folder-id/access/update") == "ACCESS_FOLDER_UPDATE"
+        assert is_nis2("POST", "/api/v1/folders/folder-id/access/update")
+
+    def test_knowledge_external_connection_create_is_security_relevant(self):
+        assert action_of("POST", "/api/v1/knowledge/external/connections") == "KNOWLEDGE_EXTERNAL_CONNECTION_CREATE"
+        assert is_nis2("POST", "/api/v1/knowledge/external/connections")
+
+    def test_knowledge_external_connection_update_is_security_relevant(self):
+        assert action_of("PATCH", "/api/v1/knowledge/external/connections/conn-1") == "KNOWLEDGE_EXTERNAL_CONNECTION_UPDATE"
+        assert is_nis2("PATCH", "/api/v1/knowledge/external/connections/conn-1")
+
+    def test_knowledge_external_connection_delete_is_security_relevant(self):
+        assert action_of("DELETE", "/api/v1/knowledge/external/connections/conn-1") == "KNOWLEDGE_EXTERNAL_CONNECTION_DELETE"
+        assert is_nis2("DELETE", "/api/v1/knowledge/external/connections/conn-1")
+
+    def test_knowledge_external_connection_list_is_not_security_relevant(self):
+        assert action_of("GET", "/api/v1/knowledge/external/connections") == "KNOWLEDGE_EXTERNAL_CONNECTION_LIST"
+        assert not is_nis2("GET", "/api/v1/knowledge/external/connections")
+
+    def test_memory_search_is_not_security_relevant(self):
+        assert action_of("POST", "/api/v1/memories/search") == "MEMORY_SEARCH"
+        assert not is_nis2("POST", "/api/v1/memories/search")
+
+    def test_analytics_routing_events_is_read(self):
+        assert action_of("GET", "/api/v1/analytics/routing/summary") == "ANALYTICS_ROUTING_SUMMARY"
+        assert not is_nis2("GET", "/api/v1/analytics/routing/summary")
+
+
+class TestExtractObjectRefV096Additions:
+
+    def test_external_connection_object_ref(self):
+        obj_type, obj_id = _extract_object_ref("/api/v1/knowledge/external/connections/conn-42")
+        assert obj_type == "external_connection"
+        assert obj_id == "conn-42"
+
+    def test_external_source_object_ref(self):
+        obj_type, obj_id = _extract_object_ref("/api/v1/knowledge/external/source/src-7")
+        assert obj_type == "external_source"
+        assert obj_id == "src-7"
+
+    def test_generic_knowledge_object_ref_still_works(self):
+        """Ensure the more-specific external patterns didn't break the generic one."""
+        obj_type, obj_id = _extract_object_ref("/api/v1/knowledge/kb-99")
+        assert obj_type == "knowledge"
+        assert obj_id == "kb-99"
