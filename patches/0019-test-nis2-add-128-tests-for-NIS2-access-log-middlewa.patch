@@ -1,0 +1,784 @@
+From 06cfcea54416154842a5553048efbb4fb96114cc Mon Sep 17 00:00:00 2001
+From: Fabio Paracchini <fparacchini@alteanet.it>
+Date: Tue, 12 May 2026 12:08:24 +0200
+Subject: [PATCH 19/19] =?UTF-8?q?test(nis2):=20add=20128=20tests=20for=20N?=
+ =?UTF-8?q?IS2=20access=20log=20middleware=20=E2=80=94=20fix=20=5Fextract?=
+ =?UTF-8?q?=5Fobject=5Fref=20ordering=20bug?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ backend/open_webui/middleware/access_log.py   |  13 +-
+ .../open_webui/test/middleware/__init__.py    |   0
+ .../test/middleware/test_access_log.py        | 719 ++++++++++++++++++
+ 3 files changed, 727 insertions(+), 5 deletions(-)
+ create mode 100644 backend/open_webui/test/middleware/__init__.py
+ create mode 100644 backend/open_webui/test/middleware/test_access_log.py
+
+diff --git a/backend/open_webui/middleware/access_log.py b/backend/open_webui/middleware/access_log.py
+index d63de061d..b079efa0e 100644
+--- a/backend/open_webui/middleware/access_log.py
++++ b/backend/open_webui/middleware/access_log.py
+@@ -568,6 +568,13 @@ def _compile_object_id_patterns() -> list[tuple[re.Pattern, str]]:
+     _ID = r"(?P<oid>[^/]+)"
+ 
+     raw = [
++        # More-specific patterns MUST come before generic ones to avoid false
++        # matches.  E.g. /scim/v2/Users/{id} must precede /users/{id}$,
++        # and /calendars/events/{id} must precede /calendars/{id}.
++        (rf"/scim/v2/Users/{_ID}", "scim_user"),
++        (rf"/scim/v2/Groups/{_ID}", "scim_group"),
++        (rf"/calendars/events/{_ID}", "calendar_event"),
++        (rf"/evaluations/feedback/{_ID}", "feedback"),
+         (rf"/groups/id/{_ID}", "group"),
+         (rf"/users/{_ID}/update", "user"),
+         (rf"/users/{_ID}$", "user"),
+@@ -577,18 +584,14 @@ def _compile_object_id_patterns() -> list[tuple[re.Pattern, str]]:
+         (rf"/knowledge/{_ID}", "knowledge"),
+         (rf"/functions/id/{_ID}", "function"),
+         (rf"/tools/id/{_ID}", "tool"),
++        (rf"/skills/id/{_ID}", "skill"),
+         (rf"/channels/{_ID}", "channel"),
+-        (rf"/scim/v2/Users/{_ID}", "scim_user"),
+-        (rf"/scim/v2/Groups/{_ID}", "scim_group"),
+         (rf"/pipelines/{_ID}", "pipeline"),
+         (rf"/prompts/id/{_ID}", "prompt"),
+         (rf"/memories/{_ID}", "memory"),
+         (rf"/folders/{_ID}", "folder"),
+-        (rf"/evaluations/feedback/{_ID}", "feedback"),
+         (rf"/automations/{_ID}", "automation"),
+-        (rf"/calendars/events/{_ID}", "calendar_event"),
+         (rf"/calendars/{_ID}", "calendar"),
+-        (rf"/skills/id/{_ID}", "skill"),
+     ]
+ 
+     return [(re.compile(p, re.IGNORECASE), obj_type) for p, obj_type in raw]
+diff --git a/backend/open_webui/test/middleware/__init__.py b/backend/open_webui/test/middleware/__init__.py
+new file mode 100644
+index 000000000..e69de29bb
+diff --git a/backend/open_webui/test/middleware/test_access_log.py b/backend/open_webui/test/middleware/test_access_log.py
+new file mode 100644
+index 000000000..3a6db3bd0
+--- /dev/null
++++ b/backend/open_webui/test/middleware/test_access_log.py
+@@ -0,0 +1,719 @@
++"""Tests for the NIS2 access log middleware.
++
++Covers:
++  - _classify_action: all NIS2 action categories (auth, user, group, config,
++    tasks, automations, calendar, skills, pipelines, SCIM, channels, …)
++  - _NIS2_SECURITY_ACTIONS membership (nis2=Y flag)
++  - _extract_object_ref: URL → (type, id) extraction
++  - _outcome_from_status: HTTP status → outcome string
++  - log_scheduled_activity: format, fields, meta, nis2=Y level
++  - invalidate_user_cache: cache eviction
++"""
++
++import logging
++import pytest
++from unittest.mock import patch, MagicMock
++
++from open_webui.middleware.access_log import (
++    _classify_action,
++    _NIS2_SECURITY_ACTIONS,
++    _extract_object_ref,
++    _outcome_from_status,
++    log_scheduled_activity,
++    invalidate_user_cache,
++    _cache_data,
++    _cache_lock,
++    _UserContext,
++)
++
++
++# ---------------------------------------------------------------------------
++# Helpers
++# ---------------------------------------------------------------------------
++
++def classify(method: str, path: str):
++    """Thin wrapper that returns (action, is_security) for a given request."""
++    return _classify_action(method, path)
++
++
++def action_of(method: str, path: str) -> str:
++    return classify(method, path)[0]
++
++
++def is_nis2(method: str, path: str) -> bool:
++    return classify(method, path)[1]
++
++
++# ---------------------------------------------------------------------------
++# Authentication & Session
++# ---------------------------------------------------------------------------
++
++class TestClassifyAuth:
++
++    def test_signin(self):
++        assert action_of("POST", "/api/v1/auths/signin") == "AUTH_LOGIN"
++        assert is_nis2("POST", "/api/v1/auths/signin")
++
++    def test_signin_wrong_method_is_not_auth_login(self):
++        # GET to signin should fall through to READ / catch-all
++        action, _ = classify("GET", "/api/v1/auths/signin")
++        assert action != "AUTH_LOGIN"
++
++    def test_ldap_login(self):
++        assert action_of("POST", "/api/v1/auths/ldap") == "AUTH_LOGIN_LDAP"
++        assert is_nis2("POST", "/api/v1/auths/ldap")
++
++    def test_signup(self):
++        assert action_of("POST", "/api/v1/auths/signup") == "AUTH_SIGNUP"
++        assert is_nis2("POST", "/api/v1/auths/signup")
++
++    def test_signout_post(self):
++        # v0.9.3+: signout is POST
++        assert action_of("POST", "/api/v1/auths/signout") == "AUTH_LOGOUT"
++        assert is_nis2("POST", "/api/v1/auths/signout")
++
++    def test_password_change(self):
++        assert action_of("POST", "/api/v1/auths/update/password") == "AUTH_PASSWORD_CHANGE"
++        assert is_nis2("POST", "/api/v1/auths/update/password")
++
++    def test_api_key_create(self):
++        assert action_of("POST", "/api/v1/auths/api_key") == "AUTH_API_KEY_CREATE"
++        assert is_nis2("POST", "/api/v1/auths/api_key")
++
++    def test_api_key_delete(self):
++        assert action_of("DELETE", "/api/v1/auths/api_key") == "AUTH_API_KEY_DELETE"
++        assert is_nis2("DELETE", "/api/v1/auths/api_key")
++
++    def test_oauth_session_revoke(self):
++        # v0.9.3: DELETE /api/v1/auths/oauth/sessions/{provider} → AUTH_LOGOUT
++        assert action_of("DELETE", "/api/v1/auths/oauth/sessions/google") == "AUTH_LOGOUT"
++        assert is_nis2("DELETE", "/api/v1/auths/oauth/sessions/google")
++
++    def test_oidc_callback(self):
++        assert action_of("GET", "/oauth/google/login/callback") == "AUTH_OIDC_LOGIN"
++        assert is_nis2("GET", "/oauth/google/login/callback")
++
++    def test_oidc_callback_legacy(self):
++        assert action_of("GET", "/oauth/google/callback") == "AUTH_OIDC_LOGIN"
++
++    def test_oidc_dynamic_client_callback(self):
++        assert action_of("GET", "/oauth/clients/my-client-id/callback") == "AUTH_OIDC_LOGIN"
++
++    def test_mcp_oauth_authorize(self):
++        assert action_of("GET", "/oauth/clients/my-client-id/authorize") == "AUTH_OAUTH_AUTHORIZE"
++        assert is_nis2("GET", "/oauth/clients/my-client-id/authorize")
++
++    def test_backchannel_logout(self):
++        assert action_of("POST", "/oauth/backchannel-logout") == "AUTH_LOGOUT"
++        assert is_nis2("POST", "/oauth/backchannel-logout")
++
++    def test_config_auth(self):
++        assert action_of("POST", "/api/v1/auths/admin/config") == "CONFIG_AUTH"
++        assert is_nis2("POST", "/api/v1/auths/admin/config")
++
++    def test_config_ldap(self):
++        assert action_of("POST", "/api/v1/auths/admin/config/ldap") == "CONFIG_LDAP"
++
++    def test_config_ldap_server(self):
++        assert action_of("POST", "/api/v1/auths/admin/config/ldap/server") == "CONFIG_LDAP_SERVER"
++
++
++# ---------------------------------------------------------------------------
++# User Management
++# ---------------------------------------------------------------------------
++
++class TestClassifyUser:
++
++    def test_user_create(self):
++        assert action_of("POST", "/api/v1/auths/add") == "USER_CREATE"
++        assert is_nis2("POST", "/api/v1/auths/add")
++
++    def test_user_update(self):
++        assert action_of("POST", "/api/v1/users/abc-123/update") == "USER_UPDATE"
++        assert is_nis2("POST", "/api/v1/users/abc-123/update")
++
++    def test_user_delete(self):
++        assert action_of("DELETE", "/api/v1/users/abc-123") == "USER_DELETE"
++        assert is_nis2("DELETE", "/api/v1/users/abc-123")
++
++    def test_user_permissions_default(self):
++        assert action_of("POST", "/api/v1/users/default/permissions") == "USER_PERMISSIONS_DEFAULT"
++        assert is_nis2("POST", "/api/v1/users/default/permissions")
++
++    def test_user_settings_update(self):
++        assert action_of("POST", "/api/v1/users/user/settings/update") == "USER_SETTINGS_UPDATE"
++
++    def test_user_info_update(self):
++        assert action_of("POST", "/api/v1/users/user/info/update") == "USER_INFO_UPDATE"
++
++    def test_user_status_update(self):
++        assert action_of("POST", "/api/v1/users/user/status/update") == "USER_STATUS_UPDATE"
++
++
++# ---------------------------------------------------------------------------
++# Group Management
++# ---------------------------------------------------------------------------
++
++class TestClassifyGroup:
++
++    def test_group_create(self):
++        assert action_of("POST", "/api/v1/groups/create") == "GROUP_CREATE"
++        assert is_nis2("POST", "/api/v1/groups/create")
++
++    def test_group_update(self):
++        assert action_of("POST", "/api/v1/groups/id/grp-456/update") == "GROUP_UPDATE"
++        assert is_nis2("POST", "/api/v1/groups/id/grp-456/update")
++
++    def test_group_delete(self):
++        assert action_of("DELETE", "/api/v1/groups/id/grp-456/delete") == "GROUP_DELETE"
++        assert is_nis2("DELETE", "/api/v1/groups/id/grp-456/delete")
++
++    def test_group_member_add(self):
++        assert action_of("POST", "/api/v1/groups/id/grp-456/users/add") == "GROUP_MEMBER_ADD"
++        assert is_nis2("POST", "/api/v1/groups/id/grp-456/users/add")
++
++    def test_group_member_remove(self):
++        assert action_of("POST", "/api/v1/groups/id/grp-456/users/remove") == "GROUP_MEMBER_REMOVE"
++        assert is_nis2("POST", "/api/v1/groups/id/grp-456/users/remove")
++
++
++# ---------------------------------------------------------------------------
++# System Configuration
++# ---------------------------------------------------------------------------
++
++class TestClassifyConfig:
++
++    def test_config_import(self):
++        assert action_of("POST", "/api/v1/configs/import") == "CONFIG_IMPORT"
++        assert is_nis2("POST", "/api/v1/configs/import")
++
++    def test_config_export(self):
++        assert action_of("GET", "/api/v1/configs/export") == "CONFIG_EXPORT"
++        assert is_nis2("GET", "/api/v1/configs/export")
++
++    def test_config_connections(self):
++        assert action_of("POST", "/api/v1/configs/connections") == "CONFIG_CONNECTIONS"
++
++    def test_config_oauth_client(self):
++        assert action_of("POST", "/api/v1/configs/oauth/clients/register") == "CONFIG_OAUTH_CLIENT"
++        assert is_nis2("POST", "/api/v1/configs/oauth/clients/register")
++
++    def test_config_terminal_servers_verify(self):
++        assert action_of("POST", "/api/v1/configs/terminal_servers/verify") == "CONFIG_TERMINAL_SERVERS_VERIFY"
++        assert is_nis2("POST", "/api/v1/configs/terminal_servers/verify")
++
++    def test_config_terminal_servers_policy(self):
++        assert action_of("POST", "/api/v1/configs/terminal_servers/policy") == "CONFIG_TERMINAL_SERVERS_POLICY"
++        assert is_nis2("POST", "/api/v1/configs/terminal_servers/policy")
++
++    def test_config_code_execution(self):
++        assert action_of("POST", "/api/v1/configs/code_execution") == "CONFIG_CODE_EXECUTION"
++        assert is_nis2("POST", "/api/v1/configs/code_execution")
++
++    def test_config_retrieval(self):
++        assert action_of("POST", "/api/v1/retrieval/config/update") == "CONFIG_RETRIEVAL"
++        assert is_nis2("POST", "/api/v1/retrieval/config/update")
++
++    def test_config_retrieval_embedding(self):
++        assert action_of("POST", "/api/v1/retrieval/embedding/update") == "CONFIG_RETRIEVAL_EMBEDDING"
++        assert is_nis2("POST", "/api/v1/retrieval/embedding/update")
++
++    def test_config_audio(self):
++        assert action_of("POST", "/api/v1/audio/config/update") == "CONFIG_AUDIO"
++        assert is_nis2("POST", "/api/v1/audio/config/update")
++
++    def test_config_images(self):
++        assert action_of("POST", "/api/v1/images/config/update") == "CONFIG_IMAGES"
++        assert is_nis2("POST", "/api/v1/images/config/update")
++
++
++# ---------------------------------------------------------------------------
++# Tasks (AI generation + admin config) — v0.9.5 NIS2 patch
++# ---------------------------------------------------------------------------
++
++class TestClassifyTasks:
++
++    def test_config_tasks(self):
++        assert action_of("POST", "/api/v1/tasks/config/update") == "CONFIG_TASKS"
++        assert is_nis2("POST", "/api/v1/tasks/config/update")
++
++    def test_task_title_generate(self):
++        assert action_of("POST", "/api/v1/tasks/title/completions") == "TASK_TITLE_GENERATE"
++        # Not a security action (read-level AI generation)
++        assert not is_nis2("POST", "/api/v1/tasks/title/completions")
++
++    def test_task_followup_generate(self):
++        assert action_of("POST", "/api/v1/tasks/follow_up/completions") == "TASK_FOLLOWUP_GENERATE"
++
++    def test_task_tags_generate(self):
++        assert action_of("POST", "/api/v1/tasks/tags/completions") == "TASK_TAGS_GENERATE"
++
++    def test_task_image_prompt_generate(self):
++        assert action_of("POST", "/api/v1/tasks/image_prompt/completions") == "TASK_IMAGE_PROMPT_GENERATE"
++
++    def test_task_query_generate(self):
++        assert action_of("POST", "/api/v1/tasks/queries/completions") == "TASK_QUERY_GENERATE"
++
++    def test_task_autocomplete_generate(self):
++        assert action_of("POST", "/api/v1/tasks/auto/completions") == "TASK_AUTOCOMPLETE_GENERATE"
++
++    def test_task_emoji_generate(self):
++        assert action_of("POST", "/api/v1/tasks/emoji/completions") == "TASK_EMOJI_GENERATE"
++
++    def test_task_moa_generate(self):
++        assert action_of("POST", "/api/v1/tasks/moa/completions") == "TASK_MOA_GENERATE"
++
++
++# ---------------------------------------------------------------------------
++# Automations — v0.9.x
++# ---------------------------------------------------------------------------
++
++class TestClassifyAutomations:
++
++    _AID = "auto-uuid-1234"
++
++    def test_create(self):
++        assert action_of("POST", "/api/v1/automations/create") == "RESOURCE_CREATE_AUTOMATION"
++        assert is_nis2("POST", "/api/v1/automations/create")
++
++    def test_update(self):
++        assert action_of("POST", f"/api/v1/automations/{self._AID}/update") == "RESOURCE_UPDATE_AUTOMATION"
++        assert is_nis2("POST", f"/api/v1/automations/{self._AID}/update")
++
++    def test_run(self):
++        assert action_of("POST", f"/api/v1/automations/{self._AID}/run") == "RESOURCE_RUN_AUTOMATION"
++        assert is_nis2("POST", f"/api/v1/automations/{self._AID}/run")
++
++    def test_toggle(self):
++        assert action_of("POST", f"/api/v1/automations/{self._AID}/toggle") == "RESOURCE_TOGGLE_AUTOMATION"
++
++    def test_delete(self):
++        assert action_of("DELETE", f"/api/v1/automations/{self._AID}/delete") == "RESOURCE_DELETE_AUTOMATION"
++        assert is_nis2("DELETE", f"/api/v1/automations/{self._AID}/delete")
++
++    def test_view_runs(self):
++        assert action_of("GET", f"/api/v1/automations/{self._AID}/runs") == "RESOURCE_VIEW_AUTOMATION_RUNS"
++
++
++# ---------------------------------------------------------------------------
++# Calendar — v0.9.x
++# ---------------------------------------------------------------------------
++
++class TestClassifyCalendar:
++
++    _CAL = "cal-uuid-5678"
++    _EVT = "evt-uuid-9012"
++
++    def test_calendar_create(self):
++        assert action_of("POST", "/api/v1/calendars/create") == "CALENDAR_CREATE"
++
++    def test_calendar_update(self):
++        assert action_of("POST", f"/api/v1/calendars/{self._CAL}/update") == "CALENDAR_UPDATE"
++
++    def test_calendar_set_default(self):
++        assert action_of("POST", f"/api/v1/calendars/{self._CAL}/default") == "CALENDAR_SET_DEFAULT"
++
++    def test_calendar_delete(self):
++        assert action_of("DELETE", f"/api/v1/calendars/{self._CAL}/delete") == "CALENDAR_DELETE"
++        assert is_nis2("DELETE", f"/api/v1/calendars/{self._CAL}/delete")
++
++    def test_event_create(self):
++        assert action_of("POST", "/api/v1/calendars/events/create") == "CALENDAR_EVENT_CREATE"
++
++    def test_event_update(self):
++        assert action_of("POST", f"/api/v1/calendars/events/{self._EVT}/update") == "CALENDAR_EVENT_UPDATE"
++
++    def test_event_rsvp(self):
++        assert action_of("POST", f"/api/v1/calendars/events/{self._EVT}/rsvp") == "CALENDAR_EVENT_RSVP"
++
++    def test_event_delete(self):
++        assert action_of("DELETE", f"/api/v1/calendars/events/{self._EVT}/delete") == "CALENDAR_EVENT_DELETE"
++
++
++# ---------------------------------------------------------------------------
++# Skills — v0.9.x
++# ---------------------------------------------------------------------------
++
++class TestClassifySkills:
++
++    _SID = "skill-abc"
++
++    def test_skill_create(self):
++        assert action_of("POST", "/api/v1/skills/create") == "RESOURCE_CREATE_SKILL"
++        assert is_nis2("POST", "/api/v1/skills/create")
++
++    def test_skill_update(self):
++        assert action_of("POST", f"/api/v1/skills/id/{self._SID}/update") == "RESOURCE_UPDATE_SKILL"
++        assert is_nis2("POST", f"/api/v1/skills/id/{self._SID}/update")
++
++    def test_skill_access_update(self):
++        assert action_of("POST", f"/api/v1/skills/id/{self._SID}/access/update") == "ACCESS_SKILL_UPDATE"
++        assert is_nis2("POST", f"/api/v1/skills/id/{self._SID}/access/update")
++
++    def test_skill_toggle(self):
++        assert action_of("POST", f"/api/v1/skills/id/{self._SID}/toggle") == "RESOURCE_TOGGLE_SKILL"
++
++    def test_skill_delete(self):
++        assert action_of("DELETE", f"/api/v1/skills/id/{self._SID}/delete") == "RESOURCE_DELETE_SKILL"
++        assert is_nis2("DELETE", f"/api/v1/skills/id/{self._SID}/delete")
++
++    def test_skill_export(self):
++        assert action_of("GET", "/api/v1/skills/export") == "DATA_EXPORT"
++        assert is_nis2("GET", "/api/v1/skills/export")
++
++
++# ---------------------------------------------------------------------------
++# SCIM 2.0
++# ---------------------------------------------------------------------------
++
++class TestClassifyScim:
++
++    _UID = "scim-user-42"
++    _GID = "scim-group-7"
++
++    def test_scim_user_create(self):
++        assert action_of("POST", "/api/v1/scim/v2/Users") == "SCIM_USER_CREATE"
++        assert is_nis2("POST", "/api/v1/scim/v2/Users")
++
++    def test_scim_user_update(self):
++        assert action_of("PUT", f"/api/v1/scim/v2/Users/{self._UID}") == "SCIM_USER_UPDATE"
++        assert is_nis2("PUT", f"/api/v1/scim/v2/Users/{self._UID}")
++
++    def test_scim_user_patch(self):
++        assert action_of("PATCH", f"/api/v1/scim/v2/Users/{self._UID}") == "SCIM_USER_PATCH"
++        assert is_nis2("PATCH", f"/api/v1/scim/v2/Users/{self._UID}")
++
++    def test_scim_user_delete(self):
++        assert action_of("DELETE", f"/api/v1/scim/v2/Users/{self._UID}") == "SCIM_USER_DELETE"
++        assert is_nis2("DELETE", f"/api/v1/scim/v2/Users/{self._UID}")
++
++    def test_scim_group_create(self):
++        assert action_of("POST", "/api/v1/scim/v2/Groups") == "SCIM_GROUP_CREATE"
++        assert is_nis2("POST", "/api/v1/scim/v2/Groups")
++
++    def test_scim_group_delete(self):
++        assert action_of("DELETE", f"/api/v1/scim/v2/Groups/{self._GID}") == "SCIM_GROUP_DELETE"
++        assert is_nis2("DELETE", f"/api/v1/scim/v2/Groups/{self._GID}")
++
++
++# ---------------------------------------------------------------------------
++# Pipelines
++# ---------------------------------------------------------------------------
++
++class TestClassifyPipelines:
++
++    _PID = "pipe-001"
++
++    def test_pipeline_upload(self):
++        assert action_of("POST", "/api/v1/pipelines/upload") == "PIPELINE_UPLOAD"
++        assert is_nis2("POST", "/api/v1/pipelines/upload")
++
++    def test_pipeline_add(self):
++        assert action_of("POST", "/api/v1/pipelines/add") == "PIPELINE_ADD"
++        assert is_nis2("POST", "/api/v1/pipelines/add")
++
++    def test_pipeline_delete(self):
++        assert action_of("DELETE", "/api/v1/pipelines/delete") == "PIPELINE_DELETE"
++        assert is_nis2("DELETE", "/api/v1/pipelines/delete")
++
++    def test_pipeline_valves_update(self):
++        assert action_of("POST", f"/api/v1/pipelines/{self._PID}/valves/update") == "PIPELINE_VALVES_UPDATE"
++        assert is_nis2("POST", f"/api/v1/pipelines/{self._PID}/valves/update")
++
++
++# ---------------------------------------------------------------------------
++# Channels & Webhooks
++# ---------------------------------------------------------------------------
++
++class TestClassifyChannels:
++
++    _CID = "chan-abc"
++    _WID = "wh-xyz"
++
++    def test_channel_create(self):
++        assert action_of("POST", "/api/v1/channels/create") == "CHANNEL_CREATE"
++
++    def test_channel_delete(self):
++        assert action_of("DELETE", f"/api/v1/channels/{self._CID}/delete") == "CHANNEL_DELETE"
++
++    def test_webhook_create(self):
++        assert action_of("POST", f"/api/v1/channels/{self._CID}/webhooks/create") == "CHANNEL_WEBHOOK_CREATE"
++        assert is_nis2("POST", f"/api/v1/channels/{self._CID}/webhooks/create")
++
++    def test_webhook_update(self):
++        assert action_of("POST", f"/api/v1/channels/{self._CID}/webhooks/{self._WID}/update") == "CHANNEL_WEBHOOK_UPDATE"
++        assert is_nis2("POST", f"/api/v1/channels/{self._CID}/webhooks/{self._WID}/update")
++
++    def test_webhook_delete(self):
++        assert action_of("DELETE", f"/api/v1/channels/{self._CID}/webhooks/{self._WID}/delete") == "CHANNEL_WEBHOOK_DELETE"
++        assert is_nis2("DELETE", f"/api/v1/channels/{self._CID}/webhooks/{self._WID}/delete")
++
++
++# ---------------------------------------------------------------------------
++# _NIS2_SECURITY_ACTIONS membership
++# ---------------------------------------------------------------------------
++
++class TestNis2SecurityActionsSet:
++
++    def test_critical_auth_actions_in_set(self):
++        for action in ("AUTH_LOGIN", "AUTH_LOGOUT", "AUTH_SIGNUP",
++                       "AUTH_PASSWORD_CHANGE", "AUTH_API_KEY_CREATE",
++                       "AUTH_OIDC_LOGIN", "AUTH_OAUTH_AUTHORIZE"):
++            assert action in _NIS2_SECURITY_ACTIONS, action
++
++    def test_config_tasks_in_set(self):
++        assert "CONFIG_TASKS" in _NIS2_SECURITY_ACTIONS
++
++    def test_config_audio_images_in_set(self):
++        assert "CONFIG_AUDIO" in _NIS2_SECURITY_ACTIONS
++        assert "CONFIG_IMAGES" in _NIS2_SECURITY_ACTIONS
++
++    def test_config_retrieval_in_set(self):
++        assert "CONFIG_RETRIEVAL" in _NIS2_SECURITY_ACTIONS
++        assert "CONFIG_RETRIEVAL_EMBEDDING" in _NIS2_SECURITY_ACTIONS
++
++    def test_config_terminal_in_set(self):
++        assert "CONFIG_TERMINAL_SERVERS_VERIFY" in _NIS2_SECURITY_ACTIONS
++        assert "CONFIG_TERMINAL_SERVERS_POLICY" in _NIS2_SECURITY_ACTIONS
++
++    def test_automation_actions_in_set(self):
++        for action in ("RESOURCE_CREATE_AUTOMATION", "RESOURCE_UPDATE_AUTOMATION",
++                       "RESOURCE_DELETE_AUTOMATION", "RESOURCE_RUN_AUTOMATION"):
++            assert action in _NIS2_SECURITY_ACTIONS, action
++
++    def test_scheduled_automation_actions_in_set(self):
++        assert "TASK_AUTOMATION_SCHEDULED" in _NIS2_SECURITY_ACTIONS
++        assert "TASK_AUTOMATION_SCHEDULED_ERROR" in _NIS2_SECURITY_ACTIONS
++
++    def test_calendar_delete_in_set(self):
++        assert "CALENDAR_DELETE" in _NIS2_SECURITY_ACTIONS
++
++    def test_webhook_actions_in_set(self):
++        for action in ("CHANNEL_WEBHOOK_CREATE", "CHANNEL_WEBHOOK_UPDATE",
++                       "CHANNEL_WEBHOOK_DELETE"):
++            assert action in _NIS2_SECURITY_ACTIONS, action
++
++    def test_scim_actions_in_set(self):
++        for action in ("SCIM_USER_CREATE", "SCIM_USER_UPDATE", "SCIM_USER_PATCH",
++                       "SCIM_USER_DELETE", "SCIM_GROUP_CREATE", "SCIM_GROUP_UPDATE",
++                       "SCIM_GROUP_PATCH", "SCIM_GROUP_DELETE"):
++            assert action in _NIS2_SECURITY_ACTIONS, action
++
++    def test_skill_actions_in_set(self):
++        for action in ("RESOURCE_CREATE_SKILL", "RESOURCE_UPDATE_SKILL",
++                       "RESOURCE_DELETE_SKILL"):
++            assert action in _NIS2_SECURITY_ACTIONS, action
++
++    def test_pipeline_actions_in_set(self):
++        for action in ("PIPELINE_UPLOAD", "PIPELINE_ADD", "PIPELINE_DELETE",
++                       "PIPELINE_VALVES_UPDATE"):
++            assert action in _NIS2_SECURITY_ACTIONS, action
++
++    def test_task_generation_not_in_set(self):
++        # AI generation tasks are READ-level, not security-critical
++        for action in ("TASK_TITLE_GENERATE", "TASK_FOLLOWUP_GENERATE",
++                       "TASK_TAGS_GENERATE", "TASK_IMAGE_PROMPT_GENERATE",
++                       "TASK_QUERY_GENERATE", "TASK_AUTOCOMPLETE_GENERATE",
++                       "TASK_EMOJI_GENERATE", "TASK_MOA_GENERATE"):
++            assert action not in _NIS2_SECURITY_ACTIONS, action
++
++
++# ---------------------------------------------------------------------------
++# _extract_object_ref
++# ---------------------------------------------------------------------------
++
++class TestExtractObjectRef:
++
++    def test_group(self):
++        obj_type, obj_id = _extract_object_ref("/api/v1/groups/id/grp-789/update")
++        assert obj_type == "group"
++        assert obj_id == "grp-789"
++
++    def test_user(self):
++        obj_type, obj_id = _extract_object_ref("/api/v1/users/usr-111/update")
++        assert obj_type == "user"
++        assert obj_id == "usr-111"
++
++    def test_chat(self):
++        obj_type, obj_id = _extract_object_ref("/api/v1/chats/chat-uuid-abc")
++        assert obj_type == "chat"
++        assert obj_id == "chat-uuid-abc"
++
++    def test_automation(self):
++        obj_type, obj_id = _extract_object_ref("/api/v1/automations/auto-uuid-1234/run")
++        assert obj_type == "automation"
++        assert obj_id == "auto-uuid-1234"
++
++    def test_calendar_event(self):
++        obj_type, obj_id = _extract_object_ref("/api/v1/calendars/events/evt-uuid-9012/update")
++        assert obj_type == "calendar_event"
++        assert obj_id == "evt-uuid-9012"
++
++    def test_calendar(self):
++        obj_type, obj_id = _extract_object_ref("/api/v1/calendars/cal-uuid-5678/update")
++        assert obj_type == "calendar"
++        assert obj_id == "cal-uuid-5678"
++
++    def test_skill(self):
++        obj_type, obj_id = _extract_object_ref("/api/v1/skills/id/skill-abc/update")
++        assert obj_type == "skill"
++        assert obj_id == "skill-abc"
++
++    def test_scim_user(self):
++        obj_type, obj_id = _extract_object_ref("/api/v1/scim/v2/Users/scim-user-42")
++        assert obj_type == "scim_user"
++        assert obj_id == "scim-user-42"
++
++    def test_scim_group(self):
++        obj_type, obj_id = _extract_object_ref("/api/v1/scim/v2/Groups/scim-group-7")
++        assert obj_type == "scim_group"
++        assert obj_id == "scim-group-7"
++
++    def test_no_match(self):
++        obj_type, obj_id = _extract_object_ref("/api/v1/tasks/title/completions")
++        assert obj_type is None
++        assert obj_id is None
++
++
++# ---------------------------------------------------------------------------
++# _outcome_from_status
++# ---------------------------------------------------------------------------
++
++class TestOutcomeFromStatus:
++
++    @pytest.mark.parametrize("code,expected", [
++        (200, "success"),
++        (201, "success"),
++        (204, "success"),
++        (301, "redirect"),
++        (302, "redirect"),
++        (400, "failure"),
++        (401, "failure"),
++        (403, "failure"),
++        (404, "failure"),
++        (422, "failure"),
++        (500, "error"),
++        (502, "error"),
++        (503, "error"),
++    ])
++    def test_outcome_mapping(self, code, expected):
++        assert _outcome_from_status(code) == expected
++
++
++# ---------------------------------------------------------------------------
++# log_scheduled_activity — format & NIS2=Y flag
++# ---------------------------------------------------------------------------
++
++class TestLogScheduledActivity:
++
++    def _capture_log(self, fn, *args, **kwargs):
++        """Call fn(*args) and return the log record emitted to open_webui.access."""
++        logger = logging.getLogger("open_webui.access")
++        handler = MagicMock()
++        handler.level = logging.DEBUG
++        logger.addHandler(handler)
++        try:
++            fn(*args, **kwargs)
++        finally:
++            logger.removeHandler(handler)
++        assert handler.handle.called, "No log record emitted"
++        return handler.handle.call_args[0][0]
++
++    def test_success_log_fields(self):
++        record = self._capture_log(
++            log_scheduled_activity,
++            "TASK_AUTOMATION_SCHEDULED",
++            "alice@example.com", "admin",
++            "auto-uuid-42", "automation",
++            200, 1.234,
++            meta="trigger=scheduler|name=Daily Report|chat_id=chat-001",
++        )
++        msg = record.getMessage()
++        assert "email=alice@example.com" in msg
++        assert "session_id=scheduler" in msg
++        assert "role=admin" in msg
++        assert "action=TASK_AUTOMATION_SCHEDULED" in msg
++        assert "outcome=success" in msg
++        assert "nis2=Y" in msg
++        assert "object=automation:auto-uuid-42" in msg
++        assert "ua=scheduler" in msg
++        assert "time=1.234s" in msg
++        assert "meta=trigger=scheduler|name=Daily Report|chat_id=chat-001" in msg
++
++    def test_error_log_fields(self):
++        record = self._capture_log(
++            log_scheduled_activity,
++            "TASK_AUTOMATION_SCHEDULED_ERROR",
++            "unknown", "unknown",
++            "auto-uuid-42", "automation",
++            500, 0.001,
++        )
++        msg = record.getMessage()
++        assert "action=TASK_AUTOMATION_SCHEDULED_ERROR" in msg
++        assert "outcome=error" in msg
++        assert "nis2=Y" in msg
++
++    def test_log_level_is_warning(self):
++        record = self._capture_log(
++            log_scheduled_activity,
++            "TASK_AUTOMATION_SCHEDULED",
++            "bob@example.com", "user",
++            "auto-uuid-99", "automation",
++            200, 0.5,
++        )
++        assert record.levelno == logging.WARNING
++
++    def test_no_meta_omits_meta_field(self):
++        record = self._capture_log(
++            log_scheduled_activity,
++            "TASK_AUTOMATION_SCHEDULED",
++            "carol@example.com", "user",
++            "auto-uuid-10", "automation",
++            200, 0.1,
++        )
++        msg = record.getMessage()
++        assert "meta=" not in msg
++
++    def test_url_contains_object_id(self):
++        record = self._capture_log(
++            log_scheduled_activity,
++            "TASK_AUTOMATION_SCHEDULED",
++            "dave@example.com", "admin",
++            "auto-uuid-77", "automation",
++            200, 2.0,
++        )
++        msg = record.getMessage()
++        assert "/api/v1/automations/auto-uuid-77/run" in msg
++
++    def test_duration_format(self):
++        record = self._capture_log(
++            log_scheduled_activity,
++            "TASK_AUTOMATION_SCHEDULED",
++            "eve@example.com", "user",
++            "auto-uuid-55", "automation",
++            200, 12.3456789,
++        )
++        # 3 decimal places
++        assert "time=12.346s" in record.getMessage()
++
++
++# ---------------------------------------------------------------------------
++# invalidate_user_cache
++# ---------------------------------------------------------------------------
++
++class TestInvalidateUserCache:
++
++    def test_evicts_entry(self):
++        uid = "test-user-evict"
++        ctx = _UserContext(email="x@x.com", oidc_sub=None, mfa_status=None, role="user")
++        with _cache_lock:
++            _cache_data[uid] = (ctx, 0.0)
++
++        invalidate_user_cache(uid)
++
++        with _cache_lock:
++            assert uid not in _cache_data
++
++    def test_missing_key_is_noop(self):
++        """Evicting a user not in cache must not raise."""
++        invalidate_user_cache("nonexistent-user-id-xyz")
