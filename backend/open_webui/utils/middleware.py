@@ -180,6 +180,24 @@ def merge_streamed_reasoning_details(target: list, details) -> None:
                 existing[key] = value
 
 
+def merge_routing_usage(usage: dict | None, metadata: dict | None) -> dict:
+    usage = usage or {}
+    routing = (metadata or {}).get('routing') or {}
+    requested_model_id = routing.get('requested_model_id')
+    if not requested_model_id:
+        return usage
+
+    return {
+        **usage,
+        'routing': {
+            **(usage.get('routing') or {}),
+            'requested_model_id': requested_model_id,
+            'selected_model_id': routing.get('selected_model_id'),
+            'routed': routing.get('routed', True),
+        },
+    }
+
+
 def _split_tool_calls(
     tool_calls: list[dict],
 ) -> list[dict]:
@@ -3533,6 +3551,7 @@ async def non_streaming_chat_response_handler(response, ctx):
 
                     # Save message in the database
                     usage = normalize_usage(response_data.get('usage', {}) or {})
+                    usage = merge_routing_usage(usage, metadata)
 
                     if not metadata.get('chat_id', '').startswith('channel:'):
                         await Chats.upsert_message_to_chat_by_id_and_message_id(
@@ -4123,6 +4142,7 @@ async def streaming_chat_response_handler(response, ctx):
                                         # Normalize and capture usage for DB persistence
                                         if response_metadata.get('usage'):
                                             usage = merge_usage(usage, response_metadata['usage'])
+                                            usage = merge_routing_usage(usage, metadata)
                                             response_metadata['usage'] = usage
 
                                         processed_data.update(response_metadata)
@@ -4152,6 +4172,7 @@ async def streaming_chat_response_handler(response, ctx):
                                     raw_usage.update(data.get('timings', {}))  # llama.cpp
                                     if raw_usage:
                                         usage = merge_usage(usage, raw_usage)
+                                        usage = merge_routing_usage(usage, metadata)
                                         await event_emitter(
                                             {
                                                 'type': 'chat:completion',

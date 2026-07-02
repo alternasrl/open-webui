@@ -357,13 +357,28 @@ async def _set_terminal_cwd(app, server_id: str, user, cwd: str, chat_id: str) -
         log.warning(f'Failed to set terminal CWD: {e}')
 
 
-async def execute_automation(app, automation: AutomationModel) -> None:
+async def execute_automation(app, automation: AutomationModel, trigger: str = 'scheduler') -> None:
     """Execute an automation through the full chat completion pipeline.
 
     Creates a real chat, then calls chat_completion exactly like the frontend:
     session_id + chat_id + message_id → async task → pipeline handles everything
     (filters, model params, knowledge/RAG, tools, DB saves, webhooks).
+
+    Args:
+        trigger: "scheduler" (background cron) or "manual" (HTTP user action).
+                 Manual runs are already logged by the ASGI middleware with the
+                 real HTTP triggerer — this function only emits NIS2 log lines
+                 for scheduler-triggered runs.
     """
+    # Lazy import to avoid circular imports at module load time.
+    # access_log is only needed for scheduler-triggered runs.
+    if trigger == 'scheduler':
+        from open_webui.middleware.access_log import log_scheduled_activity
+    else:
+        log_scheduled_activity = None
+
+    _start_time = time.time()
+    user = None
     try:
         user = await Users.get_user_by_id(automation.user_id)
         if not user:
@@ -374,6 +389,17 @@ async def execute_automation(app, automation: AutomationModel) -> None:
                 subject_id=automation.id,
                 data={'name': automation.name, 'error': 'User not found'},
             )
+            if log_scheduled_activity:
+                log_scheduled_activity(
+                    'TASK_AUTOMATION_SCHEDULED_ERROR',
+                    'unknown',
+                    'unknown',
+                    automation.id,
+                    'automation',
+                    500,
+                    0.0,
+                    meta=f'trigger={trigger}|name={automation.name}|error=user_not_found',
+                )
             return
 
         # Re-gate the rehydrated owner: a demoted/deactivated or de-permissioned owner must not run.
@@ -452,6 +478,17 @@ async def execute_automation(app, automation: AutomationModel) -> None:
                 subject_id=automation.id,
                 data={'name': automation.name, 'error': error},
             )
+            if log_scheduled_activity:
+                log_scheduled_activity(
+                    'TASK_AUTOMATION_SCHEDULED_ERROR',
+                    user.email,
+                    user.role,
+                    automation.id,
+                    'automation',
+                    500,
+                    time.time() - _start_time,
+                    meta=f'trigger={trigger}|name={automation.name}|error=chat_create_failed',
+                )
             return
 
         # Notify frontend to refresh chat list
@@ -536,6 +573,17 @@ async def execute_automation(app, automation: AutomationModel) -> None:
             subject_id=automation.id,
             data={'name': automation.name, 'chat_id': chat.id},
         )
+        if log_scheduled_activity:
+            log_scheduled_activity(
+                'TASK_AUTOMATION_SCHEDULED',
+                user.email,
+                user.role,
+                automation.id,
+                'automation',
+                200,
+                time.time() - _start_time,
+                meta=f'trigger={trigger}|name={automation.name}|chat_id={chat.id}',
+            )
 
     except Exception as e:
         log.exception(f'Automation {automation.id} failed')
@@ -547,6 +595,17 @@ async def execute_automation(app, automation: AutomationModel) -> None:
             subject_id=automation.id,
             data={'name': automation.name, 'error': error},
         )
+        if log_scheduled_activity:
+            log_scheduled_activity(
+                'TASK_AUTOMATION_SCHEDULED_ERROR',
+                getattr(user, 'email', 'unknown'),
+                getattr(user, 'role', 'unknown'),
+                automation.id,
+                'automation',
+                500,
+                time.time() - _start_time,
+                meta=f'trigger={trigger}|name={automation.name}|error={str(e)[:200]}',
+            )
 
 
 ####################

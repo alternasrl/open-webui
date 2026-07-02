@@ -30,6 +30,11 @@ class ModelAnalyticsEntry(BaseModel):
     count: int
     unique_users: int = 0
     unique_chats: int = 0
+    avg_ttft_ms: Optional[float] = None
+    avg_tokens_per_second: Optional[float] = None
+    error_requests: int = 0
+    total_requests: int = 0
+    error_rate: float = 0.0
 
 
 class ModelAnalyticsResponse(BaseModel):
@@ -60,12 +65,16 @@ async def get_model_analytics(
     start_date: Optional[int] = Query(None, description='Start timestamp (epoch)'),
     end_date: Optional[int] = Query(None, description='End timestamp (epoch)'),
     group_id: Optional[str] = Query(None, description='Filter by user group ID'),
+    user_id: Optional[str] = Query(None, description='Filter by user ID'),
     user=Depends(get_admin_user),
     db: AsyncSession = Depends(get_async_session),
 ):
     """Get message counts per model."""
     counts = await ChatMessages.get_message_count_by_model(
-        start_date=start_date, end_date=end_date, group_id=group_id, db=db
+        start_date=start_date, end_date=end_date, group_id=group_id, user_id=user_id, db=db
+    )
+    perf = await ChatMessages.get_performance_metrics_by_model(
+        start_date=start_date, end_date=end_date, group_id=group_id, user_id=user_id, db=db
     )
     unique_counts = await ChatMessages.get_unique_counts_by_model(
         start_date=start_date, end_date=end_date, group_id=group_id, db=db
@@ -76,6 +85,7 @@ async def get_model_analytics(
             count=count,
             unique_users=unique_counts.get(model_id, {}).get('unique_users', 0),
             unique_chats=unique_counts.get(model_id, {}).get('unique_chats', 0),
+            **perf.get(model_id, {}),
         )
         for model_id, count in sorted(counts.items(), key=lambda x: -x[1])
     ]
@@ -87,16 +97,17 @@ async def get_user_analytics(
     start_date: Optional[int] = Query(None, description='Start timestamp (epoch)'),
     end_date: Optional[int] = Query(None, description='End timestamp (epoch)'),
     group_id: Optional[str] = Query(None, description='Filter by user group ID'),
+    model_id: Optional[str] = Query(None, description='Filter by model ID'),
     limit: int = Query(50, description='Max users to return'),
     user=Depends(get_admin_user),
     db: AsyncSession = Depends(get_async_session),
 ):
     """Get message counts and token usage per user with user info."""
     counts = await ChatMessages.get_message_count_by_user(
-        start_date=start_date, end_date=end_date, group_id=group_id, db=db
+        start_date=start_date, end_date=end_date, group_id=group_id, model_id=model_id, db=db
     )
     token_usage = await ChatMessages.get_token_usage_by_user(
-        start_date=start_date, end_date=end_date, group_id=group_id, db=db
+        start_date=start_date, end_date=end_date, group_id=group_id, model_id=model_id, db=db
     )
 
     # Get user info for top users
@@ -158,6 +169,11 @@ class SummaryResponse(BaseModel):
     total_chats: int
     total_models: int
     total_users: int
+    avg_ttft_ms: Optional[float] = None
+    avg_tokens_per_second: Optional[float] = None
+    error_requests: int = 0
+    total_requests: int = 0
+    error_rate: float = 0.0
 
 
 @router.get('/summary', response_model=SummaryResponse)
@@ -178,12 +194,16 @@ async def get_summary(
     chat_counts = await ChatMessages.get_message_count_by_chat(
         start_date=start_date, end_date=end_date, group_id=group_id, db=db
     )
+    performance = await ChatMessages.get_performance_metrics(
+        start_date=start_date, end_date=end_date, group_id=group_id, db=db
+    )
 
     return SummaryResponse(
         total_messages=sum(model_counts.values()),
         total_chats=len(chat_counts),
         total_models=len(model_counts),
         total_users=len(user_counts),
+        **performance,
     )
 
 
@@ -225,6 +245,82 @@ class TokenUsageEntry(BaseModel):
     message_count: int
 
 
+class RoutingSummaryEntry(BaseModel):
+    requested_model_id: str
+    selected_model_id: str
+    count: int
+    percentage: float
+
+
+class RoutingEventEntry(BaseModel):
+    message_id: str
+    chat_id: str
+    user_id: Optional[str] = None
+    created_at: int
+    requested_model_id: str
+    selected_model_id: str
+
+
+@router.get('/routing/summary', response_model=list[RoutingSummaryEntry])
+async def get_routing_summary(
+    start_date: Optional[int] = Query(None, description='Start timestamp (epoch)'),
+    end_date: Optional[int] = Query(None, description='End timestamp (epoch)'),
+    group_id: Optional[str] = Query(None, description='Filter by user group ID'),
+    user_id: Optional[str] = Query(None, description='Filter by user ID'),
+    model_selected: Optional[str] = Query(None, description='Filter by selected model ID'),
+    model_requested: Optional[str] = Query(None, description='Filter by requested model ID'),
+    model_mode: str = Query(
+        'or',
+        description="Model filter mode: 'or', 'and', 'selected', or 'requested'",
+    ),
+    user=Depends(get_admin_user),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Get routing pair summary (requested -> selected) with count and percentage."""
+    return await ChatMessages.get_routing_summary(
+        start_date=start_date,
+        end_date=end_date,
+        group_id=group_id,
+        user_id=user_id,
+        model_selected=model_selected,
+        model_requested=model_requested,
+        model_mode=model_mode,
+        db=db,
+    )
+
+
+@router.get('/routing/events', response_model=list[RoutingEventEntry])
+async def get_routing_events(
+    start_date: Optional[int] = Query(None, description='Start timestamp (epoch)'),
+    end_date: Optional[int] = Query(None, description='End timestamp (epoch)'),
+    group_id: Optional[str] = Query(None, description='Filter by user group ID'),
+    user_id: Optional[str] = Query(None, description='Filter by user ID'),
+    model_selected: Optional[str] = Query(None, description='Filter by selected model ID'),
+    model_requested: Optional[str] = Query(None, description='Filter by requested model ID'),
+    model_mode: str = Query(
+        'or',
+        description="Model filter mode: 'or', 'and', 'selected', or 'requested'",
+    ),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=1000),
+    user=Depends(get_admin_user),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Get routing events sourced from assistant message usage metadata."""
+    return await ChatMessages.get_routing_events(
+        start_date=start_date,
+        end_date=end_date,
+        group_id=group_id,
+        user_id=user_id,
+        model_selected=model_selected,
+        model_requested=model_requested,
+        model_mode=model_mode,
+        skip=skip,
+        limit=limit,
+        db=db,
+    )
+
+
 class TokenUsageResponse(BaseModel):
     models: list[TokenUsageEntry]
     total_input_tokens: int
@@ -237,12 +333,14 @@ async def get_token_usage(
     start_date: Optional[int] = Query(None),
     end_date: Optional[int] = Query(None),
     group_id: Optional[str] = Query(None, description='Filter by user group ID'),
+    user_id: Optional[str] = Query(None, description='Filter by user ID'),
+    model_id: Optional[str] = Query(None, description='Filter by model ID'),
     user=Depends(get_admin_user),
     db: AsyncSession = Depends(get_async_session),
 ):
     """Get token usage aggregated by model."""
     usage = await ChatMessages.get_token_usage_by_model(
-        start_date=start_date, end_date=end_date, group_id=group_id, db=db
+        start_date=start_date, end_date=end_date, group_id=group_id, user_id=user_id, model_id=model_id, db=db
     )
 
     models = [
