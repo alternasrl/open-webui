@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount, getContext } from 'svelte';
+	import { toast } from 'svelte-sonner';
 	import { models } from '$lib/stores';
 	import {
 		getSummary,
@@ -164,6 +165,7 @@
 		} catch (err) {
 			console.error('Routing analytics load failed:', err);
 			if (routingTracker.isLatest(requestId)) {
+				toast.error($i18n.t('Failed to load routing analytics'));
 				routingPairs = [];
 				routingEvents = [];
 			}
@@ -304,6 +306,7 @@
 		} catch (err) {
 			console.error('Dashboard load failed:', err);
 			if (!dashboardTracker.isLatest(requestId)) return;
+			toast.error($i18n.t('Failed to load analytics data'));
 		}
 		if (dashboardTracker.isLatest(requestId)) {
 			loading = false;
@@ -350,6 +353,7 @@
 		} catch (err) {
 			console.error('Model table reload failed:', err);
 			if (!modelTracker.isLatest(requestId)) return;
+			toast.error($i18n.t('Failed to load analytics data'));
 		}
 		if (modelTracker.isLatest(requestId)) {
 			await loadRoutingAnalytics();
@@ -375,6 +379,7 @@
 		} catch (err) {
 			console.error('User table reload failed:', err);
 			if (!userTracker.isLatest(requestId)) return;
+			toast.error($i18n.t('Failed to load analytics data'));
 		}
 		if (userTracker.isLatest(requestId)) {
 			await loadRoutingAnalytics();
