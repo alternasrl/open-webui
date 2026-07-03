@@ -203,6 +203,9 @@
 		selected_model_id: string;
 	}> = [];
 	let routingSelectedPair: { requested_model_id: string; selected_model_id: string } | null = null;
+	let routingModelMode: RoutingMode = 'or';
+	let previousFilterByUserId = filterByUserId;
+	let previousFilterByModelId = filterByModelId;
 
 	// Request trackers for race guard
 	const dashboardTracker = createRequestTracker();
@@ -387,15 +390,22 @@
 		}
 	};
 
-	// Reload when the period, group, custom range, or cross-filter changes.
+	// Reload when the period, group, or custom range changes.
 	// In custom mode, wait until both dates are set to avoid a half-specified query.
 	$: if (selectedPeriod === 'custom' ? customStart && customEnd : selectedPeriod) {
-		// reference all filter variables so this block reruns when they change
 		customStart;
 		customEnd;
 		selectedGroupId;
-		filterByUserId;
-		filterByModelId;
+		routingSelectedPair = null;
+		previousFilterByModelId = null;
+		filterByModelId = null;
+		loadDashboard();
+		loadRoutingAnalytics();
+	}
+
+	$: if (filterByUserId !== previousFilterByUserId || filterByModelId !== previousFilterByModelId) {
+		previousFilterByUserId = filterByUserId;
+		previousFilterByModelId = filterByModelId;
 		loadDashboard();
 		loadRoutingAnalytics();
 	}
