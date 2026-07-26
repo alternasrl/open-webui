@@ -1,7 +1,7 @@
 """Add prompt insights analytics tables.
 
 Revision ID: f8a9b0c1d2e3
-Revises: f1e2d3c4b5a6
+Revises: 42e2978c7933
 Create Date: 2026-07-27 00:00:00.000000
 """
 
@@ -66,14 +66,9 @@ def upgrade() -> None:
             sa.Column('created_at', sa.BigInteger(), nullable=False),
             sa.PrimaryKeyConstraint('id'),
             sa.ForeignKeyConstraint(['run_id'], ['prompt_insights_run.id']),
+            sa.UniqueConstraint('canonical_label_hash', 'bucket', name='uq_prompt_cluster_trend_label_bucket'),
         )
         op.create_index('idx_prompt_cluster_trend_canonical_label_hash', 'prompt_cluster_trend', ['canonical_label_hash'])
-        op.execute(
-            """
-            CREATE UNIQUE INDEX uq_prompt_cluster_trend_label_bucket
-            ON prompt_cluster_trend (COALESCE(canonical_label_hash, ''), COALESCE(bucket, ''))
-            """
-        )
         op.create_index('idx_prompt_cluster_trend_run_id', 'prompt_cluster_trend', ['run_id'])
 
     if 'prompt_cluster_model' not in existing_tables:
@@ -96,7 +91,6 @@ def upgrade() -> None:
         op.create_table(
             'prompt_embedding_cache',
             sa.Column('text_hash', sa.Text(), nullable=False),
-            sa.Column('text', sa.Text(), nullable=False),
             sa.Column('embedding', sa.Text(), nullable=True),
             sa.Column('expires_at', sa.BigInteger(), nullable=False),
             sa.Column('created_at', sa.BigInteger(), nullable=False),

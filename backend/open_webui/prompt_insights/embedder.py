@@ -106,7 +106,6 @@ class PromptInsightsEmbedder:
                 cache[h] = embedding
                 row = PromptEmbeddingCache(
                     text_hash=h,
-                    text=text,
                     embedding=json.dumps(embedding),
                     expires_at=expires_at,
                 )

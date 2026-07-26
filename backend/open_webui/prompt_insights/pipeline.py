@@ -60,6 +60,18 @@ async def run_prompt_insights_if_due(app) -> None:
         if not should_run_prompt_insights(now_ns, last_ns, interval_hours):
             return
 
+        # Cross-instance lock: the prompt_insights_run table is shared, so a
+        # DB-level active-run check prevents multiple instances (whose in-memory
+        # last-run timestamps are independent) from running concurrently and
+        # producing duplicate clusters / double-counted trends.
+        from open_webui.internal.db import get_async_db  # noqa: PLC0415
+        from open_webui.models.prompt_insights import PromptInsightsRuns  # noqa: PLC0415
+
+        async with get_async_db() as db:
+            active = await PromptInsightsRuns.get_active_run(db=db)
+            if active is not None:
+                return
+
         # Compute window: previous run end (or 24h ago) → now (seconds)
         window_end = int(time.time())
         if last_ns is not None:
@@ -103,12 +115,23 @@ class PromptInsightsPipeline:
         from open_webui.prompt_insights.clusterer import cluster_embeddings  # noqa: PLC0415
         from open_webui.prompt_insights.embedder import PromptInsightsEmbedder  # noqa: PLC0415
         from open_webui.prompt_insights.labeler import build_cluster_label_prompt  # noqa: PLC0415
-        from open_webui.prompt_insights.pii_scrubber import (  # noqa: PLC0415
-            anonymize_user_id,
-            hash_scrubbed_text,
-            scrub_pii,
-        )
+        from open_webui.prompt_insights.pii_scrubber import scrub_pii  # noqa: PLC0415
         from open_webui.prompt_insights.tfidf import extract_cluster_keywords  # noqa: PLC0415
+
+        # Defense-in-depth: the prompt_insights_run table is the cross-instance
+        # lock. If any run is already in progress, bail out so concurrent
+        # instances don't produce duplicate clusters / double-counted trends.
+        async with get_async_db() as db:
+            active = await PromptInsightsRuns.get_active_run(db=db)
+            if active is not None:
+                log.info("PromptInsights: run already active (%s); skipping", active.id)
+                return {
+                    "run_id": active.id,
+                    "total_prompts": 0,
+                    "clusters_found": 0,
+                    "noise_count": 0,
+                    "skipped": True,
+                }
 
         async with get_async_db() as db:
             run = await PromptInsightsRuns.create_run(window_start, window_end, db=db)
@@ -122,19 +145,12 @@ class PromptInsightsPipeline:
                     await PromptInsightsRuns.complete_run(run_id, 0, 0, 0, db=db)
                 return {"run_id": run_id, "total_prompts": 0, "clusters_found": 0, "noise_count": 0}
 
-            secret_key = self._get_secret_key()
-
-            # -- 2. PII scrub + anonymize --
+            # -- 2. PII scrub --
             scrubbed_texts: list[str] = []
-            anon_user_ids: list[str] = []
             for user_id, content in records:
                 text = _extract_text(content)
                 cleaned, _ = scrub_pii(text)
                 scrubbed_texts.append(cleaned)
-                anon_user_ids.append(anonymize_user_id(user_id or "", secret_key))
-
-            # Hash for deduplication / cache keys
-            text_hashes = [hash_scrubbed_text(t) for t in scrubbed_texts]
 
             # -- 3. Embed (with cache) --
             async with get_async_db() as db:
@@ -229,18 +245,6 @@ class PromptInsightsPipeline:
                 .order_by(ChatMessage.created_at.asc())
             )
             return list(result.all())
-
-    def _get_secret_key(self) -> str:
-        try:
-            key = getattr(getattr(self._app, "state", None), "config", None)
-            if key is not None:
-                key = getattr(key, "SECRET_KEY", None)
-            if key:
-                return key
-        except Exception:
-            pass
-        from open_webui.env import WEBUI_SECRET_KEY  # noqa: PLC0415
-        return WEBUI_SECRET_KEY or ""
 
     async def _generate_label(self, prompt: str, keywords: list[str]) -> str:
         """Best-effort LLM label generation; falls back to top keywords."""

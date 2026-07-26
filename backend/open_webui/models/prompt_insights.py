@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from typing import Optional
 
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import BigInteger, Column, ForeignKey, Index, Text, UniqueConstraint, select, text
+from sqlalchemy import BigInteger, Column, ForeignKey, Index, Text, UniqueConstraint, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import declarative_base
@@ -72,15 +72,15 @@ class PromptClusterTrend(Base):
     created_at = Column(BigInteger, nullable=False, default=lambda: int(time.time()))
 
     __table_args__ = (
-        Index(
-            'uq_prompt_cluster_trend_label_bucket',
-            text("COALESCE(canonical_label_hash, '')"),
-            text("COALESCE(bucket, '')"),
-            unique=True,
+        UniqueConstraint(
+            'canonical_label_hash', 'bucket', name='uq_prompt_cluster_trend_label_bucket'
         ),
     )
 
 
+# Reserved for a future iteration: per-model breakdown of clusters.
+# No writer exists yet; the table is created by the migration so the schema is
+# stable when the per-model breakdown feature lands.
 class PromptClusterModel(Base):
     __tablename__ = 'prompt_cluster_model'
 
@@ -98,8 +98,10 @@ class PromptClusterModel(Base):
 class PromptEmbeddingCache(Base):
     __tablename__ = 'prompt_embedding_cache'
 
+    # NOTE: only the text hash is persisted (not the scrubbed prompt text) so
+    # that no raw prompt content is stored. A periodic cleanup job should purge
+    # rows where expires_at < now(); that cleanup is not implemented here.
     text_hash = Column(Text, primary_key=True)
-    text = Column(Text, nullable=False)
     embedding = Column(Text, nullable=True)
     expires_at = Column(BigInteger, nullable=False, index=True)
     created_at = Column(BigInteger, nullable=False, default=lambda: int(time.time()))
@@ -146,7 +148,6 @@ class PromptClusterTrendModel(BaseModel):
 
 class PromptEmbeddedCacheModel(BaseModel):
     text_hash: str
-    text: str
     embedding: Optional[str] = None
     expires_at: int
     created_at: int
