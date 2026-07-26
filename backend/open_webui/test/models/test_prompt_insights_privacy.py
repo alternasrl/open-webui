@@ -21,6 +21,22 @@ def test_scrub_pii_replaces_email_phone_url_iban():
     assert "[IBAN]" in cleaned
 
 
+def test_scrub_pii_does_not_scrub_short_tokens():
+    raw = "Use api_key=abc123 for testing"
+    cleaned, had_pii = scrub_pii(raw)
+
+    assert had_pii is False
+    assert cleaned == raw
+
+
+def test_scrub_pii_does_not_scrub_luhn_failing_card_numbers():
+    raw = "Card number 4111111111111"
+    cleaned, had_pii = scrub_pii(raw)
+
+    assert had_pii is False
+    assert cleaned == raw
+
+
 def test_hmac_changes_with_secret():
     assert anonymize_user_id("u1", "secret-a") != anonymize_user_id("u1", "secret-b")
 
