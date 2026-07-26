@@ -204,6 +204,44 @@ class PromptInsightsRunsTable:
             run.completed_at = int(time.time())
             await session.commit()
 
+    async def get_active_run(self, db: Optional[AsyncSession] = None) -> Optional[PromptInsightsRunModel]:
+        async with get_async_db_context(db) as session:
+            result = await session.execute(
+                select(PromptInsightsRun)
+                .filter(PromptInsightsRun.status == 'running')
+                .order_by(PromptInsightsRun.created_at.desc())
+                .limit(1)
+            )
+            run = result.scalar_one_or_none()
+            return PromptInsightsRunModel.model_validate(run) if run else None
+
+    async def get_latest_completed_run(self, db: Optional[AsyncSession] = None) -> Optional[PromptInsightsRunModel]:
+        async with get_async_db_context(db) as session:
+            result = await session.execute(
+                select(PromptInsightsRun)
+                .filter(PromptInsightsRun.status == 'completed')
+                .order_by(PromptInsightsRun.completed_at.desc())
+                .limit(1)
+            )
+            run = result.scalar_one_or_none()
+            return PromptInsightsRunModel.model_validate(run) if run else None
+
+    async def list_runs(self, limit: int = 20, db: Optional[AsyncSession] = None) -> list[PromptInsightsRunModel]:
+        async with get_async_db_context(db) as session:
+            result = await session.execute(
+                select(PromptInsightsRun)
+                .order_by(PromptInsightsRun.created_at.desc())
+                .limit(limit)
+            )
+            runs = result.scalars().all()
+            return [PromptInsightsRunModel.model_validate(r) for r in runs]
+
+    async def count_runs(self, db: Optional[AsyncSession] = None) -> int:
+        from sqlalchemy import func  # noqa: PLC0415
+        async with get_async_db_context(db) as session:
+            result = await session.execute(select(func.count()).select_from(PromptInsightsRun))
+            return result.scalar_one() or 0
+
 
 class PromptInsightsTableStore:
     async def upsert_trend(
@@ -239,6 +277,97 @@ class PromptInsightsTableStore:
                 'total_clusters': len(trends),
                 'trends': [PromptClusterTrendModel.model_validate(trend).model_dump() for trend in trends],
             }
+
+    async def get_clusters_by_run_id(
+        self, run_id: str, db: Optional[AsyncSession] = None
+    ) -> list[PromptClusterModelRow]:
+        async with get_async_db_context(db) as session:
+            result = await session.execute(
+                select(PromptCluster)
+                .filter(PromptCluster.run_id == run_id)
+                .order_by(PromptCluster.cluster_size.desc())
+            )
+            clusters = result.scalars().all()
+            return [PromptClusterModelRow.model_validate(c) for c in clusters]
+
+    async def get_trend_for_cluster(
+        self, cluster_id: str, db: Optional[AsyncSession] = None
+    ) -> tuple[Optional[PromptClusterModelRow], list[PromptClusterTrendModel]]:
+        async with get_async_db_context(db) as session:
+            cluster_result = await session.execute(
+                select(PromptCluster).filter(PromptCluster.id == cluster_id)
+            )
+            cluster = cluster_result.scalar_one_or_none()
+            if not cluster:
+                return None, []
+            trend_result = await session.execute(
+                select(PromptClusterTrend)
+                .filter(PromptClusterTrend.canonical_label_hash == cluster.canonical_label_hash)
+                .order_by(PromptClusterTrend.bucket.asc())
+            )
+            trends = trend_result.scalars().all()
+            return (
+                PromptClusterModelRow.model_validate(cluster),
+                [PromptClusterTrendModel.model_validate(t) for t in trends],
+            )
+
+    async def get_emerging_topics(
+        self,
+        min_volume: int = 5,
+        min_growth_ratio: float = 1.5,
+        limit: int = 20,
+        db: Optional[AsyncSession] = None,
+    ) -> list[dict]:
+        """Return topics with high recent growth relative to prior activity."""
+        from collections import defaultdict  # noqa: PLC0415
+
+        async with get_async_db_context(db) as session:
+            trend_result = await session.execute(
+                select(PromptClusterTrend).order_by(PromptClusterTrend.bucket.desc())
+            )
+            all_trends = trend_result.scalars().all()
+
+            # Group by canonical_label_hash
+            groups: dict[str, list] = defaultdict(list)
+            for t in all_trends:
+                groups[t.canonical_label_hash].append(t)
+
+            # Compute growth ratios
+            candidates = []
+            for label_hash, rows in groups.items():
+                rows_sorted = sorted(rows, key=lambda r: r.bucket, reverse=True)
+                recent_count = rows_sorted[0].count
+                total_count = sum(r.count for r in rows_sorted)
+                prior_count = total_count - recent_count
+                growth_ratio = recent_count / prior_count if prior_count > 0 else float('inf')
+
+                if recent_count >= min_volume and growth_ratio >= min_growth_ratio:
+                    candidates.append({
+                        'canonical_label_hash': label_hash,
+                        'recent_count': recent_count,
+                        'total_count': total_count,
+                        'growth_ratio': growth_ratio,
+                    })
+
+            # Sort by growth ratio desc, then look up labels
+            candidates.sort(key=lambda x: -x['growth_ratio'])
+            candidates = candidates[:limit]
+
+            # Enrich with canonical labels from most recent cluster row
+            results = []
+            for item in candidates:
+                label_result = await session.execute(
+                    select(PromptCluster)
+                    .filter(PromptCluster.canonical_label_hash == item['canonical_label_hash'])
+                    .order_by(PromptCluster.created_at.desc())
+                    .limit(1)
+                )
+                cluster = label_result.scalar_one_or_none()
+                results.append({
+                    **item,
+                    'canonical_label': cluster.canonical_label if cluster else item['canonical_label_hash'],
+                })
+            return results
 
 
 PromptInsightsRuns = PromptInsightsRunsTable()

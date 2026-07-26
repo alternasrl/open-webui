@@ -1,14 +1,20 @@
 import logging
+import time
 from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, Request
 from open_webui.internal.db import get_async_session
 from open_webui.models.chat_messages import ChatMessageModel, ChatMessages
 from open_webui.models.chats import Chats
 from open_webui.models.feedbacks import Feedbacks
 from open_webui.models.groups import Groups
+from open_webui.models.prompt_insights import (
+    PromptInsightsRuns,
+    PromptInsightsTable,
+    PromptInsightsRunModel,
+)
 from open_webui.models.users import Users
 from open_webui.utils.auth import get_admin_user
 from pydantic import BaseModel
@@ -517,3 +523,188 @@ async def get_model_overview(
     tags = [TagEntry(tag=tag, count=count) for tag, count in sorted(tag_counts.items(), key=lambda x: -x[1])[:10]]
 
     return ModelOverviewResponse(history=history, tags=tags)
+
+
+####################
+# Prompt Insights
+####################
+
+
+class PromptInsightsSummaryResponse(BaseModel):
+    latest_run: Optional[PromptInsightsRunModel] = None
+    active_run: Optional[PromptInsightsRunModel] = None
+    total_runs: int = 0
+
+
+class PromptClusterEntry(BaseModel):
+    id: str
+    run_id: str
+    canonical_label: str
+    canonical_label_hash: str
+    cluster_size: int
+    created_at: int
+
+
+class PromptInsightsClustersResponse(BaseModel):
+    run_id: str
+    clusters: list[PromptClusterEntry]
+
+
+class TrendPoint(BaseModel):
+    bucket: str
+    count: int
+
+
+class PromptClusterTrendResponse(BaseModel):
+    cluster_id: str
+    canonical_label: str
+    canonical_label_hash: str
+    trend: list[TrendPoint]
+
+
+class EmergingTopicEntry(BaseModel):
+    canonical_label: str
+    canonical_label_hash: str
+    recent_count: int
+    total_count: int
+    growth_ratio: float
+
+
+class EmergingTopicsResponse(BaseModel):
+    topics: list[EmergingTopicEntry]
+
+
+class PromptInsightsRunTriggerResponse(BaseModel):
+    status: str
+    reason: Optional[str] = None
+    run_id: Optional[str] = None
+
+
+class PromptInsightsRunsResponse(BaseModel):
+    runs: list[PromptInsightsRunModel]
+
+
+@router.get('/prompt-insights/summary', response_model=PromptInsightsSummaryResponse)
+async def get_prompt_insights_summary(
+    user=Depends(get_admin_user),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Get summary of the latest prompt insights run and any active run."""
+    latest, active, total = await _gather_summary(db)
+    return PromptInsightsSummaryResponse(latest_run=latest, active_run=active, total_runs=total)
+
+
+async def _gather_summary(db: AsyncSession):
+    latest = await PromptInsightsRuns.get_latest_completed_run(db=db)
+    active = await PromptInsightsRuns.get_active_run(db=db)
+    total = await PromptInsightsRuns.count_runs(db=db)
+    return latest, active, total
+
+
+@router.get('/prompt-insights/clusters', response_model=PromptInsightsClustersResponse)
+async def get_prompt_insights_clusters(
+    run_id: Optional[str] = Query(None, description='Run ID; defaults to latest completed run'),
+    user=Depends(get_admin_user),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Get clusters for a given run (defaults to the latest completed run)."""
+    if run_id is None:
+        latest = await PromptInsightsRuns.get_latest_completed_run(db=db)
+        if latest is None:
+            return PromptInsightsClustersResponse(run_id='', clusters=[])
+        run_id = latest.id
+
+    clusters = await PromptInsightsTable.get_clusters_by_run_id(run_id=run_id, db=db)
+    return PromptInsightsClustersResponse(
+        run_id=run_id,
+        clusters=[PromptClusterEntry(**c.model_dump()) for c in clusters],
+    )
+
+
+@router.get('/prompt-insights/clusters/{cluster_id}/trend', response_model=PromptClusterTrendResponse)
+async def get_prompt_insights_cluster_trend(
+    cluster_id: str,
+    user=Depends(get_admin_user),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Get historical trend data for a single cluster."""
+    from fastapi import HTTPException  # noqa: PLC0415
+
+    cluster, trends = await PromptInsightsTable.get_trend_for_cluster(cluster_id=cluster_id, db=db)
+    if cluster is None:
+        raise HTTPException(status_code=404, detail='Cluster not found')
+
+    return PromptClusterTrendResponse(
+        cluster_id=cluster_id,
+        canonical_label=cluster.canonical_label,
+        canonical_label_hash=cluster.canonical_label_hash,
+        trend=[TrendPoint(bucket=t.bucket, count=t.count) for t in trends],
+    )
+
+
+@router.get('/prompt-insights/emerging', response_model=EmergingTopicsResponse)
+async def get_prompt_insights_emerging(
+    min_volume: int = Query(5, ge=1, description='Minimum recent count to qualify'),
+    min_growth_ratio: float = Query(1.5, ge=1.0, description='Minimum growth ratio to qualify'),
+    limit: int = Query(20, ge=1, le=100),
+    user=Depends(get_admin_user),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Get topics with the highest recent growth relative to prior activity."""
+    topics = await PromptInsightsTable.get_emerging_topics(
+        min_volume=min_volume,
+        min_growth_ratio=min_growth_ratio,
+        limit=limit,
+        db=db,
+    )
+    return EmergingTopicsResponse(
+        topics=[
+            EmergingTopicEntry(
+                canonical_label=t['canonical_label'],
+                canonical_label_hash=t['canonical_label_hash'],
+                recent_count=t['recent_count'],
+                total_count=t['total_count'],
+                growth_ratio=t['growth_ratio'] if t['growth_ratio'] != float('inf') else 999999.0,
+            )
+            for t in topics
+        ]
+    )
+
+
+@router.post('/prompt-insights/run', response_model=PromptInsightsRunTriggerResponse)
+async def trigger_prompt_insights_run(
+    background_tasks: BackgroundTasks,
+    request: Request,
+    user=Depends(get_admin_user),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Manually trigger a prompt insights run. No-op if a run is already in progress."""
+    active = await PromptInsightsRuns.get_active_run(db=db)
+    if active is not None:
+        return PromptInsightsRunTriggerResponse(
+            status='skipped', reason='run_in_progress', run_id=active.id
+        )
+
+    window_end = int(time.time())
+    window_start = window_end - 86400  # default: last 24 h
+
+    async def _run_pipeline():
+        from open_webui.prompt_insights.pipeline import PromptInsightsPipeline  # noqa: PLC0415
+        try:
+            await PromptInsightsPipeline(request.app).run(window_start, window_end)
+        except Exception:
+            log.exception('Manual prompt insights run failed')
+
+    background_tasks.add_task(_run_pipeline)
+    return PromptInsightsRunTriggerResponse(status='started')
+
+
+@router.get('/prompt-insights/runs', response_model=PromptInsightsRunsResponse)
+async def get_prompt_insights_runs(
+    limit: int = Query(20, ge=1, le=100, description='Max runs to return'),
+    user=Depends(get_admin_user),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """List past prompt insights runs, newest first."""
+    runs = await PromptInsightsRuns.list_runs(limit=limit, db=db)
+    return PromptInsightsRunsResponse(runs=runs)
