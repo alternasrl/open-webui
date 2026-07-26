@@ -195,6 +195,14 @@ async def scheduler_worker_loop(app) -> None:
                 except Exception:
                     log.exception('Scheduler: calendar alert error')
 
+            # ── Prompt Insights ──
+            if os.getenv('PROMPT_INSIGHTS_ENABLED', 'false').lower() == 'true':
+                try:
+                    from open_webui.prompt_insights.pipeline import run_prompt_insights_if_due  # noqa: PLC0415
+                    await run_prompt_insights_if_due(app)
+                except Exception:
+                    log.exception('Scheduler: prompt insights error')
+
         except Exception:
             log.exception('Scheduler worker error')
 
