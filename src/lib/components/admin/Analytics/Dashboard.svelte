@@ -1163,6 +1163,7 @@
 			loading={loadingPromptInsights}
 			error={promptInsightsError}
 			onRefresh={triggerPromptInsightsRun}
+			onLoadData={loadPromptInsights}
 			onSelectCluster={(id) => loadPromptInsightsTrend(id)}
 		/>
 	</div>

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { onDestroy } from 'svelte';
 	import Spinner from '$lib/components/common/Spinner.svelte';
 	import ClusterBarChart from './ClusterBarChart.svelte';
 	import ClusterTrendLine from './ClusterTrendLine.svelte';
@@ -39,6 +40,7 @@
 	export let error: string | null = null;
 
 	export let onRefresh: () => void = () => {};
+	export let onLoadData: () => void = () => {};
 	export let onSelectCluster: (id: string, label: string) => void = () => {};
 
 	let selectedClusterId: string | null = null;
@@ -58,6 +60,25 @@
 	$: hasRun = summary?.latest_run != null;
 	$: isRunning = summary?.active_run != null;
 	$: lastRun = summary?.latest_run;
+
+	let pollInterval: ReturnType<typeof setInterval> | null = null;
+
+	$: {
+		if (isRunning) {
+			if (!pollInterval) {
+				pollInterval = setInterval(onLoadData, 5000);
+			}
+		} else {
+			if (pollInterval) {
+				clearInterval(pollInterval);
+				pollInterval = null;
+			}
+		}
+	}
+
+	onDestroy(() => {
+		if (pollInterval) clearInterval(pollInterval);
+	});
 </script>
 
 <div class="space-y-4">
