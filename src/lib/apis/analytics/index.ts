@@ -391,6 +391,146 @@ export const getRoutingSummary = async (
 	return res;
 };
 
+// ── Prompt Insights ──────────────────────────────────────────────────────────
+
+export const getPromptInsightsSummary = async (token = '') => {
+	let error = null;
+	const res = await fetch(`${WEBUI_API_BASE_URL}/analytics/prompt-insights/summary`, {
+		method: 'GET',
+		headers: {
+			Accept: 'application/json',
+			'Content-Type': 'application/json',
+			authorization: `Bearer ${token}`
+		}
+	})
+		.then(async (res) => {
+			if (!res.ok) throw await res.json();
+			return res.json();
+		})
+		.catch((err) => {
+			error = err.detail;
+			console.error(err);
+			return null;
+		});
+	if (error) throw error;
+	return res;
+};
+
+export const getPromptInsightsClusters = async (token = '', runId: string | null = null) => {
+	let error = null;
+	const params = new URLSearchParams();
+	if (runId) params.append('run_id', runId);
+	const res = await fetch(
+		`${WEBUI_API_BASE_URL}/analytics/prompt-insights/clusters?${params.toString()}`,
+		{
+			method: 'GET',
+			headers: {
+				Accept: 'application/json',
+				'Content-Type': 'application/json',
+				authorization: `Bearer ${token}`
+			}
+		}
+	)
+		.then(async (res) => {
+			if (!res.ok) throw await res.json();
+			return res.json();
+		})
+		.catch((err) => {
+			error = err.detail;
+			console.error(err);
+			return null;
+		});
+	if (error) throw error;
+	return res;
+};
+
+export const getPromptInsightsTrend = async (token = '', clusterId: string) => {
+	let error = null;
+	const res = await fetch(
+		`${WEBUI_API_BASE_URL}/analytics/prompt-insights/clusters/${encodeURIComponent(clusterId)}/trend`,
+		{
+			method: 'GET',
+			headers: {
+				Accept: 'application/json',
+				'Content-Type': 'application/json',
+				authorization: `Bearer ${token}`
+			}
+		}
+	)
+		.then(async (res) => {
+			if (!res.ok) throw await res.json();
+			return res.json();
+		})
+		.catch((err) => {
+			error = err.detail;
+			console.error(err);
+			return null;
+		});
+	if (error) throw error;
+	return res;
+};
+
+export const getPromptInsightsEmerging = async (
+	token = '',
+	options: {
+		minVolume?: number;
+		minGrowthRatio?: number;
+		limit?: number;
+	} = {}
+) => {
+	const { minVolume = 5, minGrowthRatio = 1.5, limit = 20 } = options;
+	let error = null;
+	const params = new URLSearchParams();
+	params.append('min_volume', minVolume.toString());
+	params.append('min_growth_ratio', minGrowthRatio.toString());
+	params.append('limit', limit.toString());
+	const res = await fetch(
+		`${WEBUI_API_BASE_URL}/analytics/prompt-insights/emerging?${params.toString()}`,
+		{
+			method: 'GET',
+			headers: {
+				Accept: 'application/json',
+				'Content-Type': 'application/json',
+				authorization: `Bearer ${token}`
+			}
+		}
+	)
+		.then(async (res) => {
+			if (!res.ok) throw await res.json();
+			return res.json();
+		})
+		.catch((err) => {
+			error = err.detail;
+			console.error(err);
+			return null;
+		});
+	if (error) throw error;
+	return res;
+};
+
+export const runPromptInsights = async (token = '') => {
+	let error = null;
+	const res = await fetch(`${WEBUI_API_BASE_URL}/analytics/prompt-insights/run`, {
+		method: 'POST',
+		headers: {
+			Accept: 'application/json',
+			'Content-Type': 'application/json',
+			authorization: `Bearer ${token}`
+		}
+	})
+		.then(async (res) => {
+			if (!res.ok) throw await res.json();
+			return res.json();
+		})
+		.catch((err) => {
+			error = err.detail;
+			console.error(err);
+			return null;
+		});
+	if (error) throw error;
+	return res;
+};
+
 export const getRoutingEvents = async (
 	token: string = '',
 	options: {

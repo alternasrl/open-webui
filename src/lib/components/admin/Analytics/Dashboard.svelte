@@ -9,7 +9,12 @@
 		getDailyStats,
 		getTokenUsage,
 		getRoutingSummary,
-		getRoutingEvents
+		getRoutingEvents,
+		getPromptInsightsSummary,
+		getPromptInsightsClusters,
+		getPromptInsightsEmerging,
+		getPromptInsightsTrend,
+		runPromptInsights
 	} from '$lib/apis/analytics';
 	import { getGroups } from '$lib/apis/groups';
 	import Spinner from '$lib/components/common/Spinner.svelte';
@@ -18,6 +23,7 @@
 	import ChartLine from './ChartLine.svelte';
 	import AnalyticsModelModal from './AnalyticsModelModal.svelte';
 	import RoutingUsage from './RoutingUsage.svelte';
+	import PromptInsights from './PromptInsights.svelte';
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
 	import { WEBUI_API_BASE_URL } from '$lib/constants';
 	import { formatNumber } from '$lib/utils';
@@ -206,6 +212,77 @@
 	let routingModelMode: RoutingMode = 'or';
 	let previousFilterByUserId = filterByUserId;
 	let previousFilterByModelId = filterByModelId;
+
+	// Prompt Insights state
+	let promptInsightsSummary: {
+		latest_run: {
+			id: string;
+			status: string;
+			total_prompts: number | null;
+			clusters_found: number | null;
+			created_at: number;
+			completed_at: number | null;
+		} | null;
+		active_run: { id: string; status: string } | null;
+		total_runs: number;
+	} | null = null;
+	let promptInsightsClusters: Array<{
+		id: string;
+		canonical_label: string;
+		cluster_size: number;
+		run_id: string;
+		created_at: number;
+	}> = [];
+	let promptInsightsEmerging: Array<{
+		canonical_label: string;
+		recent_count: number;
+		total_count: number;
+		growth_ratio: number;
+	}> = [];
+	let promptInsightsTrend: Array<{ bucket: string; count: number }> = [];
+	let loadingPromptInsights = false;
+	let promptInsightsError: string | null = null;
+
+	const loadPromptInsights = async () => {
+		loadingPromptInsights = true;
+		promptInsightsError = null;
+		try {
+			const [summaryRes, clustersRes, emergingRes] = await Promise.all([
+				getPromptInsightsSummary(localStorage.token),
+				getPromptInsightsClusters(localStorage.token),
+				getPromptInsightsEmerging(localStorage.token)
+			]);
+			promptInsightsSummary = summaryRes;
+			promptInsightsClusters = clustersRes?.clusters ?? [];
+			promptInsightsEmerging = emergingRes?.topics ?? [];
+		} catch (err) {
+			console.error('Prompt insights load failed:', err);
+			promptInsightsError = typeof err === 'string' ? err : 'Caricamento fallito';
+		} finally {
+			loadingPromptInsights = false;
+		}
+	};
+
+	const triggerPromptInsightsRun = async () => {
+		try {
+			await runPromptInsights(localStorage.token);
+			toast.success('Analisi avviata');
+			await loadPromptInsights();
+		} catch (err) {
+			console.error('Prompt insights run failed:', err);
+			toast.error('Avvio analisi fallito');
+		}
+	};
+
+	const loadPromptInsightsTrend = async (clusterId: string) => {
+		try {
+			const res = await getPromptInsightsTrend(localStorage.token, clusterId);
+			promptInsightsTrend = res?.trend ?? [];
+		} catch (err) {
+			console.error('Trend load failed:', err);
+			promptInsightsTrend = [];
+		}
+	};
 
 	// Request trackers for race guard
 	const dashboardTracker = createRequestTracker();
@@ -418,6 +495,7 @@
 		} catch (e) {
 			console.error('Failed to load groups:', e);
 		}
+		loadPromptInsights();
 	});
 
 	$: sortedModels = [...modelStats].sort((a, b) => {
@@ -1073,6 +1151,19 @@
 			}}
 			{onSelectPair}
 			{onClearPair}
+		/>
+	</div>
+
+	<div class="mt-6">
+		<PromptInsights
+			summary={promptInsightsSummary}
+			clusters={promptInsightsClusters}
+			emerging={promptInsightsEmerging}
+			trend={promptInsightsTrend}
+			loading={loadingPromptInsights}
+			error={promptInsightsError}
+			onRefresh={triggerPromptInsightsRun}
+			onSelectCluster={(id) => loadPromptInsightsTrend(id)}
 		/>
 	</div>
 
