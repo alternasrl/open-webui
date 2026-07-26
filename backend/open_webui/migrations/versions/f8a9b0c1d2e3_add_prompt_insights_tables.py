@@ -12,7 +12,7 @@ from alembic import op
 from open_webui.migrations.util import get_existing_tables
 
 revision: str = 'f8a9b0c1d2e3'
-down_revision: Union[str, None] = 'f1e2d3c4b5a6'
+down_revision: Union[str, None] = '42e2978c7933'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
@@ -74,7 +74,6 @@ def upgrade() -> None:
             ON prompt_cluster_trend (COALESCE(canonical_label_hash, ''), COALESCE(bucket, ''))
             """
         )
-        op.create_index('idx_prompt_cluster_trend_bucket', 'prompt_cluster_trend', ['bucket'])
         op.create_index('idx_prompt_cluster_trend_run_id', 'prompt_cluster_trend', ['run_id'])
 
     if 'prompt_cluster_model' not in existing_tables:

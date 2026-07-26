@@ -6,6 +6,7 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import BigInteger, Column, ForeignKey, Index, Text, UniqueConstraint, select, text
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import declarative_base
 
@@ -153,7 +154,7 @@ class PromptEmbeddedCacheModel(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class PromptInsightsRuns:
+class PromptInsightsRunsTable:
     async def create_run(
         self,
         window_start: int,
@@ -204,7 +205,7 @@ class PromptInsightsRuns:
             await session.commit()
 
 
-class PromptInsightsTable:
+class PromptInsightsTableStore:
     async def upsert_trend(
         self,
         canonical_label_hash: str,
@@ -214,24 +215,17 @@ class PromptInsightsTable:
         db: Optional[AsyncSession] = None,
     ) -> None:
         async with get_async_db_context(db) as session:
-            result = await session.execute(
-                select(PromptClusterTrend).filter(
-                    PromptClusterTrend.canonical_label_hash == canonical_label_hash,
-                    PromptClusterTrend.bucket == bucket,
-                    PromptClusterTrend.run_id == run_id,
-                )
+            stmt = sqlite_insert(PromptClusterTrend).values(
+                run_id=run_id,
+                canonical_label_hash=canonical_label_hash,
+                bucket=bucket,
+                count=count,
+                created_at=int(time.time()),
+            ).on_conflict_do_update(
+                index_elements=['canonical_label_hash', 'bucket'],
+                set_=dict(count=PromptClusterTrend.count + count),
             )
-            trend = result.scalar_one_or_none()
-            if trend is None:
-                trend = PromptClusterTrend(
-                    canonical_label_hash=canonical_label_hash,
-                    bucket=bucket,
-                    count=count,
-                    run_id=run_id,
-                )
-                session.add(trend)
-            else:
-                trend.count = trend.count + count
+            await session.execute(stmt)
             await session.commit()
 
     async def get_summary(self, run_id: str, db: Optional[AsyncSession] = None) -> dict:
@@ -247,5 +241,5 @@ class PromptInsightsTable:
             }
 
 
-PromptInsightsRuns = PromptInsightsRuns()
-PromptInsightsTable = PromptInsightsTable()
+PromptInsightsRuns = PromptInsightsRunsTable()
+PromptInsightsTable = PromptInsightsTableStore()
