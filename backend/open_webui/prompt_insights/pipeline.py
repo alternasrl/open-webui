@@ -45,6 +45,30 @@ def should_run_prompt_insights(
     return elapsed_ns > interval_hours * _NS_PER_HOUR
 
 
+async def _resolve_window_start(interval_hours: int, last_ns: Optional[int]) -> int:
+    """Resolve window_start for the pipeline.
+
+    If last_ns is not None, use it (incremental mode).
+    If last_ns is None, check if any completed run exists:
+      - If no runs exist, return 0 (backfill all historical chats).
+      - Otherwise, return now - interval_hours (normal window).
+    """
+    if last_ns is not None:
+        return last_ns // 1_000_000_000
+
+    from open_webui.internal.db import get_async_db  # noqa: PLC0415
+    from open_webui.models.prompt_insights import PromptInsightsRuns  # noqa: PLC0415
+
+    async with get_async_db() as db:
+        count = await PromptInsightsRuns.count_runs(db=db)
+
+    if count == 0:
+        log.info("Backfill mode: processing all historical chats")
+        return 0
+    else:
+        return int(time.time()) - interval_hours * 3600
+
+
 async def run_prompt_insights_if_due(app) -> None:
     """Check whether the pipeline is due and, if so, kick it off.
 
@@ -72,12 +96,9 @@ async def run_prompt_insights_if_due(app) -> None:
             if active is not None:
                 return
 
-        # Compute window: previous run end (or 24h ago) → now (seconds)
+        # Compute window: previous run end (or backfill) → now (seconds)
         window_end = int(time.time())
-        if last_ns is not None:
-            window_start = last_ns // 1_000_000_000
-        else:
-            window_start = window_end - interval_hours * 3600
+        window_start = await _resolve_window_start(interval_hours, last_ns)
 
         pipeline = PromptInsightsPipeline(app)
         await pipeline.run(window_start, window_end)

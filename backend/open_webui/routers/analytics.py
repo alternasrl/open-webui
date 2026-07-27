@@ -686,7 +686,8 @@ async def trigger_prompt_insights_run(
         )
 
     window_end = int(time.time())
-    window_start = window_end - 86400  # default: last 24 h
+    from open_webui.prompt_insights.pipeline import _resolve_window_start  # noqa: PLC0415
+    window_start = await _resolve_window_start(interval_hours=24, last_ns=None)
 
     async def _run_pipeline():
         from open_webui.prompt_insights.pipeline import PromptInsightsPipeline  # noqa: PLC0415
