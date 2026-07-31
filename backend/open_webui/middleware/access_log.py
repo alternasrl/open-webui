@@ -316,6 +316,7 @@ def _compile_action_rules() -> list[tuple[re.Pattern, Optional[str], str]]:
         (rf'^/api/v1/chats/config$', 'POST', 'CONFIG_CHATS'),
         (rf'^/api/v1/chats/config$', 'GET', 'CONFIG_CHATS_READ'),
         (rf'^/api/v1/chats/archived/count$', 'GET', 'CHAT_ARCHIVED_COUNT'),
+        (rf'^/api/v1/chats/read$', 'POST', 'CHAT_READ'),
         (rf'^/api/v1/chats/{_ID}$', 'DELETE', 'CHAT_DELETE'),
         (rf'^/api/v1/chats/$', 'DELETE', 'CHAT_DELETE_ALL'),
         (rf'^/api/v1/chats/{_ID}$', 'POST', 'CHAT_UPDATE'),
@@ -460,7 +461,13 @@ def _compile_action_rules() -> list[tuple[re.Pattern, Optional[str], str]]:
         (rf'^/api/v1/channels/{_ID}/messages/post$', 'POST', 'CHANNEL_MESSAGE_POST'),
         (rf'^/api/v1/channels/{_ID}/messages/{_ID}/delete$', 'DELETE', 'CHANNEL_MESSAGE_DELETE'),
         (rf'^/api/v1/channels/{_ID}/messages/{_ID}/update$', 'POST', 'CHANNEL_MESSAGE_UPDATE'),
-        # ── New API surfaces added after v0.9.6 (v0.9.7–v0.10.1) ─────────
+        # ── Notification Targets (v0.11.0) ─────────────────────────────────
+        (rf'^/api/v1/notifications/targets$', 'POST', 'NOTIFICATION_TARGET_CREATE'),
+        (rf'^/api/v1/notifications/targets/{_ID}$', 'PUT', 'NOTIFICATION_TARGET_UPDATE'),
+        (rf'^/api/v1/notifications/targets/{_ID}$', 'DELETE', 'NOTIFICATION_TARGET_DELETE'),
+        (rf'^/api/v1/notifications/targets/{_ID}/default$', 'PUT', 'NOTIFICATION_TARGET_SET_DEFAULT'),
+        (rf'^/api/v1/notifications/targets/{_ID}/test$', 'POST', 'NOTIFICATION_TARGET_TEST'),
+        # ── New API surfaces added after v0.9.6 (v0.9.7–v0.11.0) ──────────
         (rf'^/api/v1/analytics/routing/events$', 'GET', 'ANALYTICS_ROUTING_EVENTS'),
         (rf'^/api/v1/analytics/routing/summary$', 'GET', 'ANALYTICS_ROUTING_SUMMARY'),
         (rf'^/api/v1/auths/admin/config/oauth$', 'POST', 'CONFIG_OAUTH_ADMIN'),
@@ -495,6 +502,15 @@ def _compile_action_rules() -> list[tuple[re.Pattern, Optional[str], str]]:
         (rf'^/api/v1/memories/update$', 'POST', 'MEMORY_UPDATE_BULK'),
         (rf'^/api/v1/models/base/tags$', 'GET', 'MODEL_BASE_TAGS_READ'),
         (rf'^/api/v1/users/default/permissions/defaults$', 'GET', 'USER_PERMISSIONS_DEFAULTS_READ'),
+        # ── v0.11.0 new endpoints ──────────────────────────────────────────
+        (rf'^/api/v1/users/user/variables/update$', 'POST', 'USER_VARIABLES_UPDATE'),
+        (rf'^/api/v1/chats/{_ID}/fork$', 'POST', 'CHAT_FORK'),
+        (rf'^/api/v1/chats/{_ID}/unread$', 'POST', 'CHAT_UNREAD'),
+        (rf'^/api/v1/configs/subagents$', 'POST', 'CONFIG_SUBAGENTS'),
+        (rf'^/api/v1/folders/{_ID}/read$', 'POST', 'FOLDER_READ'),
+        (rf'^/api/v1/notes/{_ID}/chat$', 'POST', 'NOTE_CHAT'),
+        (rf'^/api/v1/ollama/v1/embeddings$', 'POST', 'OLLAMA_EMBEDDINGS'),
+        (rf'^/api/v1/ollama/v1/embeddings/{_ID}$', 'POST', 'OLLAMA_EMBEDDINGS'),
         # ── Catch-all for remaining API write operations ─────────────────
         # These catch any unmatched POST/PUT/PATCH/DELETE on /api/ paths
         (rf'^/api/', 'DELETE', 'DELETE_OTHER'),
