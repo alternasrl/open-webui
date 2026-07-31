@@ -973,23 +973,6 @@
 										? ((model.count / totalModelMessages) * 100).toFixed(1)
 										: 0}%
 								</td>
-								<td class="px-3 py-1 text-right text-gray-500">
-									{model.avg_ttft_ms != null ? `${model.avg_ttft_ms.toFixed(0)} ms` : '—'}
-								</td>
-								<td class="px-3 py-1 text-right text-gray-500">
-									{model.avg_tokens_per_second != null
-										? `${model.avg_tokens_per_second.toFixed(1)}/s`
-										: '—'}
-								</td>
-								<td
-									class="px-3 py-1 text-right {model.error_requests > 0
-										? 'text-red-400'
-										: 'text-gray-400'}"
-								>
-									{model.error_requests > 0
-										? `${model.error_requests} (${model.error_rate.toFixed(1)}%)`
-										: '—'}
-								</td>
 							</tr>
 						{/each}
 						{#if sortedModels.length === 0}
