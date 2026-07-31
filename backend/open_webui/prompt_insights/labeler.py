@@ -21,8 +21,8 @@ def build_cluster_label_prompt(keywords: list[str]) -> str:
     """
     top_keywords = keywords[:10]
     return (
-        "Generate an Italian label of max 5 words that describes the following keywords. "
-        "Do not include personal data or sensitive information. "
-        "Reply with the label only, no explanation. "
-        f"Keywords: {', '.join(top_keywords)}"
+        'Generate an Italian label of max 5 words that describes the following keywords. '
+        'Do not include personal data or sensitive information. '
+        'Reply with the label only, no explanation. '
+        f'Keywords: {", ".join(top_keywords)}'
     )

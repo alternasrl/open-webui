@@ -60,7 +60,7 @@
 				<circle cx={x} cy={y} r="3" class="fill-blue-500" />
 				{#if i === 0 || i === trend.length - 1}
 					<text
-						x={x}
+						{x}
 						y={H - 4}
 						text-anchor={i === 0 ? 'start' : 'end'}
 						font-size="8"

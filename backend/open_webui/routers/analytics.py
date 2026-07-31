@@ -11,9 +11,9 @@ from open_webui.models.chats import Chats
 from open_webui.models.feedbacks import Feedbacks
 from open_webui.models.groups import Groups
 from open_webui.models.prompt_insights import (
+    PromptInsightsRunModel,
     PromptInsightsRuns,
     PromptInsightsTable,
-    PromptInsightsRunModel,
 )
 from open_webui.models.users import Users
 from open_webui.utils.auth import get_admin_user
@@ -681,16 +681,16 @@ async def trigger_prompt_insights_run(
     """Manually trigger a prompt insights run. No-op if a run is already in progress."""
     active = await PromptInsightsRuns.get_active_run(db=db)
     if active is not None:
-        return PromptInsightsRunTriggerResponse(
-            status='skipped', reason='run_in_progress', run_id=active.id
-        )
+        return PromptInsightsRunTriggerResponse(status='skipped', reason='run_in_progress', run_id=active.id)
 
     window_end = int(time.time())
     from open_webui.prompt_insights.pipeline import _resolve_window_start  # noqa: PLC0415
+
     window_start = await _resolve_window_start(interval_hours=24, last_ns=None)
 
     async def _run_pipeline():
         from open_webui.prompt_insights.pipeline import PromptInsightsPipeline  # noqa: PLC0415
+
         try:
             await PromptInsightsPipeline(request.app).run(window_start, window_end)
         except Exception:

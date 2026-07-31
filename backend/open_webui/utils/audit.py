@@ -353,7 +353,6 @@ class AuditLoggingMiddleware:
         '/api/v1/auths/signup',
     )
 
-
     def _should_skip_auditing(self, request: Request) -> bool:
         if AUDIT_LOG_LEVEL == 'NONE':
             return True

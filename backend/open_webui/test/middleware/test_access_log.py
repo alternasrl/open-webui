@@ -11,21 +11,20 @@ Covers:
 """
 
 import logging
-import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
+import pytest
 from open_webui.middleware.access_log import (
-    _classify_action,
     _NIS2_SECURITY_ACTIONS,
-    _extract_object_ref,
-    _outcome_from_status,
-    log_scheduled_activity,
-    invalidate_user_cache,
     _cache_data,
     _cache_lock,
+    _classify_action,
+    _extract_object_ref,
+    _outcome_from_status,
     _UserContext,
+    invalidate_user_cache,
+    log_scheduled_activity,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers

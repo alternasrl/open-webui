@@ -7,8 +7,8 @@ from open_webui.models.prompt_insights import _canonical_label_hash, _normalize_
 
 
 def test_label_normalization():
-    assert _normalize_cluster_label("  Richieste   Fatture XML  ") == "richieste fatture xml"
+    assert _normalize_cluster_label('  Richieste   Fatture XML  ') == 'richieste fatture xml'
 
 
 def test_hash_stability():
-    assert _canonical_label_hash("Richieste fatture XML") == _canonical_label_hash(" richieste   FATTURE xml ")
+    assert _canonical_label_hash('Richieste fatture XML') == _canonical_label_hash(' richieste   FATTURE xml ')

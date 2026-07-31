@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime
 import time
 from typing import Optional
+
 from open_webui.env import DATABASE_USER_ACTIVE_STATUS_UPDATE_INTERVAL
 from open_webui.internal.db import Base, JSONField, get_async_db_context
 from open_webui.utils.misc import throttle

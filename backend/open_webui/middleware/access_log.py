@@ -146,13 +146,14 @@ NIS2 Action Categories
 
 import hashlib
 import json
-import re
-import uuid
 import logging
+import re
 import sys
-import time
 import threading
-from typing import Callable, Optional, NamedTuple
+import time
+import uuid
+from typing import Callable, NamedTuple, Optional
+
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response

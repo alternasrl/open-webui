@@ -36,11 +36,11 @@ def extract_cluster_keywords(
         return {}
 
     cluster_ids = sorted(cluster_texts)
-    corpus = [" ".join(cluster_texts[cid]) for cid in cluster_ids]
+    corpus = [' '.join(cluster_texts[cid]) for cid in cluster_ids]
 
     vectorizer = TfidfVectorizer(
-        analyzer="word",
-        token_pattern=r"(?u)\b\w+\b",
+        analyzer='word',
+        token_pattern=r'(?u)\b\w+\b',
         sublinear_tf=True,
     )
     tfidf_matrix = vectorizer.fit_transform(corpus)

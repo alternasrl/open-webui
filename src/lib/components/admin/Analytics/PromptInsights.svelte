@@ -117,14 +117,14 @@
 			<Spinner className="size-5" />
 		</div>
 
-	<!-- Error -->
+		<!-- Error -->
 	{:else if error}
 		<div class="text-xs text-red-500 dark:text-red-400 py-2">
 			Errore: {error}
 			<button class="ml-2 underline" on:click={onRefresh}>Riprova</button>
 		</div>
 
-	<!-- Empty state -->
+		<!-- Empty state -->
 	{:else if !hasRun}
 		<div class="flex flex-col items-center justify-center py-10 gap-3 text-center">
 			<p class="text-sm text-gray-500 dark:text-gray-400">
@@ -138,14 +138,12 @@
 			</button>
 		</div>
 
-	<!-- Data -->
+		<!-- Data -->
 	{:else}
 		<div class="grid md:grid-cols-2 gap-6">
 			<!-- Clusters bar chart -->
 			<div>
-				<p class="text-xs font-medium text-gray-600 dark:text-gray-400 mb-2">
-					Cluster per volume
-				</p>
+				<p class="text-xs font-medium text-gray-600 dark:text-gray-400 mb-2">Cluster per volume</p>
 				<div class="space-y-1">
 					{#each [...clusters].sort((a, b) => b.cluster_size - a.cluster_size) as c (c.id)}
 						<button
@@ -172,7 +170,9 @@
 					<ClusterTrendLine {trend} label={selectedClusterLabel} />
 				{:else}
 					<p class="text-xs text-gray-400 text-center py-8">
-						{selectedClusterId ? 'Nessun dato di trend disponibile' : 'Seleziona un cluster per visualizzare il trend'}
+						{selectedClusterId
+							? 'Nessun dato di trend disponibile'
+							: 'Seleziona un cluster per visualizzare il trend'}
 					</p>
 				{/if}
 			</div>

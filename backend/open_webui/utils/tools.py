@@ -46,7 +46,6 @@ from open_webui.models.config import Config
 from open_webui.models.groups import Groups
 from open_webui.models.tools import Tools
 from open_webui.models.users import UserModel
-from open_webui.utils.chat_id import is_saved_chat_id
 from open_webui.tools.builtin import (
     add_memory,
     calculate_timestamp,
@@ -65,8 +64,8 @@ from open_webui.tools.builtin import (
     grep_chat_files,
     grep_knowledge_files,
     kb_exec,
-    list_chat_files,
     list_automations,
+    list_chat_files,
     list_knowledge,
     list_knowledge_bases,
     list_memories,
@@ -103,6 +102,7 @@ from open_webui.tools.builtin import (
     write_note,
 )
 from open_webui.utils.access_control import has_access, has_connection_access, has_permission
+from open_webui.utils.chat_id import is_saved_chat_id
 from open_webui.utils.headers import get_custom_headers, include_user_info_headers
 from open_webui.utils.misc import is_string_allowed
 from open_webui.utils.plugin import get_tool_contents_cache, get_tools_cache, load_tool_module_by_id

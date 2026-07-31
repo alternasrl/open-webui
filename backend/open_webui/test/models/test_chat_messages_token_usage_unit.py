@@ -107,11 +107,7 @@ def test_get_token_usage_by_model_accepts_model_id_and_filters(monkeypatch):
         )
     )
 
-    compiled = str(
-        fake_db.statements[0].compile(
-            dialect=sqlite.dialect(), compile_kwargs={'literal_binds': True}
-        )
-    )
+    compiled = str(fake_db.statements[0].compile(dialect=sqlite.dialect(), compile_kwargs={'literal_binds': True}))
 
     assert usage == {
         'gpt-4o-mini': {

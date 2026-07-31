@@ -1,12 +1,12 @@
 import json
 from typing import Callable, Optional
 
+from open_webui.utils.chat_variables import render_chat_variables, render_user_variables
 from open_webui.utils.misc import (
     add_or_update_system_message,
     deep_update,
     replace_system_message_content,
 )
-from open_webui.utils.chat_variables import render_chat_variables, render_user_variables
 from open_webui.utils.task import prompt_template, prompt_variables_template
 
 

@@ -18,7 +18,10 @@
 	<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
 		{#each gaps as g (g.cluster_label + g.gap_type)}
 			<div class="border border-gray-200 dark:border-gray-700 rounded-lg p-3 space-y-1.5">
-				<p class="text-xs font-medium text-gray-900 dark:text-white truncate" title={g.cluster_label}>
+				<p
+					class="text-xs font-medium text-gray-900 dark:text-white truncate"
+					title={g.cluster_label}
+				>
 					{g.cluster_label}
 				</p>
 				<div class="flex items-center justify-between">
@@ -26,9 +29,7 @@
 						class="text-xs font-semibold px-2 py-0.5 rounded {gapTypeColor[g.gap_type] ??
 							'bg-gray-100 text-gray-600'}">{g.gap_type}</span
 					>
-					<span class="text-xs text-gray-500"
-						>Confidenza: {Math.round(g.confidence * 100)}%</span
-					>
+					<span class="text-xs text-gray-500">Confidenza: {Math.round(g.confidence * 100)}%</span>
 				</div>
 			</div>
 		{/each}

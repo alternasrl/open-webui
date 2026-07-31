@@ -22,8 +22,7 @@
 					style="width: {Math.round((c.cluster_size / max) * 100)}%"
 				></div>
 			</div>
-			<span class="w-8 text-right text-gray-500 dark:text-gray-400 shrink-0">{c.cluster_size}</span
-			>
+			<span class="w-8 text-right text-gray-500 dark:text-gray-400 shrink-0">{c.cluster_size}</span>
 		</div>
 	{/each}
 	{#if sorted.length === 0}

@@ -63,7 +63,7 @@ async def _resolve_window_start(interval_hours: int, last_ns: Optional[int]) -> 
         count = await PromptInsightsRuns.count_runs(db=db)
 
     if count == 0:
-        log.info("Backfill mode: processing all historical chats")
+        log.info('Backfill mode: processing all historical chats')
         return 0
     else:
         return int(time.time()) - interval_hours * 3600
@@ -77,9 +77,9 @@ async def run_prompt_insights_if_due(app) -> None:
     without a dedicated config table row.
     """
     try:
-        interval_hours = int(os.getenv("PROMPT_INSIGHTS_INTERVAL_HOURS", "24"))
+        interval_hours = int(os.getenv('PROMPT_INSIGHTS_INTERVAL_HOURS', '24'))
         now_ns = time.time_ns()
-        last_ns: Optional[int] = getattr(app.state, "_prompt_insights_last_run_ns", None)
+        last_ns: Optional[int] = getattr(app.state, '_prompt_insights_last_run_ns', None)
 
         if not should_run_prompt_insights(now_ns, last_ns, interval_hours):
             return
@@ -105,7 +105,7 @@ async def run_prompt_insights_if_due(app) -> None:
 
         app.state._prompt_insights_last_run_ns = now_ns
     except Exception:
-        log.exception("run_prompt_insights_if_due: unhandled error")
+        log.exception('run_prompt_insights_if_due: unhandled error')
 
 
 # ---------------------------------------------------------------------------
@@ -145,13 +145,13 @@ class PromptInsightsPipeline:
         async with get_async_db() as db:
             active = await PromptInsightsRuns.get_active_run(db=db)
             if active is not None:
-                log.info("PromptInsights: run already active (%s); skipping", active.id)
+                log.info('PromptInsights: run already active (%s); skipping', active.id)
                 return {
-                    "run_id": active.id,
-                    "total_prompts": 0,
-                    "clusters_found": 0,
-                    "noise_count": 0,
-                    "skipped": True,
+                    'run_id': active.id,
+                    'total_prompts': 0,
+                    'clusters_found': 0,
+                    'noise_count': 0,
+                    'skipped': True,
                 }
 
         async with get_async_db() as db:
@@ -164,7 +164,7 @@ class PromptInsightsPipeline:
             if not records:
                 async with get_async_db() as db:
                     await PromptInsightsRuns.complete_run(run_id, 0, 0, 0, db=db)
-                return {"run_id": run_id, "total_prompts": 0, "clusters_found": 0, "noise_count": 0}
+                return {'run_id': run_id, 'total_prompts': 0, 'clusters_found': 0, 'noise_count': 0}
 
             # -- 2. PII scrub --
             scrubbed_texts: list[str] = []
@@ -197,6 +197,7 @@ class PromptInsightsPipeline:
                     cluster_size = sum(1 for lbl in labels if lbl == cid)
 
                     from open_webui.models.prompt_insights import PromptCluster  # noqa: PLC0415
+
                     cluster_row = PromptCluster(
                         run_id=run_id,
                         canonical_label=canonical_label,
@@ -221,28 +222,31 @@ class PromptInsightsPipeline:
             noise_count = len(noise_indices)
 
             async with get_async_db() as db:
-                await PromptInsightsRuns.complete_run(
-                    run_id, total_prompts, clusters_found, noise_count, db=db
-                )
+                await PromptInsightsRuns.complete_run(run_id, total_prompts, clusters_found, noise_count, db=db)
 
             log.info(
-                "PromptInsights run=%s window=[%s,%s] prompts=%d clusters=%d noise=%d",
-                run_id, window_start, window_end, total_prompts, clusters_found, noise_count,
+                'PromptInsights run=%s window=[%s,%s] prompts=%d clusters=%d noise=%d',
+                run_id,
+                window_start,
+                window_end,
+                total_prompts,
+                clusters_found,
+                noise_count,
             )
             return {
-                "run_id": run_id,
-                "total_prompts": total_prompts,
-                "clusters_found": clusters_found,
-                "noise_count": noise_count,
+                'run_id': run_id,
+                'total_prompts': total_prompts,
+                'clusters_found': clusters_found,
+                'noise_count': noise_count,
             }
 
         except Exception as exc:
-            log.exception("PromptInsights pipeline failed (run=%s)", run_id)
+            log.exception('PromptInsights pipeline failed (run=%s)', run_id)
             try:
                 async with get_async_db() as db:
                     await PromptInsightsRuns.fail_run(run_id, str(exc), db=db)
             except Exception:
-                log.exception("PromptInsights: could not mark run as failed")
+                log.exception('PromptInsights: could not mark run as failed')
             raise
 
     # ------------------------------------------------------------------
@@ -251,15 +255,16 @@ class PromptInsightsPipeline:
 
     async def _fetch_prompts(self, window_start: int, window_end: int) -> list[tuple[str, object]]:
         """Return (user_id, content) pairs for user messages in the window."""
+        from sqlalchemy import select  # noqa: PLC0415
+
         from open_webui.internal.db import get_async_db  # noqa: PLC0415
         from open_webui.models.chat_messages import ChatMessage  # noqa: PLC0415
-        from sqlalchemy import select  # noqa: PLC0415
 
         async with get_async_db() as db:
             result = await db.execute(
                 select(ChatMessage.user_id, ChatMessage.content)
                 .where(
-                    ChatMessage.role == "user",
+                    ChatMessage.role == 'user',
                     ChatMessage.created_at >= window_start,
                     ChatMessage.created_at <= window_end,
                 )
@@ -272,9 +277,9 @@ class PromptInsightsPipeline:
         try:
             from open_webui.utils.task import prompt_template  # noqa: PLC0415 - unused but keep import pattern
 
-            models = getattr(getattr(self._app, "state", None), "MODELS", {})
+            models = getattr(getattr(self._app, 'state', None), 'MODELS', {})
             if not models:
-                raise RuntimeError("no models available")
+                raise RuntimeError('no models available')
 
             # Pick first available model
             model_id = next(iter(models))
@@ -284,16 +289,16 @@ class PromptInsightsPipeline:
             response = await generate_completion(
                 self._app,
                 model_id=model_id,
-                messages=[{"role": "user", "content": prompt}],
+                messages=[{'role': 'user', 'content': prompt}],
             )
-            label = (response or "").strip()
+            label = (response or '').strip()
             if label:
                 return label
         except Exception:
             pass
 
         # Fallback: join first 3 keywords
-        return " ".join(keywords[:3]) if keywords else "cluster"
+        return ' '.join(keywords[:3]) if keywords else 'cluster'
 
 
 # ---------------------------------------------------------------------------
@@ -312,16 +317,16 @@ def _extract_text(content: object) -> str:
     if isinstance(content, list):
         parts: list[str] = []
         for block in content:
-            if isinstance(block, dict) and block.get("type") == "text":
-                parts.append(str(block.get("text", "")))
+            if isinstance(block, dict) and block.get('type') == 'text':
+                parts.append(str(block.get('text', '')))
             elif isinstance(block, str):
                 parts.append(block)
-        return " ".join(parts)
-    return str(content) if content is not None else ""
+        return ' '.join(parts)
+    return str(content) if content is not None else ''
 
 
 def _time_bucket(window_start: int) -> str:
     """Return a YYYY-MM-DD bucket string for trend aggregation."""
     import datetime  # noqa: PLC0415
 
-    return datetime.datetime.utcfromtimestamp(window_start).strftime("%Y-%m-%d")
+    return datetime.datetime.utcfromtimestamp(window_start).strftime('%Y-%m-%d')

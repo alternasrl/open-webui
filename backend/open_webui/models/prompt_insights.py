@@ -56,9 +56,7 @@ class PromptCluster(Base):
     cluster_size = Column(BigInteger, nullable=False, default=0)
     created_at = Column(BigInteger, nullable=False, default=lambda: int(time.time()))
 
-    __table_args__ = (
-        UniqueConstraint('run_id', 'canonical_label_hash', name='uq_prompt_cluster_run_hash'),
-    )
+    __table_args__ = (UniqueConstraint('run_id', 'canonical_label_hash', name='uq_prompt_cluster_run_hash'),)
 
 
 class PromptClusterTrend(Base):
@@ -71,11 +69,7 @@ class PromptClusterTrend(Base):
     run_id = Column(Text, ForeignKey('prompt_insights_run.id'), nullable=False, index=True)
     created_at = Column(BigInteger, nullable=False, default=lambda: int(time.time()))
 
-    __table_args__ = (
-        UniqueConstraint(
-            'canonical_label_hash', 'bucket', name='uq_prompt_cluster_trend_label_bucket'
-        ),
-    )
+    __table_args__ = (UniqueConstraint('canonical_label_hash', 'bucket', name='uq_prompt_cluster_trend_label_bucket'),)
 
 
 # Reserved for a future iteration: per-model breakdown of clusters.
@@ -91,7 +85,9 @@ class PromptClusterModel(Base):
     created_at = Column(BigInteger, nullable=False, default=lambda: int(time.time()))
 
     __table_args__ = (
-        UniqueConstraint('cluster_id', 'model_id', 'requested_model_key', name='uq_prompt_cluster_model_cluster_model_key'),
+        UniqueConstraint(
+            'cluster_id', 'model_id', 'requested_model_key', name='uq_prompt_cluster_model_cluster_model_key'
+        ),
     )
 
 
@@ -230,15 +226,14 @@ class PromptInsightsRunsTable:
     async def list_runs(self, limit: int = 20, db: Optional[AsyncSession] = None) -> list[PromptInsightsRunModel]:
         async with get_async_db_context(db) as session:
             result = await session.execute(
-                select(PromptInsightsRun)
-                .order_by(PromptInsightsRun.created_at.desc())
-                .limit(limit)
+                select(PromptInsightsRun).order_by(PromptInsightsRun.created_at.desc()).limit(limit)
             )
             runs = result.scalars().all()
             return [PromptInsightsRunModel.model_validate(r) for r in runs]
 
     async def count_runs(self, db: Optional[AsyncSession] = None) -> int:
         from sqlalchemy import func  # noqa: PLC0415
+
         async with get_async_db_context(db) as session:
             result = await session.execute(select(func.count()).select_from(PromptInsightsRun))
             return result.scalar_one() or 0
@@ -254,15 +249,19 @@ class PromptInsightsTableStore:
         db: Optional[AsyncSession] = None,
     ) -> None:
         async with get_async_db_context(db) as session:
-            stmt = sqlite_insert(PromptClusterTrend).values(
-                run_id=run_id,
-                canonical_label_hash=canonical_label_hash,
-                bucket=bucket,
-                count=count,
-                created_at=int(time.time()),
-            ).on_conflict_do_update(
-                index_elements=['canonical_label_hash', 'bucket'],
-                set_=dict(count=PromptClusterTrend.count + count),
+            stmt = (
+                sqlite_insert(PromptClusterTrend)
+                .values(
+                    run_id=run_id,
+                    canonical_label_hash=canonical_label_hash,
+                    bucket=bucket,
+                    count=count,
+                    created_at=int(time.time()),
+                )
+                .on_conflict_do_update(
+                    index_elements=['canonical_label_hash', 'bucket'],
+                    set_=dict(count=PromptClusterTrend.count + count),
+                )
             )
             await session.execute(stmt)
             await session.commit()
@@ -270,7 +269,9 @@ class PromptInsightsTableStore:
     async def get_summary(self, run_id: str, db: Optional[AsyncSession] = None) -> dict:
         async with get_async_db_context(db) as session:
             result = await session.execute(
-                select(PromptClusterTrend).filter(PromptClusterTrend.run_id == run_id).order_by(PromptClusterTrend.bucket.asc())
+                select(PromptClusterTrend)
+                .filter(PromptClusterTrend.run_id == run_id)
+                .order_by(PromptClusterTrend.bucket.asc())
             )
             trends = result.scalars().all()
             return {
@@ -284,9 +285,7 @@ class PromptInsightsTableStore:
     ) -> list[PromptClusterModelRow]:
         async with get_async_db_context(db) as session:
             result = await session.execute(
-                select(PromptCluster)
-                .filter(PromptCluster.run_id == run_id)
-                .order_by(PromptCluster.cluster_size.desc())
+                select(PromptCluster).filter(PromptCluster.run_id == run_id).order_by(PromptCluster.cluster_size.desc())
             )
             clusters = result.scalars().all()
             return [PromptClusterModelRow.model_validate(c) for c in clusters]
@@ -295,9 +294,7 @@ class PromptInsightsTableStore:
         self, cluster_id: str, db: Optional[AsyncSession] = None
     ) -> tuple[Optional[PromptClusterModelRow], list[PromptClusterTrendModel]]:
         async with get_async_db_context(db) as session:
-            cluster_result = await session.execute(
-                select(PromptCluster).filter(PromptCluster.id == cluster_id)
-            )
+            cluster_result = await session.execute(select(PromptCluster).filter(PromptCluster.id == cluster_id))
             cluster = cluster_result.scalar_one_or_none()
             if not cluster:
                 return None, []
@@ -323,9 +320,7 @@ class PromptInsightsTableStore:
         from collections import defaultdict  # noqa: PLC0415
 
         async with get_async_db_context(db) as session:
-            trend_result = await session.execute(
-                select(PromptClusterTrend).order_by(PromptClusterTrend.bucket.desc())
-            )
+            trend_result = await session.execute(select(PromptClusterTrend).order_by(PromptClusterTrend.bucket.desc()))
             all_trends = trend_result.scalars().all()
 
             # Group by canonical_label_hash
@@ -343,12 +338,14 @@ class PromptInsightsTableStore:
                 growth_ratio = recent_count / prior_count if prior_count > 0 else float('inf')
 
                 if recent_count >= min_volume and growth_ratio >= min_growth_ratio:
-                    candidates.append({
-                        'canonical_label_hash': label_hash,
-                        'recent_count': recent_count,
-                        'total_count': total_count,
-                        'growth_ratio': growth_ratio,
-                    })
+                    candidates.append(
+                        {
+                            'canonical_label_hash': label_hash,
+                            'recent_count': recent_count,
+                            'total_count': total_count,
+                            'growth_ratio': growth_ratio,
+                        }
+                    )
 
             # Sort by growth ratio desc, then look up labels
             candidates.sort(key=lambda x: -x['growth_ratio'])
@@ -364,10 +361,12 @@ class PromptInsightsTableStore:
                     .limit(1)
                 )
                 cluster = label_result.scalar_one_or_none()
-                results.append({
-                    **item,
-                    'canonical_label': cluster.canonical_label if cluster else item['canonical_label_hash'],
-                })
+                results.append(
+                    {
+                        **item,
+                        'canonical_label': cluster.canonical_label if cluster else item['canonical_label_hash'],
+                    }
+                )
             return results
 
 

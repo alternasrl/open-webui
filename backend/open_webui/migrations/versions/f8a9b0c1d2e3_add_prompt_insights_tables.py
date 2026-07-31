@@ -68,7 +68,9 @@ def upgrade() -> None:
             sa.ForeignKeyConstraint(['run_id'], ['prompt_insights_run.id']),
             sa.UniqueConstraint('canonical_label_hash', 'bucket', name='uq_prompt_cluster_trend_label_bucket'),
         )
-        op.create_index('idx_prompt_cluster_trend_canonical_label_hash', 'prompt_cluster_trend', ['canonical_label_hash'])
+        op.create_index(
+            'idx_prompt_cluster_trend_canonical_label_hash', 'prompt_cluster_trend', ['canonical_label_hash']
+        )
         op.create_index('idx_prompt_cluster_trend_run_id', 'prompt_cluster_trend', ['run_id'])
 
     if 'prompt_cluster_model' not in existing_tables:
@@ -81,7 +83,9 @@ def upgrade() -> None:
             sa.Column('created_at', sa.BigInteger(), nullable=False),
             sa.PrimaryKeyConstraint('id'),
             sa.ForeignKeyConstraint(['cluster_id'], ['prompt_cluster.id']),
-            sa.UniqueConstraint('cluster_id', 'model_id', 'requested_model_key', name='uq_prompt_cluster_model_cluster_model_key'),
+            sa.UniqueConstraint(
+                'cluster_id', 'model_id', 'requested_model_key', name='uq_prompt_cluster_model_cluster_model_key'
+            ),
         )
         op.create_index('idx_prompt_cluster_model_cluster_id', 'prompt_cluster_model', ['cluster_id'])
         op.create_index('idx_prompt_cluster_model_model_id', 'prompt_cluster_model', ['model_id'])

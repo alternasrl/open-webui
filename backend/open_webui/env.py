@@ -512,7 +512,6 @@ else:
 
 import ssl as _ssl
 
-
 # Dedicated env var for a custom CA bundle file path.  When set, this is
 # used as the default CA bundle for all outbound HTTPS connections that
 # have SSL verification enabled (i.e. when their per-connection SSL env

@@ -5,6 +5,7 @@ Tests use AST inspection (no DB, no full app import, no env requirements) to ver
 - Each route function has a `user=Depends(get_admin_user)` parameter
 - Pure-logic helpers (emerging-topic growth ratio calculation) behave correctly
 """
+
 import ast
 import sys
 from pathlib import Path
@@ -95,6 +96,7 @@ def test_all_prompt_insights_routes_have_admin_dep():
 # Emerging-topic growth logic (pure-Python, no DB)
 # ---------------------------------------------------------------------------
 
+
 def _compute_growth_ratio(trend_rows: list[dict], min_volume: int, min_growth_ratio: float):
     """
     Mirrors the logic in PromptInsightsTableStore.get_emerging_topics.
@@ -117,12 +119,14 @@ def _compute_growth_ratio(trend_rows: list[dict], min_volume: int, min_growth_ra
         growth_ratio = recent_count / prior_count if prior_count > 0 else float('inf')
 
         if recent_count >= min_volume and growth_ratio >= min_growth_ratio:
-            results.append({
-                'canonical_label_hash': label_hash,
-                'recent_count': recent_count,
-                'total_count': total_count,
-                'growth_ratio': growth_ratio,
-            })
+            results.append(
+                {
+                    'canonical_label_hash': label_hash,
+                    'recent_count': recent_count,
+                    'total_count': total_count,
+                    'growth_ratio': growth_ratio,
+                }
+            )
 
     return sorted(results, key=lambda x: -x['growth_ratio'])
 

@@ -13,15 +13,14 @@ from typing import Literal
 from uuid import uuid4
 
 from fastapi import Request
-from sqlalchemy import select
-from starlette.datastructures import Headers
-
 from open_webui.internal.db import get_async_db
 from open_webui.models.chat_messages import ChatMessages
 from open_webui.models.chats import Chat, ChatForm, Chats
 from open_webui.models.users import UserModel, Users
 from open_webui.tasks import has_active_tasks
 from open_webui.utils.misc import get_message_list
+from sqlalchemy import select
+from starlette.datastructures import Headers
 
 log = logging.getLogger(__name__)
 

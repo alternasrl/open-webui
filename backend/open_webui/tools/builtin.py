@@ -6,8 +6,6 @@ These tools are automatically available when native function calling is enabled.
 IMPORTANT: DO NOT IMPORT THIS MODULE DIRECTLY IN OTHER PARTS OF THE CODEBASE.
 """
 
-from open_webui.tools.knowledge_fs import kb_exec  # noqa: F401 — re-exported
-
 import asyncio
 import json
 import logging
@@ -22,6 +20,7 @@ from open_webui.env import (
     VIEW_FILE_DEFAULT_MAX_CHARS,
     VIEW_FILE_MAX_CHARS,
 )
+from open_webui.events import EVENTS, publish_event
 from open_webui.models.channels import Channel, ChannelMember, Channels
 from open_webui.models.chats import Chats
 from open_webui.models.config import Config
@@ -45,19 +44,27 @@ from open_webui.routers.memories import (
     ReadMemoryPathForm,
     SearchMemoriesForm,
     UpdateMemoriesForm,
-    list_memory_paths as _list_memory_paths,
-    read_memory_path as _read_memory_path,
-    search_memories as _search_memories,
-    update_memories as _update_memories,
     update_memory_by_id,
 )
 from open_webui.routers.memories import (
     add_memory as _add_memory,
 )
+from open_webui.routers.memories import (
+    list_memory_paths as _list_memory_paths,
+)
+from open_webui.routers.memories import (
+    read_memory_path as _read_memory_path,
+)
+from open_webui.routers.memories import (
+    search_memories as _search_memories,
+)
+from open_webui.routers.memories import (
+    update_memories as _update_memories,
+)
 from open_webui.routers.retrieval import search_web as _search_web
-from open_webui.tasks import stop_item_tasks
-from open_webui.events import EVENTS, publish_event
 from open_webui.socket.main import sio
+from open_webui.tasks import stop_item_tasks
+from open_webui.tools.knowledge_fs import kb_exec  # noqa: F401 — re-exported
 from open_webui.utils.chat_id import is_saved_chat_id
 from open_webui.utils.notifications import notify_target
 from open_webui.utils.sanitize import sanitize_code

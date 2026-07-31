@@ -18,12 +18,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 log = logging.getLogger(__name__)
 
-_EMBEDDING_MODEL = "text-embedding-3-small"
+_EMBEDDING_MODEL = 'text-embedding-3-small'
 _CACHE_TTL_SECONDS = 7 * 24 * 60 * 60  # 7 days
 
 
 def _text_hash(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return hashlib.sha256(text.encode('utf-8')).hexdigest()
 
 
 class PromptInsightsEmbedder:
@@ -55,9 +55,9 @@ class PromptInsightsEmbedder:
             except Exception:
                 pass
 
-        self._base_url: str = (base_url or "").rstrip("/")
-        self._api_key: str = api_key or ""
-        self._api_version: str = api_version or ""
+        self._base_url: str = (base_url or '').rstrip('/')
+        self._api_key: str = api_key or ''
+        self._api_version: str = api_version or ''
         self._model: str = model
 
     async def embed_texts(
@@ -81,13 +81,17 @@ class PromptInsightsEmbedder:
 
         # -- Load cached embeddings --
         cached_rows = (
-            await db.execute(
-                select(PromptEmbeddingCache).where(
-                    PromptEmbeddingCache.text_hash.in_(hashes),
-                    PromptEmbeddingCache.expires_at > now,
+            (
+                await db.execute(
+                    select(PromptEmbeddingCache).where(
+                        PromptEmbeddingCache.text_hash.in_(hashes),
+                        PromptEmbeddingCache.expires_at > now,
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
 
         cache: dict[str, list[float]] = {}
         for row in cached_rows:
@@ -118,24 +122,21 @@ class PromptInsightsEmbedder:
         """Call Azure OpenAI embeddings endpoint and return vectors."""
         import aiohttp  # noqa: PLC0415
 
-        url = (
-            f"{self._base_url}/openai/deployments/{self._model}"
-            f"/embeddings?api-version={self._api_version}"
-        )
+        url = f'{self._base_url}/openai/deployments/{self._model}/embeddings?api-version={self._api_version}'
         headers = {
-            "Content-Type": "application/json",
-            "api-key": self._api_key,
+            'Content-Type': 'application/json',
+            'api-key': self._api_key,
         }
-        payload = {"input": texts}
+        payload = {'input': texts}
 
         async with aiohttp.ClientSession() as session:
             async with session.post(url, headers=headers, json=payload) as resp:
                 resp.raise_for_status()
                 data = await resp.json()
 
-        if "data" not in data:
-            raise ValueError(f"Unexpected Azure OpenAI embeddings response: {list(data.keys())}")
+        if 'data' not in data:
+            raise ValueError(f'Unexpected Azure OpenAI embeddings response: {list(data.keys())}')
 
         # Azure returns items in the same order as input
-        items = sorted(data["data"], key=lambda x: x.get("index", 0))
-        return [item["embedding"] for item in items]
+        items = sorted(data['data'], key=lambda x: x.get('index', 0))
+        return [item['embedding'] for item in items]

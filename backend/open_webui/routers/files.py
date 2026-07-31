@@ -28,8 +28,8 @@ from open_webui.events import EVENTS, publish_event
 from open_webui.internal.db import get_async_db_context, get_async_session
 from open_webui.models.access_grants import AccessGrants
 from open_webui.models.channels import Channels
-from open_webui.models.config import Config
 from open_webui.models.chats import Chats
+from open_webui.models.config import Config
 from open_webui.models.files import (
     FileForm,
     FileListResponse,
