@@ -11,16 +11,33 @@ function getModelUsageBlock() {
 	return source.split('<!-- Model Usage Table -->')[1].split('<!-- User Activity Table -->')[0];
 }
 
-describe('Analytics dashboard Model Usage layout', () => {
-	it('keeps one Model Usage table block with one header and one body', () => {
-		const block = getModelUsageBlock();
+function getModelUsageHeader() {
+	return getModelUsageBlock().split('<thead')[1].split('</thead>')[0];
+}
 
-		expect((block.match(/<thead/g) ?? []).length).toBe(1);
-		expect((block.match(/<tbody/g) ?? []).length).toBe(1);
+function getModelUsageBody() {
+	return getModelUsageBlock().split('<tbody>')[1].split('</tbody>')[0];
+}
+
+describe('Analytics dashboard Model Usage layout', () => {
+	it('keeps header and body column counts aligned', () => {
+		const header = getModelUsageHeader();
+		const body = getModelUsageBody();
+		const headerColumns = (header.match(/<th\b/g) ?? []).length;
+		const rows = body.match(/<tr[\s\S]*?<\/tr>/g) ?? [];
+
+		expect((getModelUsageBlock().match(/<thead/g) ?? []).length).toBe(1);
+		expect((getModelUsageBlock().match(/<tbody/g) ?? []).length).toBe(1);
+		expect(headerColumns).toBeGreaterThan(0);
+		expect(rows).not.toHaveLength(0);
+		for (const row of rows) {
+			expect((row.match(/<td\b/g) ?? []).length).toBe(headerColumns);
+		}
 	});
 
-	it('keeps one copy of each GIADA metric column in the Model Usage header', () => {
+	it('keeps one copy of each GIADA metric cell in model rows', () => {
 		const block = getModelUsageBlock();
+		const rows = block.match(/<tbody>[\s\S]*?<\/tbody>/)?.[0].match(/<tr[\s\S]*?<\/tr>/g) ?? [];
 
 		expect((block.match(/toggleModelSort\('ttft'\)/g) ?? []).length).toBe(1);
 		expect((block.match(/toggleModelSort\('tps'\)/g) ?? []).length).toBe(1);
@@ -28,11 +45,9 @@ describe('Analytics dashboard Model Usage layout', () => {
 		expect((block.match(/\$i18n\.t\('TTFT'\)/g) ?? []).length).toBe(1);
 		expect((block.match(/\$i18n\.t\('Tok\/s'\)/g) ?? []).length).toBe(1);
 		expect((block.match(/\$i18n\.t\('Err%'\)/g) ?? []).length).toBe(1);
-	});
-
-	it('keeps the existing drill-down affordance on model rows', () => {
-		const block = getModelUsageBlock();
-
+		expect(rows[0].match(/avg_ttft_ms/g)?.length).toBe(1);
+		expect(rows[0].match(/avg_tokens_per_second/g)?.length).toBe(1);
+		expect(rows[0].match(/error_rate/g)?.length).toBe(1);
 		expect(block).toContain("selectedModel = { id: model.model_id, name: model.name ?? model.model_id }");
 		expect(block).toContain('reloadUserTable();');
 	});
