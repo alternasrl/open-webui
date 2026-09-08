@@ -1282,6 +1282,13 @@ class OAuthClientManager:
                         token=token,
                     )
                     log.info('Stored OAuth session server-side for user %s, client_id %s', user_id, client_id)
+                    # Invalidate access-log cache so subsequent requests pick up OIDC claims
+                    try:
+                        from open_webui.middleware.access_log import invalidate_user_cache
+
+                        invalidate_user_cache(user_id)
+                    except Exception:
+                        pass
                 except Exception as e:
                     error_message = 'Failed to store OAuth session server-side'
                     log.error(f'Failed to store OAuth session server-side: {e}')
@@ -1897,6 +1904,12 @@ class OAuthManager:
                 )
                 raise HTTPException(400, detail=ERROR_MESSAGES.INVALID_CRED)
 
+            # Store the raw id_token in request.state so the AccessLogMiddleware can
+            # log OIDC claims (sub, amr/acr) even when the login fails later
+            # (e.g. domain restriction, role mismatch, signup disabled).
+            if token.get('id_token'):
+                request.state.oidc_raw_id_token = token['id_token']
+
             # Try to get userinfo from the token first, some providers include it there
             user_data: UserInfo = token.get('userinfo')
             # Preserve extra claims from the ID token (e.g. roles, groups for
@@ -2230,6 +2243,13 @@ class OAuthManager:
                 )
 
                 log.info('Stored OAuth session server-side for user %s, provider %s', user.id, provider)
+                # Invalidate access-log cache so subsequent requests pick up OIDC claims
+                try:
+                    from open_webui.middleware.access_log import invalidate_user_cache
+
+                    invalidate_user_cache(user.id)
+                except Exception:
+                    pass
             else:
                 log.warning(f'Failed to create OAuth session for user {user.id}, provider {provider}')
         except Exception as e:

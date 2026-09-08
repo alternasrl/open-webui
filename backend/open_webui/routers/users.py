@@ -11,15 +11,19 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from open_webui.constants import ERROR_MESSAGES
-from open_webui.events import EVENTS, publish_event
 from open_webui.env import ENABLE_PROFILE_IMAGE_URL_FORWARDING, PROFILE_IMAGE_ALLOWED_MIME_TYPES, STATIC_DIR
+from open_webui.events import EVENTS, publish_event
 from open_webui.internal.db import get_async_session
+from open_webui.models.access_grants import AccessGrants
 from open_webui.models.auths import Auths
-from open_webui.models.config import Config
 from open_webui.models.chat_messages import ChatMessages
 from open_webui.models.chats import Chats
+from open_webui.models.config import Config
 from open_webui.models.groups import Groups
+from open_webui.models.knowledge import Knowledges
+from open_webui.models.models import Models
 from open_webui.models.oauth_sessions import OAuthSessions
+from open_webui.models.tools import Tools
 from open_webui.models.users import (
     UserGroupIdsListResponse,
     UserGroupIdsModel,
@@ -32,10 +36,7 @@ from open_webui.models.users import (
     UserStatus,
     UserUpdateForm,
 )
-from open_webui.models.access_grants import AccessGrants
-from open_webui.models.knowledge import Knowledges
-from open_webui.models.models import Models
-from open_webui.models.tools import Tools
+from open_webui.socket.main import disconnect_user_sessions
 from open_webui.utils.access_control import get_permissions, has_permission
 from open_webui.utils.auth import (
     get_admin_user,
@@ -1005,6 +1006,7 @@ async def update_user_by_id(
                 )
 
             if role_changed:
+                await disconnect_user_sessions(user_id)
                 await publish_event(
                     request,
                     EVENTS.USER_ROLE_UPDATED,
@@ -1065,6 +1067,7 @@ async def delete_user_by_id(
         result = await Auths.delete_auth_by_id(user_id, db=db)
 
         if result:
+            await disconnect_user_sessions(user_id)
             await publish_event(
                 request,
                 EVENTS.USER_DELETED,
