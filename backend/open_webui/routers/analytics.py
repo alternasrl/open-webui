@@ -1,14 +1,20 @@
 import logging
+import time
 from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, Request
 from open_webui.internal.db import get_async_session
 from open_webui.models.chat_messages import ChatMessageModel, ChatMessages
 from open_webui.models.chats import Chats
 from open_webui.models.feedbacks import Feedbacks
 from open_webui.models.groups import Groups
+from open_webui.models.prompt_insights import (
+    PromptInsightsRunModel,
+    PromptInsightsRuns,
+    PromptInsightsTable,
+)
 from open_webui.models.users import Users
 from open_webui.utils.auth import get_admin_user
 from pydantic import BaseModel
@@ -30,6 +36,11 @@ class ModelAnalyticsEntry(BaseModel):
     count: int
     unique_users: int = 0
     unique_chats: int = 0
+    avg_ttft_ms: Optional[float] = None
+    avg_tokens_per_second: Optional[float] = None
+    error_requests: int = 0
+    total_requests: int = 0
+    error_rate: float = 0.0
 
 
 class ModelAnalyticsResponse(BaseModel):
@@ -60,12 +71,16 @@ async def get_model_analytics(
     start_date: Optional[int] = Query(None, description='Start timestamp (epoch)'),
     end_date: Optional[int] = Query(None, description='End timestamp (epoch)'),
     group_id: Optional[str] = Query(None, description='Filter by user group ID'),
+    user_id: Optional[str] = Query(None, description='Filter by user ID'),
     user=Depends(get_admin_user),
     db: AsyncSession = Depends(get_async_session),
 ):
     """Get message counts per model."""
     counts = await ChatMessages.get_message_count_by_model(
-        start_date=start_date, end_date=end_date, group_id=group_id, db=db
+        start_date=start_date, end_date=end_date, group_id=group_id, user_id=user_id, db=db
+    )
+    perf = await ChatMessages.get_performance_metrics_by_model(
+        start_date=start_date, end_date=end_date, group_id=group_id, user_id=user_id, db=db
     )
     unique_counts = await ChatMessages.get_unique_counts_by_model(
         start_date=start_date, end_date=end_date, group_id=group_id, db=db
@@ -76,6 +91,7 @@ async def get_model_analytics(
             count=count,
             unique_users=unique_counts.get(model_id, {}).get('unique_users', 0),
             unique_chats=unique_counts.get(model_id, {}).get('unique_chats', 0),
+            **perf.get(model_id, {}),
         )
         for model_id, count in sorted(counts.items(), key=lambda x: -x[1])
     ]
@@ -87,16 +103,17 @@ async def get_user_analytics(
     start_date: Optional[int] = Query(None, description='Start timestamp (epoch)'),
     end_date: Optional[int] = Query(None, description='End timestamp (epoch)'),
     group_id: Optional[str] = Query(None, description='Filter by user group ID'),
+    model_id: Optional[str] = Query(None, description='Filter by model ID'),
     limit: int = Query(50, description='Max users to return'),
     user=Depends(get_admin_user),
     db: AsyncSession = Depends(get_async_session),
 ):
     """Get message counts and token usage per user with user info."""
     counts = await ChatMessages.get_message_count_by_user(
-        start_date=start_date, end_date=end_date, group_id=group_id, db=db
+        start_date=start_date, end_date=end_date, group_id=group_id, model_id=model_id, db=db
     )
     token_usage = await ChatMessages.get_token_usage_by_user(
-        start_date=start_date, end_date=end_date, group_id=group_id, db=db
+        start_date=start_date, end_date=end_date, group_id=group_id, model_id=model_id, db=db
     )
 
     # Get user info for top users
@@ -158,6 +175,11 @@ class SummaryResponse(BaseModel):
     total_chats: int
     total_models: int
     total_users: int
+    avg_ttft_ms: Optional[float] = None
+    avg_tokens_per_second: Optional[float] = None
+    error_requests: int = 0
+    total_requests: int = 0
+    error_rate: float = 0.0
 
 
 @router.get('/summary', response_model=SummaryResponse)
@@ -178,12 +200,16 @@ async def get_summary(
     chat_counts = await ChatMessages.get_message_count_by_chat(
         start_date=start_date, end_date=end_date, group_id=group_id, db=db
     )
+    performance = await ChatMessages.get_performance_metrics(
+        start_date=start_date, end_date=end_date, group_id=group_id, db=db
+    )
 
     return SummaryResponse(
         total_messages=sum(model_counts.values()),
         total_chats=len(chat_counts),
         total_models=len(model_counts),
         total_users=len(user_counts),
+        **performance,
     )
 
 
@@ -225,6 +251,82 @@ class TokenUsageEntry(BaseModel):
     message_count: int
 
 
+class RoutingSummaryEntry(BaseModel):
+    requested_model_id: str
+    selected_model_id: str
+    count: int
+    percentage: float
+
+
+class RoutingEventEntry(BaseModel):
+    message_id: str
+    chat_id: str
+    user_id: Optional[str] = None
+    created_at: int
+    requested_model_id: str
+    selected_model_id: str
+
+
+@router.get('/routing/summary', response_model=list[RoutingSummaryEntry])
+async def get_routing_summary(
+    start_date: Optional[int] = Query(None, description='Start timestamp (epoch)'),
+    end_date: Optional[int] = Query(None, description='End timestamp (epoch)'),
+    group_id: Optional[str] = Query(None, description='Filter by user group ID'),
+    user_id: Optional[str] = Query(None, description='Filter by user ID'),
+    model_selected: Optional[str] = Query(None, description='Filter by selected model ID'),
+    model_requested: Optional[str] = Query(None, description='Filter by requested model ID'),
+    model_mode: str = Query(
+        'or',
+        description="Model filter mode: 'or', 'and', 'selected', or 'requested'",
+    ),
+    user=Depends(get_admin_user),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Get routing pair summary (requested -> selected) with count and percentage."""
+    return await ChatMessages.get_routing_summary(
+        start_date=start_date,
+        end_date=end_date,
+        group_id=group_id,
+        user_id=user_id,
+        model_selected=model_selected,
+        model_requested=model_requested,
+        model_mode=model_mode,
+        db=db,
+    )
+
+
+@router.get('/routing/events', response_model=list[RoutingEventEntry])
+async def get_routing_events(
+    start_date: Optional[int] = Query(None, description='Start timestamp (epoch)'),
+    end_date: Optional[int] = Query(None, description='End timestamp (epoch)'),
+    group_id: Optional[str] = Query(None, description='Filter by user group ID'),
+    user_id: Optional[str] = Query(None, description='Filter by user ID'),
+    model_selected: Optional[str] = Query(None, description='Filter by selected model ID'),
+    model_requested: Optional[str] = Query(None, description='Filter by requested model ID'),
+    model_mode: str = Query(
+        'or',
+        description="Model filter mode: 'or', 'and', 'selected', or 'requested'",
+    ),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=1000),
+    user=Depends(get_admin_user),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Get routing events sourced from assistant message usage metadata."""
+    return await ChatMessages.get_routing_events(
+        start_date=start_date,
+        end_date=end_date,
+        group_id=group_id,
+        user_id=user_id,
+        model_selected=model_selected,
+        model_requested=model_requested,
+        model_mode=model_mode,
+        skip=skip,
+        limit=limit,
+        db=db,
+    )
+
+
 class TokenUsageResponse(BaseModel):
     models: list[TokenUsageEntry]
     total_input_tokens: int
@@ -237,12 +339,14 @@ async def get_token_usage(
     start_date: Optional[int] = Query(None),
     end_date: Optional[int] = Query(None),
     group_id: Optional[str] = Query(None, description='Filter by user group ID'),
+    user_id: Optional[str] = Query(None, description='Filter by user ID'),
+    model_id: Optional[str] = Query(None, description='Filter by model ID'),
     user=Depends(get_admin_user),
     db: AsyncSession = Depends(get_async_session),
 ):
     """Get token usage aggregated by model."""
     usage = await ChatMessages.get_token_usage_by_model(
-        start_date=start_date, end_date=end_date, group_id=group_id, db=db
+        start_date=start_date, end_date=end_date, group_id=group_id, user_id=user_id, model_id=model_id, db=db
     )
 
     models = [
@@ -419,3 +523,189 @@ async def get_model_overview(
     tags = [TagEntry(tag=tag, count=count) for tag, count in sorted(tag_counts.items(), key=lambda x: -x[1])[:10]]
 
     return ModelOverviewResponse(history=history, tags=tags)
+
+
+####################
+# Prompt Insights
+####################
+
+
+class PromptInsightsSummaryResponse(BaseModel):
+    latest_run: Optional[PromptInsightsRunModel] = None
+    active_run: Optional[PromptInsightsRunModel] = None
+    total_runs: int = 0
+
+
+class PromptClusterEntry(BaseModel):
+    id: str
+    run_id: str
+    canonical_label: str
+    canonical_label_hash: str
+    cluster_size: int
+    created_at: int
+
+
+class PromptInsightsClustersResponse(BaseModel):
+    run_id: str
+    clusters: list[PromptClusterEntry]
+
+
+class TrendPoint(BaseModel):
+    bucket: str
+    count: int
+
+
+class PromptClusterTrendResponse(BaseModel):
+    cluster_id: str
+    canonical_label: str
+    canonical_label_hash: str
+    trend: list[TrendPoint]
+
+
+class EmergingTopicEntry(BaseModel):
+    canonical_label: str
+    canonical_label_hash: str
+    recent_count: int
+    total_count: int
+    growth_ratio: float
+
+
+class EmergingTopicsResponse(BaseModel):
+    topics: list[EmergingTopicEntry]
+
+
+class PromptInsightsRunTriggerResponse(BaseModel):
+    status: str
+    reason: Optional[str] = None
+    run_id: Optional[str] = None
+
+
+class PromptInsightsRunsResponse(BaseModel):
+    runs: list[PromptInsightsRunModel]
+
+
+@router.get('/prompt-insights/summary', response_model=PromptInsightsSummaryResponse)
+async def get_prompt_insights_summary(
+    user=Depends(get_admin_user),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Get summary of the latest prompt insights run and any active run."""
+    latest, active, total = await _gather_summary(db)
+    return PromptInsightsSummaryResponse(latest_run=latest, active_run=active, total_runs=total)
+
+
+async def _gather_summary(db: AsyncSession):
+    latest = await PromptInsightsRuns.get_latest_completed_run(db=db)
+    active = await PromptInsightsRuns.get_active_run(db=db)
+    total = await PromptInsightsRuns.count_runs(db=db)
+    return latest, active, total
+
+
+@router.get('/prompt-insights/clusters', response_model=PromptInsightsClustersResponse)
+async def get_prompt_insights_clusters(
+    run_id: Optional[str] = Query(None, description='Run ID; defaults to latest completed run'),
+    user=Depends(get_admin_user),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Get clusters for a given run (defaults to the latest completed run)."""
+    if run_id is None:
+        latest = await PromptInsightsRuns.get_latest_completed_run(db=db)
+        if latest is None:
+            return PromptInsightsClustersResponse(run_id='', clusters=[])
+        run_id = latest.id
+
+    clusters = await PromptInsightsTable.get_clusters_by_run_id(run_id=run_id, db=db)
+    return PromptInsightsClustersResponse(
+        run_id=run_id,
+        clusters=[PromptClusterEntry(**c.model_dump()) for c in clusters],
+    )
+
+
+@router.get('/prompt-insights/clusters/{cluster_id}/trend', response_model=PromptClusterTrendResponse)
+async def get_prompt_insights_cluster_trend(
+    cluster_id: str,
+    user=Depends(get_admin_user),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Get historical trend data for a single cluster."""
+    from fastapi import HTTPException  # noqa: PLC0415
+
+    cluster, trends = await PromptInsightsTable.get_trend_for_cluster(cluster_id=cluster_id, db=db)
+    if cluster is None:
+        raise HTTPException(status_code=404, detail='Cluster not found')
+
+    return PromptClusterTrendResponse(
+        cluster_id=cluster_id,
+        canonical_label=cluster.canonical_label,
+        canonical_label_hash=cluster.canonical_label_hash,
+        trend=[TrendPoint(bucket=t.bucket, count=t.count) for t in trends],
+    )
+
+
+@router.get('/prompt-insights/emerging', response_model=EmergingTopicsResponse)
+async def get_prompt_insights_emerging(
+    min_volume: int = Query(5, ge=1, description='Minimum recent count to qualify'),
+    min_growth_ratio: float = Query(1.5, ge=1.0, description='Minimum growth ratio to qualify'),
+    limit: int = Query(20, ge=1, le=100),
+    user=Depends(get_admin_user),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Get topics with the highest recent growth relative to prior activity."""
+    topics = await PromptInsightsTable.get_emerging_topics(
+        min_volume=min_volume,
+        min_growth_ratio=min_growth_ratio,
+        limit=limit,
+        db=db,
+    )
+    return EmergingTopicsResponse(
+        topics=[
+            EmergingTopicEntry(
+                canonical_label=t['canonical_label'],
+                canonical_label_hash=t['canonical_label_hash'],
+                recent_count=t['recent_count'],
+                total_count=t['total_count'],
+                growth_ratio=t['growth_ratio'] if t['growth_ratio'] != float('inf') else 999999.0,
+            )
+            for t in topics
+        ]
+    )
+
+
+@router.post('/prompt-insights/run', response_model=PromptInsightsRunTriggerResponse)
+async def trigger_prompt_insights_run(
+    background_tasks: BackgroundTasks,
+    request: Request,
+    user=Depends(get_admin_user),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Manually trigger a prompt insights run. No-op if a run is already in progress."""
+    active = await PromptInsightsRuns.get_active_run(db=db)
+    if active is not None:
+        return PromptInsightsRunTriggerResponse(status='skipped', reason='run_in_progress', run_id=active.id)
+
+    window_end = int(time.time())
+    from open_webui.prompt_insights.pipeline import _resolve_window_start  # noqa: PLC0415
+
+    window_start = await _resolve_window_start(interval_hours=24, last_ns=None)
+
+    async def _run_pipeline():
+        from open_webui.prompt_insights.pipeline import PromptInsightsPipeline  # noqa: PLC0415
+
+        try:
+            await PromptInsightsPipeline(request.app).run(window_start, window_end)
+        except Exception:
+            log.exception('Manual prompt insights run failed')
+
+    background_tasks.add_task(_run_pipeline)
+    return PromptInsightsRunTriggerResponse(status='started')
+
+
+@router.get('/prompt-insights/runs', response_model=PromptInsightsRunsResponse)
+async def get_prompt_insights_runs(
+    limit: int = Query(20, ge=1, le=100, description='Max runs to return'),
+    user=Depends(get_admin_user),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """List past prompt insights runs, newest first."""
+    runs = await PromptInsightsRuns.list_runs(limit=limit, db=db)
+    return PromptInsightsRunsResponse(runs=runs)

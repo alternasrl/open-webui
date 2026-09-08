@@ -1,0 +1,40 @@
+From 2263835ee86f0ff21421846ca82de8ae22783cc5 Mon Sep 17 00:00:00 2001
+From: Fabio Paracchini <fparacchini@alteanet.it>
+Date: Tue, 30 Jun 2026 22:32:32 +0200
+Subject: [PATCH 09/10] fix(analytics): add merge_routing_usage helper for
+ routing metadata
+
+Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>
+---
+ backend/open_webui/utils/middleware.py | 18 ++++++++++++++++++
+ 1 file changed, 18 insertions(+)
+
+diff --git a/backend/open_webui/utils/middleware.py b/backend/open_webui/utils/middleware.py
+index fc8802a68..e1cae6cbc 100644
+--- a/backend/open_webui/utils/middleware.py
++++ b/backend/open_webui/utils/middleware.py
+@@ -157,6 +157,24 @@ def output_id(prefix: str) -> str:
+     return f'{prefix}_{uuid4().hex[:24]}'
+ 
+ 
++def merge_routing_usage(usage: dict | None, metadata: dict | None) -> dict:
++    usage = usage or {}
++    routing = ((metadata or {}).get('routing') or {})
++    requested_model_id = routing.get('requested_model_id')
++    if not requested_model_id:
++        return usage
++
++    return {
++        **usage,
++        'routing': {
++            **(usage.get('routing') or {}),
++            'requested_model_id': requested_model_id,
++            'selected_model_id': routing.get('selected_model_id'),
++            'routed': routing.get('routed', True),
++        },
++    }
++
++
+ def _split_tool_calls(
+     tool_calls: list[dict],
+ ) -> list[dict]:

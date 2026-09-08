@@ -32,8 +32,8 @@ from open_webui.utils.access_control import (
 )
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.plugin import (
-    get_tools_cache,
     get_tool_module_from_cache,
+    get_tools_cache,
     load_tool_module_by_id,
     replace_imports,
     resolve_valves_schema_options,

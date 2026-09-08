@@ -86,8 +86,10 @@
 			if (res) {
 				toast.success($i18n.t('OpenAI API settings updated'));
 				await models.set(await getModels());
+				return true;
 			}
 		}
+		return false;
 	};
 
 	const updateOllamaHandler = async () => {
@@ -106,8 +108,10 @@
 			if (res) {
 				toast.success($i18n.t('Ollama API settings updated'));
 				await models.set(await getModels());
+				return true;
 			}
 		}
+		return false;
 	};
 
 	const updateConnectionsHandler = async () => {
@@ -212,10 +216,11 @@
 	});
 
 	const submitHandler = async () => {
-		updateOpenAIHandler();
-		updateOllamaHandler();
+		const [openaiOk, ollamaOk] = await Promise.all([updateOpenAIHandler(), updateOllamaHandler()]);
 
-		dispatch('save');
+		if (openaiOk || ollamaOk) {
+			dispatch('save');
+		}
 
 		await config.set(await getBackendConfig());
 	};
