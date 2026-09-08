@@ -849,3 +849,51 @@ class TestExtractObjectRefV096Additions:
         obj_type, obj_id = _extract_object_ref('/api/v1/knowledge/kb-99')
         assert obj_type == 'knowledge'
         assert obj_id == 'kb-99'
+
+
+class TestClassifyV0113Actions:
+    def test_openai_provider_model_catalog(self):
+        assert action_of('GET', '/openai/models/0/catalog') == 'MODEL_PROVIDER_CATALOG'
+        assert not is_nis2('GET', '/openai/models/0/catalog')
+
+    def test_openai_provider_model_download(self):
+        assert action_of('POST', '/openai/models/0/download') == 'MODEL_PROVIDER_DOWNLOAD'
+        assert is_nis2('POST', '/openai/models/0/download')
+
+    def test_openai_provider_model_download_status(self):
+        assert (
+            action_of('GET', '/openai/models/0/download/status/job-42')
+            == 'MODEL_PROVIDER_DOWNLOAD_STATUS'
+        )
+        assert not is_nis2('GET', '/openai/models/0/download/status/job-42')
+
+    def test_openai_provider_model_load(self):
+        assert action_of('POST', '/openai/models/0/load') == 'MODEL_PROVIDER_LOAD'
+        assert is_nis2('POST', '/openai/models/0/load')
+
+    def test_openai_provider_model_unload(self):
+        assert action_of('POST', '/openai/models/0/unload') == 'MODEL_PROVIDER_UNLOAD'
+        assert is_nis2('POST', '/openai/models/0/unload')
+
+    def test_openai_provider_model_sse(self):
+        assert action_of('GET', '/openai/models/0/sse') == 'MODEL_PROVIDER_SSE'
+        assert not is_nis2('GET', '/openai/models/0/sse')
+
+    def test_retrieval_process_url(self):
+        assert action_of('POST', '/api/v1/retrieval/process/url') == 'RETRIEVAL_PROCESS_URL'
+
+    def test_memory_reindex(self):
+        assert action_of('POST', '/api/v1/memories/reindex') == 'MEMORY_REINDEX'
+        assert is_nis2('POST', '/api/v1/memories/reindex')
+
+    def test_ollama_admin_tags_read(self):
+        assert action_of('GET', '/ollama/api/tags/0') == 'OLLAMA_COMPAT_TAGS_READ'
+        assert not is_nis2('GET', '/ollama/api/tags/0')
+
+    def test_ollama_admin_version_read(self):
+        assert action_of('GET', '/ollama/api/version/0') == 'OLLAMA_COMPAT_VERSION_READ'
+        assert not is_nis2('GET', '/ollama/api/version/0')
+
+    def test_ollama_admin_models_read(self):
+        assert action_of('GET', '/ollama/v1/models/0') == 'OLLAMA_COMPAT_MODELS_READ'
+        assert not is_nis2('GET', '/ollama/v1/models/0')
