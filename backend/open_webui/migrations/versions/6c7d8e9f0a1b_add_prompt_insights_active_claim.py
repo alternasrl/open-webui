@@ -20,11 +20,19 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     bind = op.get_bind()
     inspector = sa.inspect(bind)
-    columns = {column['name'] for column in inspector.get_columns('prompt_insights_run')}
+    columns = {column['name']: column for column in inspector.get_columns('prompt_insights_run')}
 
     if 'active_claim' not in columns:
         with op.batch_alter_table('prompt_insights_run') as batch_op:
             batch_op.add_column(sa.Column('active_claim', sa.String(length=16), nullable=True))
+    elif getattr(columns['active_claim']['type'], 'length', None) != 16:
+        with op.batch_alter_table('prompt_insights_run') as batch_op:
+            batch_op.alter_column(
+                'active_claim',
+                existing_type=columns['active_claim']['type'],
+                type_=sa.String(length=16),
+                existing_nullable=columns['active_claim']['nullable'],
+            )
 
     running = bind.execute(
         sa.text("SELECT id FROM prompt_insights_run " "WHERE status = 'running' ORDER BY created_at DESC, id DESC")
@@ -47,6 +55,7 @@ def upgrade() -> None:
                 {'completed_at': int(time.time()), 'run_ids': stale_ids},
             )
 
+    inspector = sa.inspect(bind)
     constraints = inspector.get_unique_constraints('prompt_insights_run')
     if not any(constraint['name'] == 'uq_prompt_insights_run_active_claim' for constraint in constraints):
         with op.batch_alter_table('prompt_insights_run') as batch_op:

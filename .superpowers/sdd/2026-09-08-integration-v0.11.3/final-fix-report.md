@@ -245,3 +245,51 @@ returned:
 [('active_claim', 'VARCHAR(16)')]
 CONSTRAINT uq_prompt_insights_run_active_claim UNIQUE (active_claim)
 ```
+
+## Round 3: Partial Migration Repair
+
+MySQL/MariaDB implicitly commits DDL. If the original revision added
+`active_claim TEXT` and then failed while creating `UNIQUE(active_claim)`, a
+retry found the existing column and skipped the corrected bounded-column branch.
+The migration now inspects the reflected `active_claim` type and length. Any
+existing unbounded or incorrectly sized column is altered to `VARCHAR(16)`
+before the unique constraint is inspected and created. The inspector is
+refreshed after the column operation so the constraint decision uses current
+schema state.
+
+### Round 3 validation
+
+Focused migration and transaction tests:
+
+```text
+WEBUI_SECRET_KEY=test-secret-key .venv/bin/python -m pytest -q \
+  backend/open_webui/test/models/test_prompt_insights_migration.py \
+  backend/open_webui/test/models/test_prompt_insights_transactions.py
+
+6 passed, 2 warnings in 1.36s
+```
+
+The migration tests start with a partially applied SQLite schema containing
+`active_claim TEXT` and no unique constraint, run the revision upgrade, and
+verify the repaired `VARCHAR(16)` type, preserved active claim, and named unique
+constraint. A MySQL offline Alembic compilation test additionally verifies:
+
+```text
+ALTER TABLE prompt_insights_run MODIFY active_claim VARCHAR(16) NULL
+```
+
+Alembic validation:
+
+```text
+WEBUI_SECRET_KEY=test-secret-key ../../.venv/bin/alembic -c alembic.ini heads
+6c7d8e9f0a1b (head)
+```
+
+The real Alembic upgrade was also exercised from `28f62ff35ad1` after manually
+adding the partial `TEXT` column. Final schema inspection returned:
+
+```text
+[('active_claim', 'VARCHAR(16)')]
+[('running', 'active')]
+CONSTRAINT uq_prompt_insights_run_active_claim UNIQUE (active_claim)
+```
