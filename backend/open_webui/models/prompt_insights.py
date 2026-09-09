@@ -5,8 +5,8 @@ from contextlib import asynccontextmanager
 from typing import Optional
 
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import BigInteger, Column, ForeignKey, Index, Text, UniqueConstraint, select
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy import BigInteger, Column, ForeignKey, Index, Text, UniqueConstraint, insert, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import declarative_base
 
@@ -31,6 +31,15 @@ def _canonical_label_hash(label: str) -> str:
     return hashlib.sha256(_normalize_cluster_label(label).encode()).hexdigest()
 
 
+@asynccontextmanager
+async def _prompt_insights_db_context(db: Optional[AsyncSession] = None):
+    if db is not None:
+        yield db, False
+        return
+    async with get_async_db_context() as session:
+        yield session, True
+
+
 class PromptInsightsRun(Base):
     __tablename__ = 'prompt_insights_run'
 
@@ -38,12 +47,15 @@ class PromptInsightsRun(Base):
     window_start = Column(BigInteger, nullable=False, index=True)
     window_end = Column(BigInteger, nullable=False, index=True)
     status = Column(Text, nullable=False, default='running')
+    active_claim = Column(Text, nullable=True)
     total_prompts = Column(BigInteger, nullable=True)
     clusters_found = Column(BigInteger, nullable=True)
     noise_count = Column(BigInteger, nullable=True)
     error_message = Column(Text, nullable=True)
     created_at = Column(BigInteger, nullable=False, default=lambda: int(time.time()))
     completed_at = Column(BigInteger, nullable=True)
+
+    __table_args__ = (UniqueConstraint('active_claim', name='uq_prompt_insights_run_active_claim'),)
 
 
 class PromptCluster(Base):
@@ -152,17 +164,31 @@ class PromptEmbeddedCacheModel(BaseModel):
 
 
 class PromptInsightsRunsTable:
-    async def create_run(
+    async def claim_run(
         self,
         window_start: int,
         window_end: int,
         db: Optional[AsyncSession] = None,
-    ) -> PromptInsightsRunModel:
-        async with get_async_db_context(db) as session:
-            run = PromptInsightsRun(window_start=window_start, window_end=window_end)
+    ) -> Optional[PromptInsightsRunModel]:
+        """Atomically claim the single active pipeline slot.
+
+        The nullable unique ``active_claim`` column makes the insert itself the
+        cross-dialect lock. The claim is committed immediately so other
+        instances observe it before any expensive pipeline work begins.
+        """
+        async with _prompt_insights_db_context(db) as (session, _):
+            run = PromptInsightsRun(window_start=window_start, window_end=window_end, active_claim='active')
             session.add(run)
-            await session.commit()
-            await session.refresh(run)
+            try:
+                await session.commit()
+            except IntegrityError:
+                await session.rollback()
+                result = await session.execute(
+                    select(PromptInsightsRun).where(PromptInsightsRun.active_claim == 'active').limit(1)
+                )
+                if result.scalar_one_or_none() is not None:
+                    return None
+                raise
             return PromptInsightsRunModel.model_validate(run)
 
     async def complete_run(
@@ -173,17 +199,19 @@ class PromptInsightsRunsTable:
         noise_count: int,
         db: Optional[AsyncSession] = None,
     ) -> None:
-        async with get_async_db_context(db) as session:
+        async with _prompt_insights_db_context(db) as (session, owns_session):
             result = await session.execute(select(PromptInsightsRun).filter(PromptInsightsRun.id == run_id))
             run = result.scalar_one_or_none()
             if not run:
                 return
             run.status = 'completed'
+            run.active_claim = None
             run.total_prompts = total_prompts
             run.clusters_found = clusters_found
             run.noise_count = noise_count
             run.completed_at = int(time.time())
-            await session.commit()
+            if owns_session:
+                await session.commit()
 
     async def fail_run(
         self,
@@ -191,21 +219,23 @@ class PromptInsightsRunsTable:
         error_message: str,
         db: Optional[AsyncSession] = None,
     ) -> None:
-        async with get_async_db_context(db) as session:
+        async with _prompt_insights_db_context(db) as (session, owns_session):
             result = await session.execute(select(PromptInsightsRun).filter(PromptInsightsRun.id == run_id))
             run = result.scalar_one_or_none()
             if not run:
                 return
             run.status = 'failed'
+            run.active_claim = None
             run.error_message = error_message
             run.completed_at = int(time.time())
-            await session.commit()
+            if owns_session:
+                await session.commit()
 
     async def get_active_run(self, db: Optional[AsyncSession] = None) -> Optional[PromptInsightsRunModel]:
-        async with get_async_db_context(db) as session:
+        async with _prompt_insights_db_context(db) as (session, _):
             result = await session.execute(
                 select(PromptInsightsRun)
-                .filter(PromptInsightsRun.status == 'running')
+                .filter(PromptInsightsRun.active_claim == 'active')
                 .order_by(PromptInsightsRun.created_at.desc())
                 .limit(1)
             )
@@ -213,7 +243,7 @@ class PromptInsightsRunsTable:
             return PromptInsightsRunModel.model_validate(run) if run else None
 
     async def get_latest_completed_run(self, db: Optional[AsyncSession] = None) -> Optional[PromptInsightsRunModel]:
-        async with get_async_db_context(db) as session:
+        async with _prompt_insights_db_context(db) as (session, _):
             result = await session.execute(
                 select(PromptInsightsRun)
                 .filter(PromptInsightsRun.status == 'completed')
@@ -224,7 +254,7 @@ class PromptInsightsRunsTable:
             return PromptInsightsRunModel.model_validate(run) if run else None
 
     async def list_runs(self, limit: int = 20, db: Optional[AsyncSession] = None) -> list[PromptInsightsRunModel]:
-        async with get_async_db_context(db) as session:
+        async with _prompt_insights_db_context(db) as (session, _):
             result = await session.execute(
                 select(PromptInsightsRun).order_by(PromptInsightsRun.created_at.desc()).limit(limit)
             )
@@ -234,9 +264,31 @@ class PromptInsightsRunsTable:
     async def count_runs(self, db: Optional[AsyncSession] = None) -> int:
         from sqlalchemy import func  # noqa: PLC0415
 
-        async with get_async_db_context(db) as session:
+        async with _prompt_insights_db_context(db) as (session, _):
             result = await session.execute(select(func.count()).select_from(PromptInsightsRun))
             return result.scalar_one() or 0
+
+
+def _trend_increment_statement(canonical_label_hash: str, bucket: str, count: int):
+    return (
+        update(PromptClusterTrend)
+        .where(
+            PromptClusterTrend.canonical_label_hash == canonical_label_hash,
+            PromptClusterTrend.bucket == bucket,
+        )
+        .values(count=PromptClusterTrend.count + count)
+    )
+
+
+def _trend_insert_statement(canonical_label_hash: str, bucket: str, count: int, run_id: str):
+    return insert(PromptClusterTrend).values(
+        id=str(uuid.uuid4()),
+        run_id=run_id,
+        canonical_label_hash=canonical_label_hash,
+        bucket=bucket,
+        count=count,
+        created_at=int(time.time()),
+    )
 
 
 class PromptInsightsTableStore:
@@ -248,26 +300,20 @@ class PromptInsightsTableStore:
         run_id: str,
         db: Optional[AsyncSession] = None,
     ) -> None:
-        async with get_async_db_context(db) as session:
-            stmt = (
-                sqlite_insert(PromptClusterTrend)
-                .values(
-                    run_id=run_id,
-                    canonical_label_hash=canonical_label_hash,
-                    bucket=bucket,
-                    count=count,
-                    created_at=int(time.time()),
-                )
-                .on_conflict_do_update(
-                    index_elements=['canonical_label_hash', 'bucket'],
-                    set_=dict(count=PromptClusterTrend.count + count),
-                )
-            )
-            await session.execute(stmt)
-            await session.commit()
+        async with _prompt_insights_db_context(db) as (session, owns_session):
+            increment = _trend_increment_statement(canonical_label_hash, bucket, count)
+            result = await session.execute(increment)
+            if result.rowcount == 0:
+                try:
+                    async with session.begin_nested():
+                        await session.execute(_trend_insert_statement(canonical_label_hash, bucket, count, run_id))
+                except IntegrityError:
+                    await session.execute(increment)
+            if owns_session:
+                await session.commit()
 
     async def get_summary(self, run_id: str, db: Optional[AsyncSession] = None) -> dict:
-        async with get_async_db_context(db) as session:
+        async with _prompt_insights_db_context(db) as (session, _):
             result = await session.execute(
                 select(PromptClusterTrend)
                 .filter(PromptClusterTrend.run_id == run_id)
@@ -283,7 +329,7 @@ class PromptInsightsTableStore:
     async def get_clusters_by_run_id(
         self, run_id: str, db: Optional[AsyncSession] = None
     ) -> list[PromptClusterModelRow]:
-        async with get_async_db_context(db) as session:
+        async with _prompt_insights_db_context(db) as (session, _):
             result = await session.execute(
                 select(PromptCluster).filter(PromptCluster.run_id == run_id).order_by(PromptCluster.cluster_size.desc())
             )
@@ -293,7 +339,7 @@ class PromptInsightsTableStore:
     async def get_trend_for_cluster(
         self, cluster_id: str, db: Optional[AsyncSession] = None
     ) -> tuple[Optional[PromptClusterModelRow], list[PromptClusterTrendModel]]:
-        async with get_async_db_context(db) as session:
+        async with _prompt_insights_db_context(db) as (session, _):
             cluster_result = await session.execute(select(PromptCluster).filter(PromptCluster.id == cluster_id))
             cluster = cluster_result.scalar_one_or_none()
             if not cluster:
@@ -319,7 +365,7 @@ class PromptInsightsTableStore:
         """Return topics with high recent growth relative to prior activity."""
         from collections import defaultdict  # noqa: PLC0415
 
-        async with get_async_db_context(db) as session:
+        async with _prompt_insights_db_context(db) as (session, _):
             trend_result = await session.execute(select(PromptClusterTrend).order_by(PromptClusterTrend.bucket.desc()))
             all_trends = trend_result.scalars().all()
 
