@@ -510,8 +510,27 @@ def _compile_action_rules() -> list[tuple[re.Pattern, Optional[str], str]]:
         (rf'^/api/v1/configs/subagents$', 'POST', 'CONFIG_SUBAGENTS'),
         (rf'^/api/v1/folders/{_ID}/read$', 'POST', 'FOLDER_READ'),
         (rf'^/api/v1/notes/{_ID}/chat$', 'POST', 'NOTE_CHAT'),
-        (rf'^/api/v1/ollama/v1/embeddings$', 'POST', 'OLLAMA_EMBEDDINGS'),
-        (rf'^/api/v1/ollama/v1/embeddings/{_ID}$', 'POST', 'OLLAMA_EMBEDDINGS'),
+        # Corrected in the v0.11.3 integration: the router is mounted at
+        # `/ollama` (see main.py `include_router(ollama.router, prefix='/ollama')`),
+        # so the previous `^/api/v1/ollama/v1/embeddings` pattern never matched
+        # any real route and silently fell through to WRITE_OTHER.
+        (rf'^/ollama/api/embed(/{_ID})?$', 'POST', 'OLLAMA_EMBEDDINGS'),
+        (rf'^/ollama/api/embeddings(/{_ID})?$', 'POST', 'OLLAMA_EMBEDDINGS'),
+        (rf'^/ollama/v1/embeddings(/{_ID})?$', 'POST', 'OLLAMA_EMBEDDINGS'),
+        (rf'^/api/embeddings$', 'POST', 'OLLAMA_EMBEDDINGS'),
+        (rf'^/api/v1/embeddings$', 'POST', 'OLLAMA_EMBEDDINGS'),
+        # ── v0.11.3 new endpoints ──────────────────────────────────────────
+        (rf'^/openai/models/{_ID}/catalog$', 'GET', 'MODEL_PROVIDER_CATALOG'),
+        (rf'^/openai/models/{_ID}/download$', 'POST', 'MODEL_PROVIDER_DOWNLOAD'),
+        (rf'^/openai/models/{_ID}/download/status/{_ID}$', 'GET', 'MODEL_PROVIDER_DOWNLOAD_STATUS'),
+        (rf'^/openai/models/{_ID}/load$', 'POST', 'MODEL_PROVIDER_LOAD'),
+        (rf'^/openai/models/{_ID}/unload$', 'POST', 'MODEL_PROVIDER_UNLOAD'),
+        (rf'^/openai/models/{_ID}/sse$', 'GET', 'MODEL_PROVIDER_SSE'),
+        (rf'^/api/v1/retrieval/process/url$', 'POST', 'RETRIEVAL_PROCESS_URL'),
+        (rf'^/api/v1/memories/reindex$', 'POST', 'MEMORY_REINDEX'),
+        (rf'^/ollama/v1/models/{_ID}$', 'GET', 'OLLAMA_COMPAT_MODELS_READ'),
+        (rf'^/ollama/api/tags/{_ID}$', 'GET', 'OLLAMA_COMPAT_TAGS_READ'),
+        (rf'^/ollama/api/version/{_ID}$', 'GET', 'OLLAMA_COMPAT_VERSION_READ'),
         # ── Catch-all for remaining API write operations ─────────────────
         # These catch any unmatched POST/PUT/PATCH/DELETE on /api/ paths
         (rf'^/api/', 'DELETE', 'DELETE_OTHER'),
@@ -659,6 +678,11 @@ _NIS2_SECURITY_ACTIONS = frozenset(
         'KNOWLEDGE_EXTERNAL_SOURCE_CREATE',
         'KNOWLEDGE_EXTERNAL_SOURCE_UPDATE',
         'KNOWLEDGE_EXTERNAL_KNOWLEDGE_CREATE',
+        # v0.11.3 provider/model management
+        'MODEL_PROVIDER_DOWNLOAD',
+        'MODEL_PROVIDER_LOAD',
+        'MODEL_PROVIDER_UNLOAD',
+        'MEMORY_REINDEX',
     }
 )
 

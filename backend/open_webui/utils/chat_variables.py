@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-import json
 import re
 from typing import Any
+
+from open_webui.utils.json_codec import JSONCodec
+
 
 CHAT_VARIABLE_KEY_RE = re.compile(r'^[a-z][a-z0-9_]*$')
 CHAT_VARIABLE_ANY_RE = re.compile(r'{{\s*chat\.variables\.([^\s|}]+)(?:\s*\|\s*([^}]*))?\s*}}')
@@ -63,8 +65,8 @@ def parse_json_value(value: str) -> Any:
 
     if re.match(r'^[\[{]', value):
         try:
-            return json.loads(value)
-        except json.JSONDecodeError:
+            return JSONCodec.loads(value)
+        except JSONCodec.JSONDecodeError:
             return value
 
     return value
@@ -111,7 +113,7 @@ def _safe_field(key: str, definition: dict[str, Any]) -> dict[str, Any]:
         'type',
     }
     field = {'key': key}
-    for field_key in allowed_keys:
+    for field_key in sorted(allowed_keys):
         if field_key in definition:
             field[field_key] = definition[field_key]
 
@@ -184,7 +186,7 @@ def validate_user_variables(variables: Any) -> dict[str, str]:
         raise ChatVariablesError('User variables must be an object.')
 
     try:
-        if len(json.dumps(variables)) > MAX_VARIABLES_JSON_LENGTH:
+        if len(JSONCodec.dumps(variables)) > MAX_VARIABLES_JSON_LENGTH:
             raise ChatVariablesError('User variables are too large.')
     except TypeError:
         raise ChatVariablesError('User variables must be JSON serializable.')
@@ -213,7 +215,7 @@ def validate_chat_variables(
     variables = normalize_chat_variables(variables)
 
     try:
-        if len(json.dumps(variables)) > MAX_VARIABLES_JSON_LENGTH:
+        if len(JSONCodec.dumps(variables)) > MAX_VARIABLES_JSON_LENGTH:
             raise ChatVariablesError('Chat variables are too large.')
     except TypeError:
         raise ChatVariablesError('Chat variables must be JSON serializable.')

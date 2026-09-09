@@ -69,7 +69,7 @@ async def _resolve_window_start(interval_hours: int, last_ns: Optional[int]) -> 
         return int(time.time()) - interval_hours * 3600
 
 
-async def run_prompt_insights_if_due(app) -> None:
+async def run_prompt_insights_if_due(app) -> Optional[str]:
     """Check whether the pipeline is due and, if so, kick it off.
 
     Reads PROMPT_INSIGHTS_INTERVAL_HOURS (default 24).  Stores the
@@ -84,28 +84,36 @@ async def run_prompt_insights_if_due(app) -> None:
         if not should_run_prompt_insights(now_ns, last_ns, interval_hours):
             return
 
-        # Cross-instance lock: the prompt_insights_run table is shared, so a
-        # DB-level active-run check prevents multiple instances (whose in-memory
-        # last-run timestamps are independent) from running concurrently and
-        # producing duplicate clusters / double-counted trends.
         from open_webui.internal.db import get_async_db  # noqa: PLC0415
         from open_webui.models.prompt_insights import PromptInsightsRuns  # noqa: PLC0415
-
-        async with get_async_db() as db:
-            active = await PromptInsightsRuns.get_active_run(db=db)
-            if active is not None:
-                return
 
         # Compute window: previous run end (or backfill) → now (seconds)
         window_end = int(time.time())
         window_start = await _resolve_window_start(interval_hours, last_ns)
 
-        pipeline = PromptInsightsPipeline(app)
-        await pipeline.run(window_start, window_end)
+        async with get_async_db() as db:
+            run = await PromptInsightsRuns.claim_run(window_start, window_end, db=db)
+        if run is None:
+            return None
 
-        app.state._prompt_insights_last_run_ns = now_ns
+        async def _run_claimed_pipeline() -> None:
+            try:
+                await PromptInsightsPipeline(app).run(window_start, window_end, run_id=run.id)
+                app.state._prompt_insights_last_run_ns = time.time_ns()
+            except Exception:
+                log.exception('Scheduled prompt insights run failed (run=%s)', run.id)
+
+        from open_webui.tasks import create_task  # noqa: PLC0415
+
+        task_id, _ = await create_task(
+            getattr(app.state, 'redis', None),
+            _run_claimed_pipeline(),
+            id='prompt-insights',
+        )
+        return task_id
     except Exception:
         log.exception('run_prompt_insights_if_due: unhandled error')
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -117,7 +125,7 @@ class PromptInsightsPipeline:
     def __init__(self, app) -> None:
         self._app = app
 
-    async def run(self, window_start: int, window_end: int) -> dict:
+    async def run(self, window_start: int, window_end: int, run_id: Optional[str] = None) -> dict:
         """Execute the full prompt-insights pipeline for a time window.
 
         Args:
@@ -139,23 +147,19 @@ class PromptInsightsPipeline:
         from open_webui.prompt_insights.pii_scrubber import scrub_pii  # noqa: PLC0415
         from open_webui.prompt_insights.tfidf import extract_cluster_keywords  # noqa: PLC0415
 
-        # Defense-in-depth: the prompt_insights_run table is the cross-instance
-        # lock. If any run is already in progress, bail out so concurrent
-        # instances don't produce duplicate clusters / double-counted trends.
-        async with get_async_db() as db:
-            active = await PromptInsightsRuns.get_active_run(db=db)
-            if active is not None:
-                log.info('PromptInsights: run already active (%s); skipping', active.id)
+        if run_id is None:
+            async with get_async_db() as db:
+                run = await PromptInsightsRuns.claim_run(window_start, window_end, db=db)
+            if run is None:
+                active = await PromptInsightsRuns.get_active_run()
+                log.info('PromptInsights: run already active%s; skipping', f' ({active.id})' if active else '')
                 return {
-                    'run_id': active.id,
+                    'run_id': active.id if active else '',
                     'total_prompts': 0,
                     'clusters_found': 0,
                     'noise_count': 0,
                     'skipped': True,
                 }
-
-        async with get_async_db() as db:
-            run = await PromptInsightsRuns.create_run(window_start, window_end, db=db)
             run_id = run.id
 
         try:
@@ -164,6 +168,7 @@ class PromptInsightsPipeline:
             if not records:
                 async with get_async_db() as db:
                     await PromptInsightsRuns.complete_run(run_id, 0, 0, 0, db=db)
+                    await db.commit()
                 return {'run_id': run_id, 'total_prompts': 0, 'clusters_found': 0, 'noise_count': 0}
 
             # -- 2. PII scrub --
@@ -177,6 +182,7 @@ class PromptInsightsPipeline:
             async with get_async_db() as db:
                 embedder = PromptInsightsEmbedder()
                 embeddings = await embedder.embed_texts(scrubbed_texts, db)
+                await db.commit()
 
             # -- 4. Cluster --
             labels, noise_indices = cluster_embeddings(embeddings)
@@ -186,43 +192,56 @@ class PromptInsightsPipeline:
 
             bucket = _time_bucket(window_start)
             cluster_ids = sorted(set(labels) - {-1})
+            clusters = []
+
+            for cid in cluster_ids:
+                keywords = keywords_by_cluster.get(cid, [])
+                label_prompt = build_cluster_label_prompt(keywords)
+                canonical_label = await self._generate_label(label_prompt, keywords)
+                clusters.append(
+                    (
+                        canonical_label,
+                        _canonical_label_hash(canonical_label),
+                        sum(1 for label in labels if label == cid),
+                    )
+                )
+
+            from open_webui.models.prompt_insights import PromptCluster  # noqa: PLC0415
 
             async with get_async_db() as db:
-                for cid in cluster_ids:
-                    keywords = keywords_by_cluster.get(cid, [])
-                    label_prompt = build_cluster_label_prompt(keywords)
-                    canonical_label = await self._generate_label(label_prompt, keywords)
-                    label_hash = _canonical_label_hash(canonical_label)
+                try:
+                    for canonical_label, label_hash, cluster_size in clusters:
+                        cluster_row = PromptCluster(
+                            run_id=run_id,
+                            canonical_label=canonical_label,
+                            canonical_label_hash=label_hash,
+                            cluster_size=cluster_size,
+                        )
+                        db.add(cluster_row)
+                        await db.flush()
 
-                    cluster_size = sum(1 for lbl in labels if lbl == cid)
+                        await PromptInsightsTable.upsert_trend(
+                            canonical_label_hash=label_hash,
+                            bucket=bucket,
+                            count=cluster_size,
+                            run_id=run_id,
+                            db=db,
+                        )
 
-                    from open_webui.models.prompt_insights import PromptCluster  # noqa: PLC0415
-
-                    cluster_row = PromptCluster(
-                        run_id=run_id,
-                        canonical_label=canonical_label,
-                        canonical_label_hash=label_hash,
-                        cluster_size=cluster_size,
-                    )
-                    db.add(cluster_row)
-                    await db.flush()
-
-                    await PromptInsightsTable.upsert_trend(
-                        canonical_label_hash=label_hash,
-                        bucket=bucket,
-                        count=cluster_size,
-                        run_id=run_id,
+                    total_prompts = len(records)
+                    clusters_found = len(cluster_ids)
+                    noise_count = len(noise_indices)
+                    await PromptInsightsRuns.complete_run(
+                        run_id,
+                        total_prompts,
+                        clusters_found,
+                        noise_count,
                         db=db,
                     )
-
-                await db.commit()
-
-            total_prompts = len(records)
-            clusters_found = len(cluster_ids)
-            noise_count = len(noise_indices)
-
-            async with get_async_db() as db:
-                await PromptInsightsRuns.complete_run(run_id, total_prompts, clusters_found, noise_count, db=db)
+                    await db.commit()
+                except Exception:
+                    await db.rollback()
+                    raise
 
             log.info(
                 'PromptInsights run=%s window=[%s,%s] prompts=%d clusters=%d noise=%d',
@@ -245,6 +264,7 @@ class PromptInsightsPipeline:
             try:
                 async with get_async_db() as db:
                     await PromptInsightsRuns.fail_run(run_id, str(exc), db=db)
+                    await db.commit()
             except Exception:
                 log.exception('PromptInsights: could not mark run as failed')
             raise

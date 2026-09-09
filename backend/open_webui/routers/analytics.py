@@ -679,25 +679,29 @@ async def trigger_prompt_insights_run(
     db: AsyncSession = Depends(get_async_session),
 ):
     """Manually trigger a prompt insights run. No-op if a run is already in progress."""
-    active = await PromptInsightsRuns.get_active_run(db=db)
-    if active is not None:
-        return PromptInsightsRunTriggerResponse(status='skipped', reason='run_in_progress', run_id=active.id)
-
     window_end = int(time.time())
     from open_webui.prompt_insights.pipeline import _resolve_window_start  # noqa: PLC0415
 
     window_start = await _resolve_window_start(interval_hours=24, last_ns=None)
+    run = await PromptInsightsRuns.claim_run(window_start, window_end, db=db)
+    if run is None:
+        active = await PromptInsightsRuns.get_active_run(db=db)
+        return PromptInsightsRunTriggerResponse(
+            status='skipped',
+            reason='run_in_progress',
+            run_id=active.id if active else None,
+        )
 
     async def _run_pipeline():
         from open_webui.prompt_insights.pipeline import PromptInsightsPipeline  # noqa: PLC0415
 
         try:
-            await PromptInsightsPipeline(request.app).run(window_start, window_end)
+            await PromptInsightsPipeline(request.app).run(window_start, window_end, run_id=run.id)
         except Exception:
             log.exception('Manual prompt insights run failed')
 
     background_tasks.add_task(_run_pipeline)
-    return PromptInsightsRunTriggerResponse(status='started')
+    return PromptInsightsRunTriggerResponse(status='started', run_id=run.id)
 
 
 @router.get('/prompt-insights/runs', response_model=PromptInsightsRunsResponse)
