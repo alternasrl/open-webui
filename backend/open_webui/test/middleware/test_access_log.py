@@ -897,3 +897,18 @@ class TestClassifyV0113Actions:
     def test_ollama_admin_models_read(self):
         assert action_of('GET', '/ollama/v1/models/0') == 'OLLAMA_COMPAT_MODELS_READ'
         assert not is_nis2('GET', '/ollama/v1/models/0')
+
+    def test_ollama_embeddings_api_embed(self):
+        assert action_of('POST', '/ollama/api/embed') == 'OLLAMA_EMBEDDINGS'
+        assert action_of('POST', '/ollama/api/embed/0') == 'OLLAMA_EMBEDDINGS'
+
+    def test_ollama_embeddings_api_embeddings(self):
+        assert action_of('POST', '/ollama/api/embeddings') == 'OLLAMA_EMBEDDINGS'
+        assert action_of('POST', '/ollama/api/embeddings/0') == 'OLLAMA_EMBEDDINGS'
+
+    def test_ollama_embeddings_v1(self):
+        assert action_of('POST', '/ollama/v1/embeddings') == 'OLLAMA_EMBEDDINGS'
+        assert action_of('POST', '/ollama/v1/embeddings/0') == 'OLLAMA_EMBEDDINGS'
+
+    def test_openai_compat_embeddings_shim(self):
+        assert action_of('POST', '/api/v1/embeddings') == 'OLLAMA_EMBEDDINGS'

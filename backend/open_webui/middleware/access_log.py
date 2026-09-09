@@ -510,8 +510,14 @@ def _compile_action_rules() -> list[tuple[re.Pattern, Optional[str], str]]:
         (rf'^/api/v1/configs/subagents$', 'POST', 'CONFIG_SUBAGENTS'),
         (rf'^/api/v1/folders/{_ID}/read$', 'POST', 'FOLDER_READ'),
         (rf'^/api/v1/notes/{_ID}/chat$', 'POST', 'NOTE_CHAT'),
-        (rf'^/api/v1/ollama/v1/embeddings$', 'POST', 'OLLAMA_EMBEDDINGS'),
-        (rf'^/api/v1/ollama/v1/embeddings/{_ID}$', 'POST', 'OLLAMA_EMBEDDINGS'),
+        # Corrected in the v0.11.3 integration: the router is mounted at
+        # `/ollama` (see main.py `include_router(ollama.router, prefix='/ollama')`),
+        # so the previous `^/api/v1/ollama/v1/embeddings` pattern never matched
+        # any real route and silently fell through to WRITE_OTHER.
+        (rf'^/ollama/api/embed(/{_ID})?$', 'POST', 'OLLAMA_EMBEDDINGS'),
+        (rf'^/ollama/api/embeddings(/{_ID})?$', 'POST', 'OLLAMA_EMBEDDINGS'),
+        (rf'^/ollama/v1/embeddings(/{_ID})?$', 'POST', 'OLLAMA_EMBEDDINGS'),
+        (rf'^/api/v1/embeddings$', 'POST', 'OLLAMA_EMBEDDINGS'),
         # ── v0.11.3 new endpoints ──────────────────────────────────────────
         (rf'^/openai/models/{_ID}/catalog$', 'GET', 'MODEL_PROVIDER_CATALOG'),
         (rf'^/openai/models/{_ID}/download$', 'POST', 'MODEL_PROVIDER_DOWNLOAD'),
