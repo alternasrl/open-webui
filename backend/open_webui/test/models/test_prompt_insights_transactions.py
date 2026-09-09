@@ -8,6 +8,7 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.dialects import mysql, postgresql
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.schema import CreateTable
 
 sys.path.append(str(Path(__file__).resolve().parents[3]))
 
@@ -41,6 +42,14 @@ def test_trend_statements_compile_for_supported_server_dialects():
         compiled = [str(statement.compile(dialect=dialect)) for statement in statements]
         assert all('prompt_cluster_trend' in sql for sql in compiled)
         assert all('ON CONFLICT' not in sql.upper() for sql in compiled)
+
+
+def test_mysql_active_claim_ddl_uses_bounded_unique_varchar():
+    ddl = str(CreateTable(PromptInsightsRun.__table__).compile(dialect=mysql.dialect()))
+
+    assert 'active_claim VARCHAR(16)' in ddl
+    assert 'CONSTRAINT uq_prompt_insights_run_active_claim UNIQUE (active_claim)' in ddl
+    assert 'active_claim TEXT' not in ddl
 
 
 def test_only_one_concurrent_run_claim_wins(tmp_path):

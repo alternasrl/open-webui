@@ -24,7 +24,7 @@ def upgrade() -> None:
 
     if 'active_claim' not in columns:
         with op.batch_alter_table('prompt_insights_run') as batch_op:
-            batch_op.add_column(sa.Column('active_claim', sa.Text(), nullable=True))
+            batch_op.add_column(sa.Column('active_claim', sa.String(length=16), nullable=True))
 
     running = bind.execute(
         sa.text("SELECT id FROM prompt_insights_run " "WHERE status = 'running' ORDER BY created_at DESC, id DESC")

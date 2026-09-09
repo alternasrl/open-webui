@@ -191,3 +191,57 @@ git status --short --untracked-files=all backend/open_webui/static
 
 The status contains only the expected staged additions relative to the
 integration branch; no static asset remains untracked.
+
+## Round 2: Bounded Active Claim Key
+
+The `active_claim` uniqueness sentinel was originally declared as unbounded
+`TEXT`. MySQL/MariaDB cannot create a normal unique constraint over `TEXT`
+without an index prefix length, so the model and migration now consistently use
+`String(16)` / `VARCHAR(16)`. The stored sentinel remains `active`, well within
+the bound.
+
+The transaction test suite now compiles the complete
+`prompt_insights_run` table for the MySQL dialect and asserts:
+
+```text
+active_claim VARCHAR(16)
+CONSTRAINT uq_prompt_insights_run_active_claim UNIQUE (active_claim)
+```
+
+It also rejects a regression to `active_claim TEXT`.
+
+### Round 2 validation
+
+Focused transaction tests:
+
+```text
+WEBUI_SECRET_KEY=test-secret-key .venv/bin/python -m pytest -q \
+  backend/open_webui/test/models/test_prompt_insights_transactions.py
+
+4 passed, 2 warnings in 1.27s
+```
+
+Formatting:
+
+```text
+.venv/bin/python -m black --check \
+  backend/open_webui/models/prompt_insights.py \
+  backend/open_webui/migrations/versions/6c7d8e9f0a1b_add_prompt_insights_active_claim.py \
+  backend/open_webui/test/models/test_prompt_insights_transactions.py
+
+All done! 3 files would be left unchanged.
+```
+
+Alembic head:
+
+```text
+6c7d8e9f0a1b (head)
+```
+
+A fresh SQLite upgrade through head completed successfully. Schema inspection
+returned:
+
+```text
+[('active_claim', 'VARCHAR(16)')]
+CONSTRAINT uq_prompt_insights_run_active_claim UNIQUE (active_claim)
+```

@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from typing import Optional
 
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import BigInteger, Column, ForeignKey, Index, Text, UniqueConstraint, insert, select, update
+from sqlalchemy import BigInteger, Column, ForeignKey, Index, String, Text, UniqueConstraint, insert, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import declarative_base
@@ -47,7 +47,7 @@ class PromptInsightsRun(Base):
     window_start = Column(BigInteger, nullable=False, index=True)
     window_end = Column(BigInteger, nullable=False, index=True)
     status = Column(Text, nullable=False, default='running')
-    active_claim = Column(Text, nullable=True)
+    active_claim = Column(String(16), nullable=True)
     total_prompts = Column(BigInteger, nullable=True)
     clusters_found = Column(BigInteger, nullable=True)
     noise_count = Column(BigInteger, nullable=True)
