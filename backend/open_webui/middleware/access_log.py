@@ -517,6 +517,7 @@ def _compile_action_rules() -> list[tuple[re.Pattern, Optional[str], str]]:
         (rf'^/ollama/api/embed(/{_ID})?$', 'POST', 'OLLAMA_EMBEDDINGS'),
         (rf'^/ollama/api/embeddings(/{_ID})?$', 'POST', 'OLLAMA_EMBEDDINGS'),
         (rf'^/ollama/v1/embeddings(/{_ID})?$', 'POST', 'OLLAMA_EMBEDDINGS'),
+        (rf'^/api/embeddings$', 'POST', 'OLLAMA_EMBEDDINGS'),
         (rf'^/api/v1/embeddings$', 'POST', 'OLLAMA_EMBEDDINGS'),
         # ── v0.11.3 new endpoints ──────────────────────────────────────────
         (rf'^/openai/models/{_ID}/catalog$', 'GET', 'MODEL_PROVIDER_CATALOG'),

@@ -911,4 +911,5 @@ class TestClassifyV0113Actions:
         assert action_of('POST', '/ollama/v1/embeddings/0') == 'OLLAMA_EMBEDDINGS'
 
     def test_openai_compat_embeddings_shim(self):
+        assert action_of('POST', '/api/embeddings') == 'OLLAMA_EMBEDDINGS'
         assert action_of('POST', '/api/v1/embeddings') == 'OLLAMA_EMBEDDINGS'
