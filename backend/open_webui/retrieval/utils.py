@@ -240,7 +240,11 @@ async def get_content_from_url(request, url: str) -> str:
 
 
 def _get_content_from_url_sync(request, url: str, loader_config):
-    from open_webui.retrieval.web.utils import validate_url, get_ssrf_safe_requests_session
+    from open_webui.retrieval.web.utils import (
+        _SSRFSafeAdapter,
+        get_ssrf_safe_requests_session,
+        validate_url,
+    )
 
     # Validate URL before making any request (blocks private IPs, non-HTTP, filter list)
     validate_url(url)

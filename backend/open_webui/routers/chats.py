@@ -27,6 +27,7 @@ from open_webui.models.chats import (
     MessageStats,
     chat_search_content_query,
     chat_search_terms,
+    is_internal_chat,
 )
 from open_webui.models.config import Config
 from open_webui.models.folders import Folders
