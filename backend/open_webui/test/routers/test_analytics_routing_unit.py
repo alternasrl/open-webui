@@ -1,5 +1,6 @@
 import ast
 from pathlib import Path
+from typing import Optional
 
 
 def _load_routing_helpers():
@@ -13,7 +14,7 @@ def _load_routing_helpers():
         if isinstance(node, ast.FunctionDef) and node.name in {'_routing_match', '_summarize_routing_pairs'}
     ]
     helper_source = '\n\n'.join(ast.get_source_segment(source, node) for node in helper_nodes)
-    namespace = {'Optional': str}
+    namespace = {'Optional': Optional}
     exec(helper_source, namespace)
     return namespace['_routing_match'], namespace['_summarize_routing_pairs']
 
