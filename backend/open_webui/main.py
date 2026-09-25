@@ -518,6 +518,7 @@ app = FastAPI(
 async def recurrence_timeout_handler(request: Request, exc: RecurrenceEvaluationTimeout):
     return JSONResponse(status_code=400, content={'detail': str(exc)})
 
+
 setup_access_logging(app)
 
 # Used by readiness checks to gate traffic until startup work is done.

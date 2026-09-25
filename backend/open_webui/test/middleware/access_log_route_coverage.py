@@ -200,15 +200,16 @@ def build_report() -> dict[str, list]:
         mutating_generic_issues.append(
             {
                 'route': key,
-                'problem': 'mutating route fell through to catch-all classification '
-                'and is not a documented exemption',
+                'problem': 'mutating route fell through to catch-all classification and is not a documented exemption',
                 'actual': row['action'],
             }
         )
 
     legacy_rule_issues = []
     for method, pattern_text in ABSENT_RULE_PATTERNS:
-        if any(rule_method == method and pattern.pattern == pattern_text for pattern, rule_method, _ in _NIS2_ACTION_RULES):
+        if any(
+            rule_method == method and pattern.pattern == pattern_text for pattern, rule_method, _ in _NIS2_ACTION_RULES
+        ):
             legacy_rule_issues.append({'method': method, 'pattern': pattern_text})
 
     admin_only_routes = {

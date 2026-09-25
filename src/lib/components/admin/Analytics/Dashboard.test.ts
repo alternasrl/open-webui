@@ -47,7 +47,9 @@ describe('Analytics dashboard Model Usage layout', () => {
 		expect((block.match(/\$i18n\.t\('Tok\/s'\)/g) ?? []).length).toBe(1);
 		expect((block.match(/\$i18n\.t\('Err%'\)/g) ?? []).length).toBe(1);
 		expect((firstRow.match(/<td\b/g) ?? []).length).toBe(10);
-		expect(block).toContain("selectedModel = { id: model.model_id, name: model.name ?? model.model_id }");
+		expect(block).toContain(
+			'selectedModel = { id: model.model_id, name: model.name ?? model.model_id }'
+		);
 		expect(block).toContain('reloadUserTable();');
 	});
 });
