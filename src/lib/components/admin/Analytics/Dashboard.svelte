@@ -36,7 +36,15 @@
 		type RoutingPair
 	} from './cross-filter-state';
 
-	const i18n = getContext('i18n');
+	const i18n: any = getContext('i18n');
+	const chartPeriodByRange: Record<string, 'hour' | 'week' | 'month' | 'year' | 'all'> = {
+		'1h': 'hour',
+		'24h': 'hour',
+		'7d': 'week',
+		'30d': 'month',
+		'90d': 'year',
+		all: 'all'
+	};
 
 	// Time period - persist in localStorage
 	let selectedPeriod =
@@ -89,6 +97,19 @@
 	};
 
 	// Data
+	type ModelStat = {
+		model_id: string;
+		count: number;
+		unique_users?: number;
+		unique_chats?: number;
+		name?: string;
+		avg_ttft_ms?: number | null;
+		avg_tokens_per_second?: number | null;
+		error_requests?: number;
+		total_requests?: number;
+		error_rate?: number;
+	};
+
 	let summary: {
 		total_messages: number;
 		total_chats: number;
@@ -110,19 +131,14 @@
 		total_requests: 0,
 		error_rate: 0
 	};
-	let modelStats: Array<{
-		model_id: string;
-		count: number;
-		unique_users?: number;
-		unique_chats?: number;
+	let modelStats: Array<ModelStat> = [];
+	let userStats: Array<{
+		user_id: string;
 		name?: string;
-		avg_ttft_ms?: number | null;
-		avg_tokens_per_second?: number | null;
-		error_requests?: number;
-		total_requests?: number;
-		error_rate?: number;
+		email?: string;
+		count: number;
+		total_tokens?: number;
 	}> = [];
-	let userStats: Array<{ user_id: string; name?: string; email?: string; count: number }> = [];
 	let dailyStats: Array<{ date: string; models: Record<string, number> }> = [];
 	let tokenStats: Record<
 		string,
@@ -210,8 +226,8 @@
 	}> = [];
 	let routingSelectedPair: { requested_model_id: string; selected_model_id: string } | null = null;
 	let routingModelMode: RoutingMode = 'or';
-	let previousFilterByUserId = filterByUserId;
-	let previousFilterByModelId = filterByModelId;
+	let previousFilterByUserId: string | null = filterByUserId;
+	let previousFilterByModelId: string | null = filterByModelId;
 
 	// Prompt Insights state
 	let promptInsightsSummary: {
@@ -359,7 +375,7 @@
 			summary = summaryRes ?? summary;
 
 			const modelsMap = new Map($models.map((m) => [m.id, m.name || m.id]));
-			modelStats = (modelsRes?.models ?? []).map((entry) => ({
+			modelStats = (modelsRes?.models ?? []).map((entry: ModelStat) => ({
 				...entry,
 				name: modelsMap.get(entry.model_id) || entry.model_id
 			}));
@@ -411,7 +427,7 @@
 			]);
 			if (!modelTracker.isLatest(requestId)) return;
 			const modelsMap = new Map($models.map((m) => [m.id, m.name || m.id]));
-			modelStats = (modelsRes?.models ?? []).map((entry) => ({
+			modelStats = (modelsRes?.models ?? []).map((entry: ModelStat) => ({
 				...entry,
 				name: modelsMap.get(entry.model_id) || entry.model_id
 			}));
@@ -500,7 +516,9 @@
 
 	$: sortedModels = [...modelStats].sort((a, b) => {
 		if (modelOrderBy === 'name') {
-			return modelDirection === 'asc' ? a.name.localeCompare(b.name) : b.name.localeCompare(a.name);
+			const nameA = a.name ?? a.model_id;
+			const nameB = b.name ?? b.model_id;
+			return modelDirection === 'asc' ? nameA.localeCompare(nameB) : nameB.localeCompare(nameA);
 		}
 		if (modelOrderBy === 'tokens') {
 			const aTokens = tokenStats[a.model_id]?.total_tokens ?? 0;
@@ -694,14 +712,6 @@
 			'#06b6d4',
 			'#84cc16'
 		]}
-		{@const periodMap = {
-			'1h': 'hour',
-			'24h': 'hour',
-			'7d': 'week',
-			'30d': 'month',
-			'90d': 'year',
-			all: 'all'
-		}}
 		<div class="mb-4">
 			<div class="text-xs font-medium text-gray-600 dark:text-gray-400 mb-2 px-0.5">
 				{selectedPeriod === '1h' || selectedPeriod === '24h'
@@ -713,7 +723,7 @@
 				models={topModels}
 				colors={chartColors}
 				height={200}
-				period={periodMap[selectedPeriod] || 'week'}
+				period={chartPeriodByRange[selectedPeriod] || 'week'}
 			/>
 		</div>
 	{/if}
@@ -937,7 +947,7 @@
 											alt={model.name}
 											class="size-5 rounded-full object-cover shrink-0"
 											on:error={(e) => {
-												e.target.src = '/favicon.png';
+												(e.currentTarget as HTMLImageElement).src = '/favicon.png';
 											}}
 										/>
 										<span class="truncate max-w-[150px]">{model.name}</span>
@@ -1093,7 +1103,7 @@
 											alt={user.name || 'User'}
 											class="size-5 rounded-full object-cover shrink-0"
 											on:error={(e) => {
-												e.target.src = '/user.png';
+												(e.currentTarget as HTMLImageElement).src = '/user.png';
 											}}
 										/>
 										<span class="truncate max-w-[150px]"

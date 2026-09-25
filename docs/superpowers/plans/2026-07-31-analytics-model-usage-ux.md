@@ -77,7 +77,9 @@ describe('Analytics dashboard Model Usage layout', () => {
 	it('keeps the existing drill-down affordance on model rows', () => {
 		const block = getModelUsageBlock();
 
-		expect(block).toContain("selectedModel = { id: model.model_id, name: model.name ?? model.model_id }");
+		expect(block).toContain(
+			'selectedModel = { id: model.model_id, name: model.name ?? model.model_id }'
+		);
 		expect(block).toContain('reloadUserTable();');
 	});
 });

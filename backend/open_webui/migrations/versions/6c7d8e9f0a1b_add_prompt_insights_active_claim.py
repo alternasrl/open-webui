@@ -35,7 +35,7 @@ def upgrade() -> None:
             )
 
     running = bind.execute(
-        sa.text("SELECT id FROM prompt_insights_run " "WHERE status = 'running' ORDER BY created_at DESC, id DESC")
+        sa.text("SELECT id FROM prompt_insights_run WHERE status = 'running' ORDER BY created_at DESC, id DESC")
     ).fetchall()
     if running:
         active_id = running[0][0]
@@ -47,10 +47,10 @@ def upgrade() -> None:
         if stale_ids:
             bind.execute(
                 sa.text(
-                    "UPDATE prompt_insights_run "
+                    'UPDATE prompt_insights_run '
                     "SET status = 'failed', completed_at = :completed_at, "
                     "error_message = COALESCE(error_message, 'Superseded while adding atomic run claims') "
-                    "WHERE id IN :run_ids"
+                    'WHERE id IN :run_ids'
                 ).bindparams(sa.bindparam('run_ids', expanding=True)),
                 {'completed_at': int(time.time()), 'run_ids': stale_ids},
             )

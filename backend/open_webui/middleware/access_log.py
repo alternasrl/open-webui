@@ -145,7 +145,6 @@ NIS2 Action Categories
 """
 
 import hashlib
-import json
 import logging
 import re
 import sys
@@ -153,6 +152,7 @@ import threading
 import time
 import uuid
 from typing import Callable, NamedTuple, Optional
+from urllib.parse import quote
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -289,6 +289,7 @@ def _compile_action_rules() -> list[tuple[re.Pattern, Optional[str], str]]:
         (rf'^/api/v1/retrieval/reset/db$', 'POST', 'DATA_RESET_RETRIEVAL_DB'),
         (rf'^/api/v1/retrieval/reset/uploads$', 'POST', 'DATA_RESET_RETRIEVAL_UPLOADS'),
         (rf'^/api/v1/audio/config/update$', 'POST', 'CONFIG_AUDIO'),
+        (rf'^/api/v1/images/verify$', 'POST', 'CONFIG_IMAGES_VERIFY'),
         (rf'^/api/v1/images/config/update$', 'POST', 'CONFIG_IMAGES'),
         # ── Tasks (AI generation + config) ──────────────────────────────
         (rf'^/api/v1/tasks/config/update$', 'POST', 'CONFIG_TASKS'),
@@ -380,6 +381,7 @@ def _compile_action_rules() -> list[tuple[re.Pattern, Optional[str], str]]:
         (rf'^/api/v1/models/delete/all$', 'DELETE', 'RESOURCE_DELETE_ALL_MODELS'),
         (rf'^/api/v1/models/import$', 'POST', 'DATA_IMPORT'),
         (rf'^/api/v1/models/export$', 'GET', 'DATA_EXPORT'),
+        (rf'^/api/v1/models/all$', 'GET', 'MODEL_LIST_ALL'),
         (rf'^/api/v1/models/sync$', 'POST', 'RESOURCE_SYNC_MODELS'),
         # ── SCIM 2.0 Identity Provisioning ─────────────────────────────
         # SCIM endpoints are used by IdPs (ManageEngine ADSSPM, Entra ID,
@@ -429,9 +431,11 @@ def _compile_action_rules() -> list[tuple[re.Pattern, Optional[str], str]]:
         (rf'^/api/v1/memories/{_ID}$', 'DELETE', 'MEMORY_DELETE'),
         # ── Folders ──────────────────────────────────────────────────────
         (rf'^/api/v1/folders/$', 'POST', 'FOLDER_CREATE'),
+        (rf'^/api/v1/folders/shared$', 'GET', 'FOLDER_SHARED_READ'),
         (rf'^/api/v1/folders/{_ID}/update$', 'POST', 'FOLDER_UPDATE'),
         (rf'^/api/v1/folders/{_ID}/update/parent$', 'POST', 'FOLDER_MOVE'),
         (rf'^/api/v1/folders/{_ID}$', 'DELETE', 'FOLDER_DELETE'),
+        (rf'^/api/v1/folders/{_ID}$', 'GET', 'FOLDER_ACCESS_READ'),
         # ── Automations (code execution risk) ───────────────────────────
         # RESOURCE_RUN_AUTOMATION is NIS2-critical: it triggers server-side
         # code/workflow execution and can modify system state.
@@ -480,7 +484,6 @@ def _compile_action_rules() -> list[tuple[re.Pattern, Optional[str], str]]:
         (rf'^/api/v1/configs/namespace/{_ID}$', 'GET', 'CONFIG_NAMESPACE_READ'),
         (rf'^/api/v1/files/count$', 'GET', 'FILE_COUNT'),
         (rf'^/api/v1/folders/{_ID}/access/update$', 'POST', 'ACCESS_FOLDER_UPDATE'),
-        (rf'^/api/v1/folders/shared$', 'GET', 'FOLDER_SHARED_READ'),
         (rf'^/api/v1/folders/{_ID}/shared/chats$', 'GET', 'FOLDER_SHARED_CHATS_READ'),
         (
             rf'^/api/v1/knowledge/external/connections/{_ID}/retrieve-test$',
@@ -521,6 +524,7 @@ def _compile_action_rules() -> list[tuple[re.Pattern, Optional[str], str]]:
         (rf'^/api/v1/embeddings$', 'POST', 'OLLAMA_EMBEDDINGS'),
         # ── v0.11.3 new endpoints ──────────────────────────────────────────
         (rf'^/openai/models/{_ID}/catalog$', 'GET', 'MODEL_PROVIDER_CATALOG'),
+        (rf'^/openai/models/{_ID}$', 'GET', 'MODEL_PROVIDER_LIST'),
         (rf'^/openai/models/{_ID}/download$', 'POST', 'MODEL_PROVIDER_DOWNLOAD'),
         (rf'^/openai/models/{_ID}/download/status/{_ID}$', 'GET', 'MODEL_PROVIDER_DOWNLOAD_STATUS'),
         (rf'^/openai/models/{_ID}/load$', 'POST', 'MODEL_PROVIDER_LOAD'),
@@ -599,6 +603,7 @@ _NIS2_SECURITY_ACTIONS = frozenset(
         'CONFIG_RETRIEVAL_EMBEDDING',
         'CONFIG_AUDIO',
         'CONFIG_IMAGES',
+        'CONFIG_IMAGES_VERIFY',
         'CONFIG_TASKS',
         # Access control / sharing
         'ACCESS_SHARE_CHAT',
@@ -754,6 +759,14 @@ def _compile_object_id_patterns() -> list[tuple[re.Pattern, str]]:
 
 _OBJECT_ID_PATTERNS = _compile_object_id_patterns()
 
+# Bounds on the audited object reference for query-string-driven exports
+# (e.g. GET /api/v1/models/export?ids=...). These exist to prevent an
+# attacker-controlled query string from unboundedly inflating the access
+# log record; they do not change what gets sanitized, only how much of it
+# is retained.
+_MAX_EXPORT_OBJECT_IDS = 50
+_MAX_EXPORT_OBJECT_ID_LENGTH = 200
+
 
 def _extract_object_ref(path: str) -> tuple[Optional[str], Optional[str]]:
     """Extract object_type and object_id from a URL path.
@@ -767,6 +780,50 @@ def _extract_object_ref(path: str) -> tuple[Optional[str], Optional[str]]:
         if m:
             return obj_type, m.group('oid')
     return None, None
+
+
+def _sanitize_audit_object_id(value: str) -> str:
+    """Encode arbitrary resource IDs for the pipe-delimited audit log."""
+    return quote(value, safe='-._~')
+
+
+def _extract_event_object_ref(
+    method: str,
+    path: str,
+    query_params=None,
+) -> tuple[Optional[str], Optional[str]]:
+    """Extract the audited object reference for a request.
+
+    Most routes encode the target resource directly in the path. For export
+    routes that accept filtered resource IDs in the query string, preserve
+    those IDs in the object reference without logging request payloads or
+    exported content.
+    """
+    if method == 'GET' and path == '/api/v1/models/export' and query_params is not None:
+        raw_ids = query_params.getlist('ids') if hasattr(query_params, 'getlist') else []
+        ids: list[str] = []
+        for value in raw_ids:
+            for item in value.split(','):
+                item = item.strip()
+                if not item:
+                    continue
+                # Bound the audited reference so an attacker-controlled query
+                # string cannot inflate the access-log record without limit.
+                item = item[:_MAX_EXPORT_OBJECT_ID_LENGTH]
+                # Dedupe on the sanitized form: comparing the raw item against
+                # the already-sanitized `ids` list let distinct raw values that
+                # sanitize to the same string slip through as duplicates.
+                sanitized = _sanitize_audit_object_id(item)
+                if sanitized not in ids:
+                    ids.append(sanitized)
+                if len(ids) >= _MAX_EXPORT_OBJECT_IDS:
+                    break
+            if len(ids) >= _MAX_EXPORT_OBJECT_IDS:
+                break
+        if ids:
+            return 'model', ','.join(ids)
+
+    return _extract_object_ref(path)
 
 
 # ---------------------------------------------------------------------------
@@ -890,28 +947,30 @@ def _decode_id_token_claims(id_token_raw: str, user_hint: str = '') -> tuple[Opt
         return None, None
 
 
-# Claims to redact from the full token dump to avoid leaking opaque tokens
-# into the log (they add noise and may trigger WAF/DLP rules).
-_REDACTED_CLAIMS = frozenset({'at_hash', 'c_hash', 'nonce', 'jti'})
-
-
-def _decode_full_id_token(id_token_raw: str) -> Optional[dict]:
-    """Decode all claims from an OIDC id_token for debug/audit logging.
-
-    Returns the full decoded payload dict, with a small set of opaque
-    internal claims redacted.  Returns None on any error.
-    """
+def _decode_allowed_oidc_audit_claims(id_token_raw: str) -> dict[str, str]:
+    """Decode only the approved OIDC audit identifiers from an id_token."""
     if not id_token_raw or pyjwt is None:
-        return None
+        return {}
     try:
         decoded = pyjwt.decode(
             id_token_raw,
             options={'verify_signature': False},
             algorithms=['RS256', 'HS256', 'ES256', 'PS256', 'EdDSA'],
         )
-        return {k: v for k, v in decoded.items() if k not in _REDACTED_CLAIMS}
+        allowed: dict[str, str] = {}
+        if decoded.get('sub') is not None:
+            allowed['sub'] = str(decoded['sub'])
+        amr = decoded.get('amr')
+        acr = decoded.get('acr')
+        if amr:
+            allowed['mfa'] = ','.join(str(value) for value in amr) if isinstance(amr, list) else str(amr)
+        elif acr:
+            allowed['mfa'] = str(acr)
+        if decoded.get('auth_time') is not None:
+            allowed['auth_time'] = str(decoded['auth_time'])
+        return allowed
     except Exception:
-        return None
+        return {}
 
 
 def _resolve_user_context(user_id: str) -> _UserContext:
@@ -1104,7 +1163,11 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
         action_type, is_nis2 = _classify_action(request.method, request.url.path)
 
         # Log360: Extract target object reference from URL path (CEF cs4 + cs5)
-        object_type, object_id = _extract_object_ref(request.url.path)
+        object_type, object_id = _extract_event_object_ref(
+            request.method,
+            request.url.path,
+            request.query_params,
+        )
 
         # Log360 UEBA: Capture User-Agent for anomaly detection
         user_agent = request.headers.get('user-agent', '-')
@@ -1217,12 +1280,11 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
             f'time={process_time:.3f}s'
         )
 
-        # For OIDC login events append the full decoded token claims for debug/audit.
-        # The raw id_token is decoded here (no signature verification) and the result
-        # is appended as a JSON field so that claim mapping issues are immediately visible.
+        # For OIDC login events append only explicitly approved identifiers.
         if action_type == 'AUTH_OIDC_LOGIN':
-            claims_dict = _decode_full_id_token(oidc_raw_id_token) if oidc_raw_id_token else None
-            log_msg += f' | claims={json.dumps(claims_dict, default=str) if claims_dict else "-"}'
+            allowed_claims = _decode_allowed_oidc_audit_claims(oidc_raw_id_token) if oidc_raw_id_token else {}
+            claims_meta = '|'.join(f'{key}={value}' for key, value in allowed_claims.items()) or '-'
+            log_msg += f' | oidc_claims={claims_meta}'
 
         # Use WARNING level for NIS2 security-relevant actions to aid SIEM/alerting
         if effective_nis2:

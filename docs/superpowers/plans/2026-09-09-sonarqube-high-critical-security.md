@@ -26,25 +26,25 @@
 
 ### Quality Gate
 
-| New-code condition | Required | Actual | Status | In scope |
-|---|---:|---:|---|---|
-| Reliability rating | A (`≤ 1`) | D (`4`) | FAIL | No |
-| Security rating | A (`≤ 1`) | C (`3`) | FAIL | Only HIGH/CRITICAL findings; none exist |
-| Maintainability rating | A (`≤ 1`) | A (`1`) | PASS | No |
-| Duplicated lines density | `≤ 3%` | `2.3%` | PASS | No |
-| Security hotspots reviewed | `100%` | `100%` | PASS | HIGH hotspots only; none exist |
+| New-code condition         |  Required |  Actual | Status | In scope                                |
+| -------------------------- | --------: | ------: | ------ | --------------------------------------- |
+| Reliability rating         | A (`≤ 1`) | D (`4`) | FAIL   | No                                      |
+| Security rating            | A (`≤ 1`) | C (`3`) | FAIL   | Only HIGH/CRITICAL findings; none exist |
+| Maintainability rating     | A (`≤ 1`) | A (`1`) | PASS   | No                                      |
+| Duplicated lines density   |    `≤ 3%` |  `2.3%` | PASS   | No                                      |
+| Security hotspots reviewed |    `100%` |  `100%` | PASS   | HIGH hotspots only; none exist          |
 
 GitHub check `102468970027` reports `Quality Gate failed` because Reliability is D and Security is C.
 
 ### Scoped Security Findings
 
-| Scope | Query | Result |
-|---|---|---:|
-| PR new code | MQR Security impact `HIGH,BLOCKER` | 0 |
-| PR new code | Legacy Vulnerability severity `CRITICAL,BLOCKER` | 0 |
-| PR new code | HIGH-probability Security Hotspots | 0 |
-| Overall `main` | MQR Security impact `HIGH,BLOCKER` | 0 |
-| Overall `main` | HIGH-probability Security Hotspots | 0 |
+| Scope          | Query                                            | Result |
+| -------------- | ------------------------------------------------ | -----: |
+| PR new code    | MQR Security impact `HIGH,BLOCKER`               |      0 |
+| PR new code    | Legacy Vulnerability severity `CRITICAL,BLOCKER` |      0 |
+| PR new code    | HIGH-probability Security Hotspots               |      0 |
+| Overall `main` | MQR Security impact `HIGH,BLOCKER`               |      0 |
+| Overall `main` | HIGH-probability Security Hotspots               |      0 |
 
 The PR contains 25 security-impact issues outside scope: 24 LOW and 1 MEDIUM. The MEDIUM finding is `pythonsecurity:S5144` at `backend/open_webui/routers/retrieval.py:2186` (user-controlled URL construction). It contributes to Security rating C but MUST NOT be changed under this plan.
 
@@ -53,10 +53,12 @@ The PR contains 25 security-impact issues outside scope: 24 LOW and 1 MEDIUM. Th
 ### Task 1: Reconfirm the analysis target and Quality Gate
 
 **Files:**
+
 - Validate only: GitHub PR #7 metadata
 - Validate only: SonarQube Cloud project `efficiento_open-webui`
 
 **Interfaces:**
+
 - Consumes: GitHub PR head SHA and Sonar project/pull-request identifiers.
 - Produces: a verified mapping between the PR head and the Sonar analysis being evaluated.
 
@@ -103,9 +105,11 @@ rm -f /tmp/sonar-pr7-gate.json
 ### Task 2: Prove that the HIGH/CRITICAL remediation set is empty
 
 **Files:**
+
 - Validate only: SonarQube Cloud issue and hotspot indexes
 
 **Interfaces:**
+
 - Consumes: current Sonar analysis for PR #7.
 - Produces: three independently verified empty finding sets.
 
@@ -182,9 +186,11 @@ Expected: all three assertions pass. Therefore no code, tests, suppressions, or 
 ### Task 3: Revalidate after the next PR-head update
 
 **Files:**
+
 - Validate only: PR #7 and SonarQube Cloud analysis
 
 **Interfaces:**
+
 - Consumes: a new PR-head SHA and its completed Sonar analysis.
 - Produces: either a clean scoped result or a concrete follow-up plan per matching finding.
 

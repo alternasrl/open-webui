@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { getContext, tick } from 'svelte';
-	const i18n = getContext('i18n');
+	const i18n: any = getContext('i18n');
 
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
 	import Switch from '$lib/components/common/Switch.svelte';
@@ -10,14 +10,16 @@
 
 	import { connect } from 'socket.io-client';
 
-	export let onDelete = () => {};
-	export let onSubmit = () => {};
+	type Connection = { url: string; key: string; config: Record<string, any> };
+
+	export let onDelete: () => void = () => {};
+	export let onSubmit: (connection: Connection) => void | Promise<void> = () => {};
 
 	export let pipeline = false;
 
 	export let url = '';
 	export let key = '';
-	export let config = {};
+	export let config: Record<string, any> = {};
 
 	let showConfigModal = false;
 </script>
@@ -34,7 +36,7 @@
 		onDelete();
 		showConfigModal = false;
 	}}
-	onSubmit={async (connection) => {
+	onSubmit={async (connection: Connection) => {
 		url = connection.url;
 		key = connection.key;
 		config = connection.config;

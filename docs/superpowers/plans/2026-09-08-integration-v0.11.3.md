@@ -33,26 +33,26 @@
 
 ## File Structure
 
-| File | Responsibility |
-| --- | --- |
-| `patches/integration-v0.11.3-customizations-from-main.patch` | Raw cumulative transport patch generated from `git diff --binary f9590b801..main` before touching the new integration branch. |
-| `patches/integration-v0.11.3-customizations-files.txt` | Flat inventory of every fork-touched path used to track patch coverage while resolving conflicts. |
-| `backend/open_webui/utils/middleware.py` | Highest-risk merge surface: chat pipeline, MCP tool injection, routing usage merge, response streaming helpers. |
-| `backend/open_webui/main.py` | Highest-risk merge surface: app wiring, audit middleware ordering, access-log setup, OIDC routes, provider compatibility endpoints. |
-| `backend/open_webui/utils/tools.py` | Highest-risk merge surface: built-in tool gating, subagent enablement, mutating tool restrictions. |
-| `backend/open_webui/utils/oauth.py` | Medium-risk merge surface: OAuth/OIDC behavior, MCP auth compatibility, access-log cache invalidation. |
-| `backend/open_webui/config.py` | Medium-risk merge surface: runtime config defaults and the local Alembic `heads` upgrade fix. |
-| `backend/open_webui/env.py` | Medium-risk merge surface: audit/access-log environment variables and related defaults. |
-| `backend/open_webui/routers/retrieval.py` | Medium-risk merge surface: `/api/v1/retrieval/process/url` and admin retrieval config endpoints. |
-| `backend/open_webui/routers/knowledge.py` | Medium-risk merge surface: reindex and external-knowledge routes touched by upstream. |
-| `backend/open_webui/routers/users.py`, `backend/open_webui/routers/auths.py`, `backend/open_webui/routers/openai.py` | Medium-risk merge surfaces for user settings, OAuth admin config, and provider-model management routes. |
-| `backend/open_webui/routers/chats.py`, `backend/open_webui/routers/ollama.py`, `backend/open_webui/routers/channels.py`, `backend/open_webui/routers/models.py`, `backend/open_webui/routers/audio.py`, `backend/open_webui/routers/files.py`, `backend/open_webui/routers/folders.py`, `backend/open_webui/routers/functions.py`, `backend/open_webui/routers/images.py`, `backend/open_webui/routers/notifications.py`, `backend/open_webui/routers/scim.py`, `backend/open_webui/routers/terminals.py`, `backend/open_webui/models/chat_messages.py`, `backend/open_webui/models/folders.py`, `backend/open_webui/models/users.py`, `src/lib/apis/openai/index.ts`, `src/lib/components/admin/Settings/Connections.svelte` | Low-risk overlapping files that still need explicit merge confirmation. |
-| `backend/open_webui/prompt_insights/**`, `backend/open_webui/routers/analytics.py`, `src/lib/components/admin/Analytics/**`, `docs/superpowers/**`, `patches/**`, `docker-compose.yaml`, `backend/open_webui/middleware/__init__.py`, `backend/open_webui/utils/mcp/client.py`, `src/lib/components/admin/Settings/Connections/OllamaConnection.svelte`, `src/lib/components/admin/Settings/Connections/OpenAIConnection.svelte` | Fork-only paths that should replay cleanly and must survive intact. |
-| `backend/open_webui/middleware/access_log.py` | NIS2 action map that must gain the new v0.11.3 routes under a dedicated comment block. |
-| `backend/open_webui/test/middleware/access_log_route_coverage.py` | New automated route-inventory script that compares `app.routes` to `_NIS2_ACTION_RULES` and flags dead rules. |
-| `backend/open_webui/test/middleware/test_access_log.py` | Concrete regression tests for new v0.11.3 action types and security-set decisions. |
-| `backend/open_webui/migrations/versions/*.py` | Existing migration chain plus an Alembic merge revision if the integration produces multiple heads. |
-| `package.json`, `package-lock.json`, `patches/README.md` | Release metadata: version bump to `0.11.3-260908` and the documented patch series for this integration. |
+| File                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | Responsibility                                                                                                                      |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `patches/integration-v0.11.3-customizations-from-main.patch`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | Raw cumulative transport patch generated from `git diff --binary f9590b801..main` before touching the new integration branch.       |
+| `patches/integration-v0.11.3-customizations-files.txt`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | Flat inventory of every fork-touched path used to track patch coverage while resolving conflicts.                                   |
+| `backend/open_webui/utils/middleware.py`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | Highest-risk merge surface: chat pipeline, MCP tool injection, routing usage merge, response streaming helpers.                     |
+| `backend/open_webui/main.py`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | Highest-risk merge surface: app wiring, audit middleware ordering, access-log setup, OIDC routes, provider compatibility endpoints. |
+| `backend/open_webui/utils/tools.py`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | Highest-risk merge surface: built-in tool gating, subagent enablement, mutating tool restrictions.                                  |
+| `backend/open_webui/utils/oauth.py`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | Medium-risk merge surface: OAuth/OIDC behavior, MCP auth compatibility, access-log cache invalidation.                              |
+| `backend/open_webui/config.py`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | Medium-risk merge surface: runtime config defaults and the local Alembic `heads` upgrade fix.                                       |
+| `backend/open_webui/env.py`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | Medium-risk merge surface: audit/access-log environment variables and related defaults.                                             |
+| `backend/open_webui/routers/retrieval.py`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | Medium-risk merge surface: `/api/v1/retrieval/process/url` and admin retrieval config endpoints.                                    |
+| `backend/open_webui/routers/knowledge.py`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | Medium-risk merge surface: reindex and external-knowledge routes touched by upstream.                                               |
+| `backend/open_webui/routers/users.py`, `backend/open_webui/routers/auths.py`, `backend/open_webui/routers/openai.py`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | Medium-risk merge surfaces for user settings, OAuth admin config, and provider-model management routes.                             |
+| `backend/open_webui/routers/chats.py`, `backend/open_webui/routers/ollama.py`, `backend/open_webui/routers/channels.py`, `backend/open_webui/routers/models.py`, `backend/open_webui/routers/audio.py`, `backend/open_webui/routers/files.py`, `backend/open_webui/routers/folders.py`, `backend/open_webui/routers/functions.py`, `backend/open_webui/routers/images.py`, `backend/open_webui/routers/notifications.py`, `backend/open_webui/routers/scim.py`, `backend/open_webui/routers/terminals.py`, `backend/open_webui/models/chat_messages.py`, `backend/open_webui/models/folders.py`, `backend/open_webui/models/users.py`, `src/lib/apis/openai/index.ts`, `src/lib/components/admin/Settings/Connections.svelte` | Low-risk overlapping files that still need explicit merge confirmation.                                                             |
+| `backend/open_webui/prompt_insights/**`, `backend/open_webui/routers/analytics.py`, `src/lib/components/admin/Analytics/**`, `docs/superpowers/**`, `patches/**`, `docker-compose.yaml`, `backend/open_webui/middleware/__init__.py`, `backend/open_webui/utils/mcp/client.py`, `src/lib/components/admin/Settings/Connections/OllamaConnection.svelte`, `src/lib/components/admin/Settings/Connections/OpenAIConnection.svelte`                                                                                                                                                                                                                                                                                              | Fork-only paths that should replay cleanly and must survive intact.                                                                 |
+| `backend/open_webui/middleware/access_log.py`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | NIS2 action map that must gain the new v0.11.3 routes under a dedicated comment block.                                              |
+| `backend/open_webui/test/middleware/access_log_route_coverage.py`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | New automated route-inventory script that compares `app.routes` to `_NIS2_ACTION_RULES` and flags dead rules.                       |
+| `backend/open_webui/test/middleware/test_access_log.py`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | Concrete regression tests for new v0.11.3 action types and security-set decisions.                                                  |
+| `backend/open_webui/migrations/versions/*.py`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | Existing migration chain plus an Alembic merge revision if the integration produces multiple heads.                                 |
+| `package.json`, `package-lock.json`, `patches/README.md`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | Release metadata: version bump to `0.11.3-260908` and the documented patch series for this integration.                             |
 
 ## Task Map
 
@@ -69,10 +69,12 @@
 ### Task 1: Create the integration branch and preserve the cumulative fork artifact
 
 **Files:**
+
 - Create: `patches/integration-v0.11.3-customizations-from-main.patch`
 - Create: `patches/integration-v0.11.3-customizations-files.txt`
 
 **Interfaces:**
+
 - Consumes: Git refs `f9590b8017199e56d5e953657e6498e3cef1d246`, `main`, `v0.11.3`.
 - Produces: `patches/integration-v0.11.3-customizations-from-main.patch` (unified diff) and `patches/integration-v0.11.3-customizations-files.txt` (one path per line) for Tasks 2-4.
 
@@ -120,12 +122,14 @@ git commit -m "chore: capture v0.11.3 integration patch seed"
 ### Task 2: Apply the raw patch and resolve the critical conflict trio
 
 **Files:**
+
 - Modify: `backend/open_webui/utils/middleware.py`
 - Modify: `backend/open_webui/main.py`
 - Modify: `backend/open_webui/utils/tools.py`
 - Test: `backend/open_webui/test/middleware/test_routing_usage_merge.py`
 
 **Interfaces:**
+
 - Consumes: `patches/integration-v0.11.3-customizations-from-main.patch` from Task 1.
 - Produces: merged `utils/middleware.py`, `main.py`, and `utils/tools.py` that still expose `merge_routing_usage(usage: dict | None, metadata: dict | None) -> dict`, `setup_access_logging(app: FastAPI) -> None`, and the `subagents.enable` / `subagents.background_enabled` gating paths used by later tasks.
 
@@ -221,6 +225,7 @@ git commit -m "merge: resolve critical v0.11.3 integration conflicts"
 ### Task 3: Resolve the medium-risk backend overlaps
 
 **Files:**
+
 - Modify: `backend/open_webui/utils/oauth.py`
 - Modify: `backend/open_webui/config.py`
 - Modify: `backend/open_webui/env.py`
@@ -231,6 +236,7 @@ git commit -m "merge: resolve critical v0.11.3 integration conflicts"
 - Modify: `backend/open_webui/routers/openai.py`
 
 **Interfaces:**
+
 - Consumes: the integrated app entrypoint from Task 2.
 - Produces: merged OAuth/config/router surfaces that expose `OAuthConfigResponse`, `/api/v1/retrieval/process/url`, `/api/v1/knowledge/reindex`, and `/openai/models/{url_idx}/{catalog|download|load|unload|sse}` for Tasks 5-7.
 
@@ -322,6 +328,7 @@ git commit -m "merge: resolve medium-risk v0.11.3 overlaps"
 ### Task 4: Replay the low-risk overlaps and restore all fork-only paths
 
 **Files:**
+
 - Modify: `backend/open_webui/routers/chats.py`
 - Modify: `backend/open_webui/routers/ollama.py`
 - Modify: `backend/open_webui/routers/channels.py`
@@ -358,6 +365,7 @@ git commit -m "merge: resolve medium-risk v0.11.3 overlaps"
 - Test: `src/lib/components/admin/Analytics/prompt-insights.test.ts`
 
 **Interfaces:**
+
 - Consumes: the merged integration branch from Task 3.
 - Produces: a tree where the fork-only Prompt Insights, Analytics, docs, patches, and connection components are present exactly once and low-risk route overlaps no longer contain conflict markers.
 
@@ -439,11 +447,13 @@ git commit -m "merge: restore low-risk and fork-only customizations"
 ### Task 5: Verify Alembic lineage and merge heads only if the integrated tree requires it
 
 **Files:**
+
 - Modify: `backend/open_webui/migrations/versions/*.py`
 - Validate: `backend/open_webui/alembic.ini`
 - Validate: `backend/open_webui/migrations/env.py`
 
 **Interfaces:**
+
 - Consumes: the integrated migration tree produced by Tasks 2-4.
 - Produces: a single reachable Alembic head, plus an optional merge migration file if upstream and fork histories now diverge.
 
@@ -490,6 +500,7 @@ git diff --cached --quiet || git commit -m "fix: realign alembic heads for v0.11
 ### Task 6: Re-apply the recent local fixes that are easy to lose in conflict resolution
 
 **Files:**
+
 - Modify: `backend/requirements.txt`
 - Modify: `backend/open_webui/utils/mcp/client.py`
 - Modify: `backend/open_webui/config.py`
@@ -498,6 +509,7 @@ git diff --cached --quiet || git commit -m "fix: realign alembic heads for v0.11
 - Modify: `src/lib/components/admin/Analytics/RoutingUsage.svelte`
 
 **Interfaces:**
+
 - Consumes: the merged files from Tasks 3-4.
 - Produces: preserved local fixes for `nltk==3.10.0`, MCP client import compatibility, Alembic `upgrade(..., 'heads')`, and the scrollbar class changes used by the analytics UI.
 
@@ -550,11 +562,13 @@ git commit -m "fix: restore fork-specific integration regressions"
 ### Task 7: Add automated NIS2 route coverage and extend `access_log.py` for v0.11.3
 
 **Files:**
+
 - Create: `backend/open_webui/test/middleware/access_log_route_coverage.py`
 - Modify: `backend/open_webui/middleware/access_log.py:217-710`
 - Modify: `backend/open_webui/test/middleware/test_access_log.py`
 
 **Interfaces:**
+
 - Consumes: `open_webui.main.app`, `_NIS2_ACTION_RULES`, `_NIS2_SECURITY_ACTIONS`, and the upstream `v0.11.3` runtime routes.
 - Produces: `backend/open_webui/test/middleware/access_log_route_coverage.py` with `iter_runtime_routes() -> list[dict[str, object]]` and `classify_route(method: str, path: str) -> str`, plus new action types in `access_log.py` and concrete route tests in `test_access_log.py`.
 
@@ -681,27 +695,27 @@ Expected: **FAIL** with `mismatches` for the provider-model management routes, `
 Insert this block in `backend/open_webui/middleware/access_log.py` immediately before the catch-all rules:
 
 ```python
-        # ── v0.11.3 new endpoints ──────────────────────────────────────────
-        (rf'^/openai/models/{_ID}/catalog$', 'GET', 'MODEL_PROVIDER_CATALOG'),
-        (rf'^/openai/models/{_ID}/download$', 'POST', 'MODEL_PROVIDER_DOWNLOAD'),
-        (rf'^/openai/models/{_ID}/download/status/{_ID}$', 'GET', 'MODEL_PROVIDER_DOWNLOAD_STATUS'),
-        (rf'^/openai/models/{_ID}/load$', 'POST', 'MODEL_PROVIDER_LOAD'),
-        (rf'^/openai/models/{_ID}/unload$', 'POST', 'MODEL_PROVIDER_UNLOAD'),
-        (rf'^/openai/models/{_ID}/sse$', 'GET', 'MODEL_PROVIDER_SSE'),
-        (rf'^/api/v1/retrieval/process/url$', 'POST', 'RETRIEVAL_PROCESS_URL'),
-        (rf'^/api/v1/memories/reindex$', 'POST', 'MEMORY_REINDEX'),
-        (rf'^/ollama/v1/models/{_ID}$', 'GET', 'OLLAMA_COMPAT_MODELS_READ'),
-        (rf'^/ollama/api/tags/{_ID}$', 'GET', 'OLLAMA_COMPAT_TAGS_READ'),
-        (rf'^/ollama/api/version/{_ID}$', 'GET', 'OLLAMA_COMPAT_VERSION_READ'),
+# ── v0.11.3 new endpoints ──────────────────────────────────────────
+((rf'^/openai/models/{_ID}/catalog$', 'GET', 'MODEL_PROVIDER_CATALOG'),)
+((rf'^/openai/models/{_ID}/download$', 'POST', 'MODEL_PROVIDER_DOWNLOAD'),)
+((rf'^/openai/models/{_ID}/download/status/{_ID}$', 'GET', 'MODEL_PROVIDER_DOWNLOAD_STATUS'),)
+((rf'^/openai/models/{_ID}/load$', 'POST', 'MODEL_PROVIDER_LOAD'),)
+((rf'^/openai/models/{_ID}/unload$', 'POST', 'MODEL_PROVIDER_UNLOAD'),)
+((rf'^/openai/models/{_ID}/sse$', 'GET', 'MODEL_PROVIDER_SSE'),)
+((rf'^/api/v1/retrieval/process/url$', 'POST', 'RETRIEVAL_PROCESS_URL'),)
+((rf'^/api/v1/memories/reindex$', 'POST', 'MEMORY_REINDEX'),)
+((rf'^/ollama/v1/models/{_ID}$', 'GET', 'OLLAMA_COMPAT_MODELS_READ'),)
+((rf'^/ollama/api/tags/{_ID}$', 'GET', 'OLLAMA_COMPAT_TAGS_READ'),)
+((rf'^/ollama/api/version/{_ID}$', 'GET', 'OLLAMA_COMPAT_VERSION_READ'),)
 ```
 
 Add the mutating actions to `_NIS2_SECURITY_ACTIONS` and leave the pure reads out:
 
 ```python
-        'MODEL_PROVIDER_DOWNLOAD',
-        'MODEL_PROVIDER_LOAD',
-        'MODEL_PROVIDER_UNLOAD',
-        'MEMORY_REINDEX',
+('MODEL_PROVIDER_DOWNLOAD',)
+('MODEL_PROVIDER_LOAD',)
+('MODEL_PROVIDER_UNLOAD',)
+('MEMORY_REINDEX',)
 ```
 
 Keep `RETRIEVAL_PROCESS_URL`, `MODEL_PROVIDER_CATALOG`, `MODEL_PROVIDER_DOWNLOAD_STATUS`, `MODEL_PROVIDER_SSE`, and the three `OLLAMA_COMPAT_*_READ` actions outside the security set unless the route-coverage review proves they carry sensitive state changes.
@@ -721,10 +735,7 @@ class TestClassifyV0113Actions:
         assert is_nis2('POST', '/openai/models/0/download')
 
     def test_openai_provider_model_download_status(self):
-        assert (
-            action_of('GET', '/openai/models/0/download/status/job-42')
-            == 'MODEL_PROVIDER_DOWNLOAD_STATUS'
-        )
+        assert action_of('GET', '/openai/models/0/download/status/job-42') == 'MODEL_PROVIDER_DOWNLOAD_STATUS'
         assert not is_nis2('GET', '/openai/models/0/download/status/job-42')
 
     def test_openai_provider_model_load(self):
@@ -783,12 +794,14 @@ git commit -m "feat: cover v0.11.3 NIS2 audit routes"
 ### Task 8: Run the final validation gate
 
 **Files:**
+
 - Validate: `backend/`
 - Validate: `src/`
 - Validate: `package.json`
 - Validate: `package-lock.json`
 
 **Interfaces:**
+
 - Consumes: the fully merged integration branch from Tasks 1-7.
 - Produces: a validated tree ready for release metadata and tagging.
 
@@ -834,11 +847,13 @@ git diff --cached --quiet || git commit -m "fix: address v0.11.3 validation regr
 ### Task 9: Bump the release version, document the patch series, and create the source tag
 
 **Files:**
+
 - Modify: `package.json`
 - Modify: `package-lock.json`
 - Modify: `patches/README.md`
 
 **Interfaces:**
+
 - Consumes: the green branch from Task 8.
 - Produces: version `0.11.3-260908`, documented patch metadata for the v0.11.3 integration, and source tag `v0.11.3-260908`.
 
@@ -878,13 +893,14 @@ Replace the top section with this exact structure, updating only the hand-resolv
 
 ## Patch series
 
-| #    | File | Description |
-| ---- | ---- | ----------- |
+| #    | File                                                          | Description                                                                                                                                                                                                                                                                    |
+| ---- | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | 0001 | `chore-reconcile-fork-customizations-onto-v0.11.3-base.patch` | Full cumulative diff of all fork customizations reapplied onto `v0.11.3`: Prompt Insights, analytics/routing/cross-filter, NIS2 access-log/audit/OIDC compliance, MCP import compatibility, Alembic multi-head safety, dependency/security pin refreshes, and shipped UI fixes |
-| 0002 | `chore-bump-version-to-0.11.3-260908.patch` | Version bump to `0.11.3-260908` |
+| 0002 | `chore-bump-version-to-0.11.3-260908.patch`                   | Version bump to `0.11.3-260908`                                                                                                                                                                                                                                                |
 
 > **Note:** this series was generated by diffing `f9590b8017199e56d5e953657e6498e3cef1d246..main`, applying that cumulative fork diff onto `v0.11.3`, and then resolving the overlapping upstream files by hand on `integration-v0.11.3`.
 > Manual conflict resolutions to document here:
+>
 > - `backend/open_webui/utils/middleware.py`: kept upstream `v0.11.3` request/stream pipeline and reintroduced fork `merge_routing_usage`, MCP client wiring, and the routing metadata merge call sites.
 > - `backend/open_webui/main.py`: kept upstream router registrations and compatibility endpoints while preserving fork audit/access-log ordering and OIDC back-channel logout wiring.
 > - `backend/open_webui/utils/tools.py`: kept upstream built-in tool handling while preserving `subagents.enable`, `subagents.background_enabled`, and mutating-memory guardrails.

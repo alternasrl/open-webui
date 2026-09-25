@@ -15,16 +15,22 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from open_webui.middleware.access_log import (
+    AccessLogMiddleware,
     _NIS2_SECURITY_ACTIONS,
     _cache_data,
     _cache_lock,
     _classify_action,
+    _decode_allowed_oidc_audit_claims,
+    _extract_event_object_ref,
     _extract_object_ref,
     _outcome_from_status,
+    _sanitize_audit_object_id,
     _UserContext,
     invalidate_user_cache,
     log_scheduled_activity,
 )
+from starlette.requests import Request
+from starlette.responses import Response
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -225,6 +231,10 @@ class TestClassifyConfig:
     def test_config_images(self):
         assert action_of('POST', '/api/v1/images/config/update') == 'CONFIG_IMAGES'
         assert is_nis2('POST', '/api/v1/images/config/update')
+
+    def test_config_images_verify(self):
+        assert action_of('POST', '/api/v1/images/verify') == 'CONFIG_IMAGES_VERIFY'
+        assert is_nis2('POST', '/api/v1/images/verify')
 
 
 # ---------------------------------------------------------------------------
@@ -477,6 +487,7 @@ class TestNis2SecurityActionsSet:
     def test_config_audio_images_in_set(self):
         assert 'CONFIG_AUDIO' in _NIS2_SECURITY_ACTIONS
         assert 'CONFIG_IMAGES' in _NIS2_SECURITY_ACTIONS
+        assert 'CONFIG_IMAGES_VERIFY' in _NIS2_SECURITY_ACTIONS
 
     def test_config_retrieval_in_set(self):
         assert 'CONFIG_RETRIEVAL' in _NIS2_SECURITY_ACTIONS
@@ -599,6 +610,129 @@ class TestExtractObjectRef:
         assert obj_id is None
 
 
+class TestExtractEventObjectRef:
+    def test_models_export_ids_are_recorded_in_object_reference(self):
+        scope = {
+            'type': 'http',
+            'method': 'GET',
+            'path': '/api/v1/models/export',
+            'query_string': b'ids=model-a&ids=model-b',
+            'headers': [],
+        }
+        request = Request(scope)
+
+        obj_type, obj_id = _extract_event_object_ref(request.method, request.url.path, request.query_params)
+
+        assert obj_type == 'model'
+        assert obj_id == 'model-a,model-b'
+
+    def test_models_export_without_ids_keeps_empty_object_reference(self):
+        scope = {
+            'type': 'http',
+            'method': 'GET',
+            'path': '/api/v1/models/export',
+            'query_string': b'',
+            'headers': [],
+        }
+        request = Request(scope)
+
+        obj_type, obj_id = _extract_event_object_ref(request.method, request.url.path, request.query_params)
+
+        assert obj_type is None
+        assert obj_id is None
+
+    def test_models_export_ids_are_percent_encoded_for_audit_log_safety(self):
+        scope = {
+            'type': 'http',
+            'method': 'GET',
+            'path': '/api/v1/models/export',
+            'query_string': b'ids=model-a%7Crole%3Dadmin%0Aforged&ids=model-b%09tab',
+            'headers': [],
+        }
+        request = Request(scope)
+
+        obj_type, obj_id = _extract_event_object_ref(request.method, request.url.path, request.query_params)
+
+        assert obj_type == 'model'
+        assert obj_id == 'model-a%7Crole%3Dadmin%0Aforged,model-b%09tab'
+
+    def test_models_export_dedupes_ids_that_only_collide_after_sanitization(self):
+        # Two distinct raw values that both sanitize to the same encoded
+        # string must be deduped once, not treated as separate entries
+        # (dedup must compare sanitized-to-sanitized, not raw-to-sanitized).
+        scope = {
+            'type': 'http',
+            'method': 'GET',
+            'path': '/api/v1/models/export',
+            'query_string': b'ids=model%7Ca&ids=model|a',
+            'headers': [],
+        }
+        request = Request(scope)
+
+        obj_type, obj_id = _extract_event_object_ref(request.method, request.url.path, request.query_params)
+
+        assert obj_type == 'model'
+        assert obj_id == 'model%7Ca'
+
+    def test_models_export_ids_are_capped_in_count(self):
+        many_ids = ','.join(f'model-{i}' for i in range(200))
+        scope = {
+            'type': 'http',
+            'method': 'GET',
+            'path': '/api/v1/models/export',
+            'query_string': f'ids={many_ids}'.encode(),
+            'headers': [],
+        }
+        request = Request(scope)
+
+        obj_type, obj_id = _extract_event_object_ref(request.method, request.url.path, request.query_params)
+
+        assert obj_type == 'model'
+        assert obj_id.count(',') + 1 == 50
+
+    def test_models_export_id_length_is_capped(self):
+        long_id = 'x' * 500
+        scope = {
+            'type': 'http',
+            'method': 'GET',
+            'path': '/api/v1/models/export',
+            'query_string': f'ids={long_id}'.encode(),
+            'headers': [],
+        }
+        request = Request(scope)
+
+        obj_type, obj_id = _extract_event_object_ref(request.method, request.url.path, request.query_params)
+
+        assert obj_type == 'model'
+        assert len(obj_id) == 200
+
+
+class TestSanitizeAuditObjectId:
+    def test_encodes_pipe_newline_and_control_characters(self):
+        assert _sanitize_audit_object_id('model|x\n\r\t') == 'model%7Cx%0A%0D%09'
+
+
+# ---------------------------------------------------------------------------
+# _decode_allowed_oidc_audit_claims
+# ---------------------------------------------------------------------------
+
+
+class TestAllowedOidcAuditClaims:
+    def test_only_allowlisted_claims_are_returned(self):
+        token = (
+            'eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.'
+            'eyJzdWIiOiJ1c2VyLTEyMyIsImVtYWlsIjoidXNlckBleGFtcGxlLmNvbSIsImdyb3VwcyI6WyJhZG1pbiJdLCJyb2xlcyI6WyJvd25lciJdLCJhbXIiOlsicHdkIiwibWZhIl0sImF1dGhfdGltZSI6MTcwMDAwMDAwMCwibm9uY2UiOiJzZWNyZXQifQ.'
+        )
+
+        claims = _decode_allowed_oidc_audit_claims(token)
+
+        assert claims == {'sub': 'user-123', 'mfa': 'pwd,mfa', 'auth_time': '1700000000'}
+        assert 'email' not in claims
+        assert 'groups' not in claims
+        assert 'roles' not in claims
+        assert 'nonce' not in claims
+
+
 # ---------------------------------------------------------------------------
 # _outcome_from_status
 # ---------------------------------------------------------------------------
@@ -636,6 +770,8 @@ class TestLogScheduledActivity:
     def _capture_log(self, fn, *args, **kwargs):
         """Call fn(*args) and return the log record emitted to open_webui.access."""
         logger = logging.getLogger('open_webui.access')
+        previous_level = logger.level
+        logger.setLevel(logging.DEBUG)
         handler = MagicMock()
         handler.level = logging.DEBUG
         logger.addHandler(handler)
@@ -643,6 +779,7 @@ class TestLogScheduledActivity:
             fn(*args, **kwargs)
         finally:
             logger.removeHandler(handler)
+            logger.setLevel(previous_level)
         assert handler.handle.called, 'No log record emitted'
         return handler.handle.call_args[0][0]
 
@@ -740,6 +877,164 @@ class TestLogScheduledActivity:
         )
         # 3 decimal places
         assert 'time=12.346s' in record.getMessage()
+
+
+def test_models_export_dispatch_logs_filtered_ids_without_query_payload(monkeypatch):
+    async def scenario():
+        middleware = AccessLogMiddleware(lambda scope, receive, send: None)
+        monkeypatch.setattr(middleware, '_get_session_id', lambda request: 'session-12345678')
+        monkeypatch.setattr(middleware, '_extract_user_uuid', lambda request: None)
+        monkeypatch.setattr(middleware, '_get_oidc_claims_from_cookies', lambda request: (None, None))
+        monkeypatch.setattr(middleware, '_get_correlation_id', lambda request: None)
+        monkeypatch.setattr(middleware, '_get_client_ip', lambda request: '127.0.0.1')
+
+        logger = logging.getLogger('open_webui.access')
+        previous_level = logger.level
+        logger.setLevel(logging.DEBUG)
+        handler = MagicMock()
+        handler.level = logging.DEBUG
+        logger.addHandler(handler)
+        try:
+
+            async def call_next(request):
+                return Response(status_code=200)
+
+            request = Request(
+                {
+                    'type': 'http',
+                    'method': 'GET',
+                    'path': '/api/v1/models/export',
+                    'query_string': b'ids=model-a&ids=model-b',
+                    'headers': [(b'user-agent', b'pytest')],
+                    'client': ('127.0.0.1', 12345),
+                    'scheme': 'http',
+                    'server': ('testserver', 80),
+                }
+            )
+
+            response = await middleware.dispatch(request, call_next)
+        finally:
+            logger.removeHandler(handler)
+            logger.setLevel(previous_level)
+
+        assert response.status_code == 200
+        assert handler.handle.called, 'No log record emitted'
+        record = handler.handle.call_args[0][0]
+        msg = record.getMessage()
+
+        assert 'email=anonymous' in msg
+        assert 'action=DATA_EXPORT' in msg
+        assert 'outcome=success' in msg
+        assert 'object=model:model-a,model-b' in msg
+        assert '"GET /api/v1/models/export" 200' in msg
+        assert 'ids=' not in msg
+
+    import asyncio
+
+    asyncio.run(scenario())
+
+
+def test_models_export_dispatch_sanitizes_delimiters_and_controls(monkeypatch):
+    async def scenario():
+        middleware = AccessLogMiddleware(lambda scope, receive, send: None)
+        monkeypatch.setattr(middleware, '_get_session_id', lambda request: 'session-12345678')
+        monkeypatch.setattr(middleware, '_extract_user_uuid', lambda request: None)
+        monkeypatch.setattr(middleware, '_get_oidc_claims_from_cookies', lambda request: (None, None))
+        monkeypatch.setattr(middleware, '_get_correlation_id', lambda request: None)
+        monkeypatch.setattr(middleware, '_get_client_ip', lambda request: '127.0.0.1')
+
+        logger = logging.getLogger('open_webui.access')
+        previous_level = logger.level
+        logger.setLevel(logging.DEBUG)
+        handler = MagicMock()
+        handler.level = logging.DEBUG
+        logger.addHandler(handler)
+        try:
+
+            async def call_next(request):
+                return Response(status_code=200)
+
+            request = Request(
+                {
+                    'type': 'http',
+                    'method': 'GET',
+                    'path': '/api/v1/models/export',
+                    'query_string': b'ids=model-a%7Crole%3Dadmin%0Aforged',
+                    'headers': [(b'user-agent', b'pytest')],
+                    'client': ('127.0.0.1', 12345),
+                    'scheme': 'http',
+                    'server': ('testserver', 80),
+                }
+            )
+
+            response = await middleware.dispatch(request, call_next)
+        finally:
+            logger.removeHandler(handler)
+            logger.setLevel(previous_level)
+
+        assert response.status_code == 200
+        record = handler.handle.call_args[0][0]
+        msg = record.getMessage()
+
+        assert 'object=model:model-a%7Crole%3Dadmin%0Aforged' in msg
+        assert 'object=model:model-a|role=admin' not in msg
+        assert '\n' not in msg
+        assert 'ids=' not in msg
+
+    import asyncio
+
+    asyncio.run(scenario())
+
+
+def test_folder_dispatch_logs_folder_object_reference(monkeypatch):
+    async def scenario():
+        middleware = AccessLogMiddleware(lambda scope, receive, send: None)
+        monkeypatch.setattr(middleware, '_get_session_id', lambda request: 'session-12345678')
+        monkeypatch.setattr(middleware, '_extract_user_uuid', lambda request: None)
+        monkeypatch.setattr(middleware, '_get_oidc_claims_from_cookies', lambda request: (None, None))
+        monkeypatch.setattr(middleware, '_get_correlation_id', lambda request: None)
+        monkeypatch.setattr(middleware, '_get_client_ip', lambda request: '127.0.0.1')
+
+        logger = logging.getLogger('open_webui.access')
+        previous_level = logger.level
+        logger.setLevel(logging.DEBUG)
+        handler = MagicMock()
+        handler.level = logging.DEBUG
+        logger.addHandler(handler)
+        try:
+
+            async def call_next(request):
+                return Response(status_code=200)
+
+            request = Request(
+                {
+                    'type': 'http',
+                    'method': 'GET',
+                    'path': '/api/v1/folders/folder-42',
+                    'query_string': b'',
+                    'headers': [(b'user-agent', b'pytest')],
+                    'client': ('127.0.0.1', 12345),
+                    'scheme': 'http',
+                    'server': ('testserver', 80),
+                }
+            )
+
+            response = await middleware.dispatch(request, call_next)
+        finally:
+            logger.removeHandler(handler)
+            logger.setLevel(previous_level)
+
+        assert response.status_code == 200
+        assert handler.handle.called, 'No log record emitted'
+        record = handler.handle.call_args[0][0]
+        msg = record.getMessage()
+
+        assert 'action=FOLDER_ACCESS_READ' in msg
+        assert 'object=folder:folder-42' in msg
+
+    import asyncio
+
+    asyncio.run(scenario())
 
 
 # ---------------------------------------------------------------------------
@@ -856,15 +1151,16 @@ class TestClassifyV0113Actions:
         assert action_of('GET', '/openai/models/0/catalog') == 'MODEL_PROVIDER_CATALOG'
         assert not is_nis2('GET', '/openai/models/0/catalog')
 
+    def test_openai_provider_model_list(self):
+        assert action_of('GET', '/openai/models/0') == 'MODEL_PROVIDER_LIST'
+        assert not is_nis2('GET', '/openai/models/0')
+
     def test_openai_provider_model_download(self):
         assert action_of('POST', '/openai/models/0/download') == 'MODEL_PROVIDER_DOWNLOAD'
         assert is_nis2('POST', '/openai/models/0/download')
 
     def test_openai_provider_model_download_status(self):
-        assert (
-            action_of('GET', '/openai/models/0/download/status/job-42')
-            == 'MODEL_PROVIDER_DOWNLOAD_STATUS'
-        )
+        assert action_of('GET', '/openai/models/0/download/status/job-42') == 'MODEL_PROVIDER_DOWNLOAD_STATUS'
         assert not is_nis2('GET', '/openai/models/0/download/status/job-42')
 
     def test_openai_provider_model_load(self):
@@ -885,6 +1181,22 @@ class TestClassifyV0113Actions:
     def test_memory_reindex(self):
         assert action_of('POST', '/api/v1/memories/reindex') == 'MEMORY_REINDEX'
         assert is_nis2('POST', '/api/v1/memories/reindex')
+
+    def test_models_all_is_explicit_non_critical_read(self):
+        assert action_of('GET', '/api/v1/models/all') == 'MODEL_LIST_ALL'
+        assert not is_nis2('GET', '/api/v1/models/all')
+
+    def test_folder_read_is_explicit_non_critical_read(self):
+        assert action_of('GET', '/api/v1/folders/folder-42') == 'FOLDER_ACCESS_READ'
+        assert not is_nis2('GET', '/api/v1/folders/folder-42')
+
+    def test_legacy_images_verify_path_has_no_specific_rule(self):
+        assert action_of('GET', '/api/v1/images/config/url/verify') == 'READ'
+        assert not is_nis2('GET', '/api/v1/images/config/url/verify')
+
+    def test_removed_utils_pdf_path_has_no_specific_rule(self):
+        assert action_of('POST', '/api/v1/utils/pdf') == 'WRITE_OTHER'
+        assert not is_nis2('POST', '/api/v1/utils/pdf')
 
     def test_ollama_admin_tags_read(self):
         assert action_of('GET', '/ollama/api/tags/0') == 'OLLAMA_COMPAT_TAGS_READ'
@@ -913,3 +1225,29 @@ class TestClassifyV0113Actions:
     def test_openai_compat_embeddings_shim(self):
         assert action_of('POST', '/api/embeddings') == 'OLLAMA_EMBEDDINGS'
         assert action_of('POST', '/api/v1/embeddings') == 'OLLAMA_EMBEDDINGS'
+
+
+class TestClassifyV0114DeltaRoutes:
+    @pytest.mark.parametrize(
+        'method,path,expected_action,expected_nis2,wrong_method',
+        [
+            ('POST', '/api/v1/images/verify', 'CONFIG_IMAGES_VERIFY', True, 'GET'),
+            ('GET', '/api/v1/models/all', 'MODEL_LIST_ALL', False, 'POST'),
+            ('GET', '/api/v1/folders/abc123', 'FOLDER_ACCESS_READ', False, 'POST'),
+            ('GET', '/api/v1/folders/shared', 'FOLDER_SHARED_READ', False, 'POST'),
+            ('POST', '/api/v1/configs/suggestions', 'CONFIG_SUGGESTIONS', False, 'GET'),
+            ('GET', '/api/v1/models/export', 'DATA_EXPORT', True, 'POST'),
+            ('GET', '/openai/models/0', 'MODEL_PROVIDER_LIST', False, 'POST'),
+        ],
+    )
+    def test_delta_route_classification(self, method, path, expected_action, expected_nis2, wrong_method):
+        assert action_of(method, path) == expected_action
+        assert is_nis2(method, path) is expected_nis2
+
+        wrong_action, wrong_is_nis2 = classify(wrong_method, path)
+        assert wrong_action != expected_action
+        assert wrong_is_nis2 is False
+
+    def test_folder_shared_precedes_folder_access_read(self):
+        assert action_of('GET', '/api/v1/folders/shared') == 'FOLDER_SHARED_READ'
+        assert action_of('GET', '/api/v1/folders/folder-42') == 'FOLDER_ACCESS_READ'
