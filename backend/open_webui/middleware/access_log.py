@@ -152,6 +152,7 @@ import threading
 import time
 import uuid
 from typing import Callable, NamedTuple, Optional
+from urllib.parse import quote
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -773,6 +774,11 @@ def _extract_object_ref(path: str) -> tuple[Optional[str], Optional[str]]:
     return None, None
 
 
+def _sanitize_audit_object_id(value: str) -> str:
+    """Encode arbitrary resource IDs for the pipe-delimited audit log."""
+    return quote(value, safe='-._~')
+
+
 def _extract_event_object_ref(
     method: str,
     path: str,
@@ -792,7 +798,7 @@ def _extract_event_object_ref(
             for item in value.split(','):
                 item = item.strip()
                 if item and item not in ids:
-                    ids.append(item)
+                    ids.append(_sanitize_audit_object_id(item))
         if ids:
             return 'model', ','.join(ids)
 

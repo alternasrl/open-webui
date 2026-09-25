@@ -24,6 +24,7 @@ from open_webui.middleware.access_log import (
     _extract_event_object_ref,
     _extract_object_ref,
     _outcome_from_status,
+    _sanitize_audit_object_id,
     _UserContext,
     invalidate_user_cache,
     log_scheduled_activity,
@@ -640,6 +641,26 @@ class TestExtractEventObjectRef:
         assert obj_type is None
         assert obj_id is None
 
+    def test_models_export_ids_are_percent_encoded_for_audit_log_safety(self):
+        scope = {
+            'type': 'http',
+            'method': 'GET',
+            'path': '/api/v1/models/export',
+            'query_string': b'ids=model-a%7Crole%3Dadmin%0Aforged&ids=model-b%09tab',
+            'headers': [],
+        }
+        request = Request(scope)
+
+        obj_type, obj_id = _extract_event_object_ref(request.method, request.url.path, request.query_params)
+
+        assert obj_type == 'model'
+        assert obj_id == 'model-a%7Crole%3Dadmin%0Aforged,model-b%09tab'
+
+
+class TestSanitizeAuditObjectId:
+    def test_encodes_pipe_newline_and_control_characters(self):
+        assert _sanitize_audit_object_id('model|x\n\r\t') == 'model%7Cx%0A%0D%09'
+
 
 # ---------------------------------------------------------------------------
 # _decode_allowed_oidc_audit_claims
@@ -849,6 +870,54 @@ def test_models_export_dispatch_logs_filtered_ids_without_query_payload(monkeypa
         assert 'outcome=success' in msg
         assert 'object=model:model-a,model-b' in msg
         assert '"GET /api/v1/models/export" 200' in msg
+        assert 'ids=' not in msg
+
+    import asyncio
+
+    asyncio.run(scenario())
+
+
+def test_models_export_dispatch_sanitizes_delimiters_and_controls(monkeypatch):
+    async def scenario():
+        middleware = AccessLogMiddleware(lambda scope, receive, send: None)
+        monkeypatch.setattr(middleware, '_get_session_id', lambda request: 'session-12345678')
+        monkeypatch.setattr(middleware, '_extract_user_uuid', lambda request: None)
+        monkeypatch.setattr(middleware, '_get_oidc_claims_from_cookies', lambda request: (None, None))
+        monkeypatch.setattr(middleware, '_get_correlation_id', lambda request: None)
+        monkeypatch.setattr(middleware, '_get_client_ip', lambda request: '127.0.0.1')
+
+        logger = logging.getLogger('open_webui.access')
+        handler = MagicMock()
+        handler.level = logging.DEBUG
+        logger.addHandler(handler)
+        try:
+            async def call_next(request):
+                return Response(status_code=200)
+
+            request = Request(
+                {
+                    'type': 'http',
+                    'method': 'GET',
+                    'path': '/api/v1/models/export',
+                    'query_string': b'ids=model-a%7Crole%3Dadmin%0Aforged',
+                    'headers': [(b'user-agent', b'pytest')],
+                    'client': ('127.0.0.1', 12345),
+                    'scheme': 'http',
+                    'server': ('testserver', 80),
+                }
+            )
+
+            response = await middleware.dispatch(request, call_next)
+        finally:
+            logger.removeHandler(handler)
+
+        assert response.status_code == 200
+        record = handler.handle.call_args[0][0]
+        msg = record.getMessage()
+
+        assert 'object=model:model-a%7Crole%3Dadmin%0Aforged' in msg
+        assert 'object=model:model-a|role=admin' not in msg
+        assert '\n' not in msg
         assert 'ids=' not in msg
 
     import asyncio
