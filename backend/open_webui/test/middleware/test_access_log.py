@@ -656,6 +656,56 @@ class TestExtractEventObjectRef:
         assert obj_type == 'model'
         assert obj_id == 'model-a%7Crole%3Dadmin%0Aforged,model-b%09tab'
 
+    def test_models_export_dedupes_ids_that_only_collide_after_sanitization(self):
+        # Two distinct raw values that both sanitize to the same encoded
+        # string must be deduped once, not treated as separate entries
+        # (dedup must compare sanitized-to-sanitized, not raw-to-sanitized).
+        scope = {
+            'type': 'http',
+            'method': 'GET',
+            'path': '/api/v1/models/export',
+            'query_string': b'ids=model%7Ca&ids=model|a',
+            'headers': [],
+        }
+        request = Request(scope)
+
+        obj_type, obj_id = _extract_event_object_ref(request.method, request.url.path, request.query_params)
+
+        assert obj_type == 'model'
+        assert obj_id == 'model%7Ca'
+
+    def test_models_export_ids_are_capped_in_count(self):
+        many_ids = ','.join(f'model-{i}' for i in range(200))
+        scope = {
+            'type': 'http',
+            'method': 'GET',
+            'path': '/api/v1/models/export',
+            'query_string': f'ids={many_ids}'.encode(),
+            'headers': [],
+        }
+        request = Request(scope)
+
+        obj_type, obj_id = _extract_event_object_ref(request.method, request.url.path, request.query_params)
+
+        assert obj_type == 'model'
+        assert obj_id.count(',') + 1 == 50
+
+    def test_models_export_id_length_is_capped(self):
+        long_id = 'x' * 500
+        scope = {
+            'type': 'http',
+            'method': 'GET',
+            'path': '/api/v1/models/export',
+            'query_string': f'ids={long_id}'.encode(),
+            'headers': [],
+        }
+        request = Request(scope)
+
+        obj_type, obj_id = _extract_event_object_ref(request.method, request.url.path, request.query_params)
+
+        assert obj_type == 'model'
+        assert len(obj_id) == 200
+
 
 class TestSanitizeAuditObjectId:
     def test_encodes_pipe_newline_and_control_characters(self):
@@ -720,6 +770,7 @@ class TestLogScheduledActivity:
     def _capture_log(self, fn, *args, **kwargs):
         """Call fn(*args) and return the log record emitted to open_webui.access."""
         logger = logging.getLogger('open_webui.access')
+        previous_level = logger.level
         logger.setLevel(logging.DEBUG)
         handler = MagicMock()
         handler.level = logging.DEBUG
@@ -728,6 +779,7 @@ class TestLogScheduledActivity:
             fn(*args, **kwargs)
         finally:
             logger.removeHandler(handler)
+            logger.setLevel(previous_level)
         assert handler.handle.called, 'No log record emitted'
         return handler.handle.call_args[0][0]
 
@@ -891,6 +943,8 @@ def test_models_export_dispatch_sanitizes_delimiters_and_controls(monkeypatch):
         monkeypatch.setattr(middleware, '_get_client_ip', lambda request: '127.0.0.1')
 
         logger = logging.getLogger('open_webui.access')
+        previous_level = logger.level
+        logger.setLevel(logging.DEBUG)
         handler = MagicMock()
         handler.level = logging.DEBUG
         logger.addHandler(handler)
@@ -914,6 +968,7 @@ def test_models_export_dispatch_sanitizes_delimiters_and_controls(monkeypatch):
             response = await middleware.dispatch(request, call_next)
         finally:
             logger.removeHandler(handler)
+            logger.setLevel(previous_level)
 
         assert response.status_code == 200
         record = handler.handle.call_args[0][0]
@@ -939,6 +994,8 @@ def test_folder_dispatch_logs_folder_object_reference(monkeypatch):
         monkeypatch.setattr(middleware, '_get_client_ip', lambda request: '127.0.0.1')
 
         logger = logging.getLogger('open_webui.access')
+        previous_level = logger.level
+        logger.setLevel(logging.DEBUG)
         handler = MagicMock()
         handler.level = logging.DEBUG
         logger.addHandler(handler)
@@ -962,6 +1019,7 @@ def test_folder_dispatch_logs_folder_object_reference(monkeypatch):
             response = await middleware.dispatch(request, call_next)
         finally:
             logger.removeHandler(handler)
+            logger.setLevel(previous_level)
 
         assert response.status_code == 200
         assert handler.handle.called, 'No log record emitted'

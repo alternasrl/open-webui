@@ -36,6 +36,70 @@ REMOVED_ROUTES = {
     ('POST', '/api/v1/utils/pdf'),
 }
 
+# Mutating routes that legitimately fall through to the WRITE_OTHER/DELETE_OTHER
+# catch-all today. Every entry here pre-dates this integration's NIS2 delta work
+# (upstream/main behavior untouched by v0.11.3..v0.11.4) and is tracked as a
+# known, accepted gap rather than semantic coverage. Any mutating route that is
+# NOT in this set and NOT in REQUIRED_ACTIONS must have an explicit action, or
+# the runtime guard below fails the build. Do not add new routes here to
+# silence a failure — either classify them explicitly or get NIS2 review
+# sign-off and document the justification in this comment block.
+DOCUMENTED_FALLBACK_EXEMPTIONS = {
+    ('POST', '/api/chat/actions/{action_id}'),
+    ('POST', '/api/chat/completed'),
+    ('POST', '/api/chat/completions'),
+    ('POST', '/api/events/webhooks'),
+    ('DELETE', '/api/events/webhooks/{webhook_id}'),
+    ('PUT', '/api/events/webhooks/{webhook_id}'),
+    ('POST', '/api/message'),
+    ('POST', '/api/message/count_tokens'),
+    ('POST', '/api/models/unload'),
+    ('POST', '/api/tasks/chat/{chat_id:path}/stop'),
+    ('POST', '/api/tasks/stop/{task_id}'),
+    ('POST', '/api/v1/analytics/prompt-insights/run'),
+    ('POST', '/api/v1/audio/speech'),
+    ('POST', '/api/v1/audio/transcriptions'),
+    ('POST', '/api/v1/channels/webhooks/{webhook_id}/{token}'),
+    ('POST', '/api/v1/channels/{id}/members/active'),
+    ('POST', '/api/v1/channels/{id}/messages/{message_id}/pin'),
+    ('POST', '/api/v1/channels/{id}/messages/{message_id}/reactions/add'),
+    ('POST', '/api/v1/channels/{id}/messages/{message_id}/reactions/remove'),
+    ('POST', '/api/v1/chat/completions'),
+    ('POST', '/api/v1/chats/{id}/messages/{message_id}'),
+    ('POST', '/api/v1/chats/{id}/messages/{message_id}/event'),
+    ('POST', '/api/v1/chats/{id}/messages/{message_id}/resolve'),
+    ('DELETE', '/api/v1/chats/{id}/tags'),
+    ('POST', '/api/v1/chats/{id}/tags'),
+    ('POST', '/api/v1/folders/{id}/update/expanded'),
+    ('POST', '/api/v1/functions/id/{id}/valves/user/update'),
+    ('POST', '/api/v1/groups/id/{id}/users'),
+    ('POST', '/api/v1/images/edit'),
+    ('POST', '/api/v1/images/generations'),
+    ('POST', '/api/v1/knowledge/{id}/dirs/create'),
+    ('DELETE', '/api/v1/knowledge/{id}/dirs/{dir_id}/delete'),
+    ('POST', '/api/v1/knowledge/{id}/dirs/{dir_id}/update'),
+    ('POST', '/api/v1/knowledge/{id}/file/move'),
+    ('POST', '/api/v1/memories/query'),
+    ('POST', '/api/v1/messages'),
+    ('POST', '/api/v1/messages/count_tokens'),
+    ('POST', '/api/v1/retrieval/delete'),
+    ('POST', '/api/v1/retrieval/process/file'),
+    ('POST', '/api/v1/retrieval/process/files/batch'),
+    ('POST', '/api/v1/retrieval/process/text'),
+    ('POST', '/api/v1/retrieval/process/web'),
+    ('POST', '/api/v1/retrieval/process/web/search'),
+    ('POST', '/api/v1/retrieval/process/youtube'),
+    ('POST', '/api/v1/retrieval/query/collection'),
+    ('POST', '/api/v1/retrieval/query/doc'),
+    ('DELETE', '/api/v1/terminals/{server_id}/{path:path}'),
+    ('PATCH', '/api/v1/terminals/{server_id}/{path:path}'),
+    ('POST', '/api/v1/terminals/{server_id}/{path:path}'),
+    ('PUT', '/api/v1/terminals/{server_id}/{path:path}'),
+    ('POST', '/api/v1/tools/id/{id}/valves/user/update'),
+    ('POST', '/api/v1/utils/code/execute'),
+    ('POST', '/api/v1/utils/code/format'),
+}
+
 ABSENT_RULE_PATTERNS = {
     ('GET', r'^/api/v1/images/config/url/verify$'),
     ('POST', r'^/api/v1/utils/pdf$'),
@@ -94,7 +158,13 @@ def _exercise_inline_admin_guard(endpoint):
     return asyncio.run(scenario())
 
 
-def main() -> None:
+def build_report() -> dict[str, list]:
+    """Build the route-coverage report without printing or exiting.
+
+    Shared by the standalone script entry point (`main`) and the pytest test
+    (`test_access_log_route_coverage.py`) so both execution paths exercise the
+    exact same runtime guard.
+    """
     rows = iter_runtime_routes()
     row_map = {(row['method'], row['path']): row for row in rows}
 
@@ -112,22 +182,29 @@ def main() -> None:
         if key in row_map:
             removed_routes.append({'route': key, 'problem': 'legacy runtime route still registered'})
 
+    # Scan every runtime mutating route (not just the routes we already know
+    # about via REQUIRED_ACTIONS) so a newly introduced, unclassified mutating
+    # route fails the build instead of silently escaping into WRITE_OTHER /
+    # DELETE_OTHER. Routes must be either explicitly classified (REQUIRED_ACTIONS
+    # or any other non-fallback action) or listed as a documented, justified
+    # exemption in DOCUMENTED_FALLBACK_EXEMPTIONS.
     mutating_generic_issues = []
-    for key in REQUIRED_ACTIONS:
-        method, _ = key
-        if method not in {'POST', 'PUT', 'PATCH', 'DELETE'}:
+    for row in rows:
+        if row['method'] not in {'POST', 'PUT', 'PATCH', 'DELETE'}:
             continue
-        row = row_map.get(key)
-        if row is None:
+        if row['action'] not in {'WRITE_OTHER', 'DELETE_OTHER'}:
             continue
-        if row['action'] in {'WRITE_OTHER', 'DELETE_OTHER'}:
-            mutating_generic_issues.append(
-                {
-                    'route': key,
-                    'problem': 'mutating route fell through to catch-all classification',
-                    'actual': row['action'],
-                }
-            )
+        key = (row['method'], row['path'])
+        if key in DOCUMENTED_FALLBACK_EXEMPTIONS:
+            continue
+        mutating_generic_issues.append(
+            {
+                'route': key,
+                'problem': 'mutating route fell through to catch-all classification '
+                'and is not a documented exemption',
+                'actual': row['action'],
+            }
+        )
 
     legacy_rule_issues = []
     for method, pattern_text in ABSENT_RULE_PATTERNS:
@@ -175,8 +252,13 @@ def main() -> None:
         'admin_behavior_issues': admin_behavior_issues,
         'dead_rules': dead_rules,
     }
+    return report
+
+
+def main() -> None:
+    report = build_report()
     print(json.dumps(report, indent=2, default=str))
-    if mismatches or removed_routes or mutating_generic_issues or legacy_rule_issues or admin_behavior_issues or dead_rules:
+    if any(report.values()):
         raise SystemExit(1)
 
 

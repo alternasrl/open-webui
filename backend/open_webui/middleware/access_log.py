@@ -759,6 +759,14 @@ def _compile_object_id_patterns() -> list[tuple[re.Pattern, str]]:
 
 _OBJECT_ID_PATTERNS = _compile_object_id_patterns()
 
+# Bounds on the audited object reference for query-string-driven exports
+# (e.g. GET /api/v1/models/export?ids=...). These exist to prevent an
+# attacker-controlled query string from unboundedly inflating the access
+# log record; they do not change what gets sanitized, only how much of it
+# is retained.
+_MAX_EXPORT_OBJECT_IDS = 50
+_MAX_EXPORT_OBJECT_ID_LENGTH = 200
+
 
 def _extract_object_ref(path: str) -> tuple[Optional[str], Optional[str]]:
     """Extract object_type and object_id from a URL path.
@@ -797,8 +805,21 @@ def _extract_event_object_ref(
         for value in raw_ids:
             for item in value.split(','):
                 item = item.strip()
-                if item and item not in ids:
-                    ids.append(_sanitize_audit_object_id(item))
+                if not item:
+                    continue
+                # Bound the audited reference so an attacker-controlled query
+                # string cannot inflate the access-log record without limit.
+                item = item[:_MAX_EXPORT_OBJECT_ID_LENGTH]
+                # Dedupe on the sanitized form: comparing the raw item against
+                # the already-sanitized `ids` list let distinct raw values that
+                # sanitize to the same string slip through as duplicates.
+                sanitized = _sanitize_audit_object_id(item)
+                if sanitized not in ids:
+                    ids.append(sanitized)
+                if len(ids) >= _MAX_EXPORT_OBJECT_IDS:
+                    break
+            if len(ids) >= _MAX_EXPORT_OBJECT_IDS:
+                break
         if ids:
             return 'model', ','.join(ids)
 
