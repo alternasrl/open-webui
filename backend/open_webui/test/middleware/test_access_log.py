@@ -720,6 +720,7 @@ class TestLogScheduledActivity:
     def _capture_log(self, fn, *args, **kwargs):
         """Call fn(*args) and return the log record emitted to open_webui.access."""
         logger = logging.getLogger('open_webui.access')
+        logger.setLevel(logging.DEBUG)
         handler = MagicMock()
         handler.level = logging.DEBUG
         logger.addHandler(handler)
@@ -836,6 +837,8 @@ def test_models_export_dispatch_logs_filtered_ids_without_query_payload(monkeypa
         monkeypatch.setattr(middleware, '_get_client_ip', lambda request: '127.0.0.1')
 
         logger = logging.getLogger('open_webui.access')
+        previous_level = logger.level
+        logger.setLevel(logging.DEBUG)
         handler = MagicMock()
         handler.level = logging.DEBUG
         logger.addHandler(handler)
@@ -859,6 +862,7 @@ def test_models_export_dispatch_logs_filtered_ids_without_query_payload(monkeypa
             response = await middleware.dispatch(request, call_next)
         finally:
             logger.removeHandler(handler)
+            logger.setLevel(previous_level)
 
         assert response.status_code == 200
         assert handler.handle.called, 'No log record emitted'
@@ -919,6 +923,53 @@ def test_models_export_dispatch_sanitizes_delimiters_and_controls(monkeypatch):
         assert 'object=model:model-a|role=admin' not in msg
         assert '\n' not in msg
         assert 'ids=' not in msg
+
+    import asyncio
+
+    asyncio.run(scenario())
+
+
+def test_folder_dispatch_logs_folder_object_reference(monkeypatch):
+    async def scenario():
+        middleware = AccessLogMiddleware(lambda scope, receive, send: None)
+        monkeypatch.setattr(middleware, '_get_session_id', lambda request: 'session-12345678')
+        monkeypatch.setattr(middleware, '_extract_user_uuid', lambda request: None)
+        monkeypatch.setattr(middleware, '_get_oidc_claims_from_cookies', lambda request: (None, None))
+        monkeypatch.setattr(middleware, '_get_correlation_id', lambda request: None)
+        monkeypatch.setattr(middleware, '_get_client_ip', lambda request: '127.0.0.1')
+
+        logger = logging.getLogger('open_webui.access')
+        handler = MagicMock()
+        handler.level = logging.DEBUG
+        logger.addHandler(handler)
+        try:
+            async def call_next(request):
+                return Response(status_code=200)
+
+            request = Request(
+                {
+                    'type': 'http',
+                    'method': 'GET',
+                    'path': '/api/v1/folders/folder-42',
+                    'query_string': b'',
+                    'headers': [(b'user-agent', b'pytest')],
+                    'client': ('127.0.0.1', 12345),
+                    'scheme': 'http',
+                    'server': ('testserver', 80),
+                }
+            )
+
+            response = await middleware.dispatch(request, call_next)
+        finally:
+            logger.removeHandler(handler)
+
+        assert response.status_code == 200
+        assert handler.handle.called, 'No log record emitted'
+        record = handler.handle.call_args[0][0]
+        msg = record.getMessage()
+
+        assert 'action=FOLDER_ACCESS_READ' in msg
+        assert 'object=folder:folder-42' in msg
 
     import asyncio
 
@@ -1113,3 +1164,29 @@ class TestClassifyV0113Actions:
     def test_openai_compat_embeddings_shim(self):
         assert action_of('POST', '/api/embeddings') == 'OLLAMA_EMBEDDINGS'
         assert action_of('POST', '/api/v1/embeddings') == 'OLLAMA_EMBEDDINGS'
+
+
+class TestClassifyV0114DeltaRoutes:
+    @pytest.mark.parametrize(
+        'method,path,expected_action,expected_nis2,wrong_method',
+        [
+            ('POST', '/api/v1/images/verify', 'CONFIG_IMAGES_VERIFY', True, 'GET'),
+            ('GET', '/api/v1/models/all', 'MODEL_LIST_ALL', False, 'POST'),
+            ('GET', '/api/v1/folders/abc123', 'FOLDER_ACCESS_READ', False, 'POST'),
+            ('GET', '/api/v1/folders/shared', 'FOLDER_SHARED_READ', False, 'POST'),
+            ('POST', '/api/v1/configs/suggestions', 'CONFIG_SUGGESTIONS', False, 'GET'),
+            ('GET', '/api/v1/models/export', 'DATA_EXPORT', True, 'POST'),
+            ('GET', '/openai/models/0', 'MODEL_PROVIDER_LIST', False, 'POST'),
+        ],
+    )
+    def test_delta_route_classification(self, method, path, expected_action, expected_nis2, wrong_method):
+        assert action_of(method, path) == expected_action
+        assert is_nis2(method, path) is expected_nis2
+
+        wrong_action, wrong_is_nis2 = classify(wrong_method, path)
+        assert wrong_action != expected_action
+        assert wrong_is_nis2 is False
+
+    def test_folder_shared_precedes_folder_access_read(self):
+        assert action_of('GET', '/api/v1/folders/shared') == 'FOLDER_SHARED_READ'
+        assert action_of('GET', '/api/v1/folders/folder-42') == 'FOLDER_ACCESS_READ'

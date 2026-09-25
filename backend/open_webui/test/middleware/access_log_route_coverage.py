@@ -20,15 +20,18 @@ REQUIRED_ACTIONS = {
     ('GET', '/openai/models/{url_idx}/sse'): 'MODEL_PROVIDER_SSE',
     ('POST', '/api/v1/retrieval/process/url'): 'RETRIEVAL_PROCESS_URL',
     ('POST', '/api/v1/images/verify'): 'CONFIG_IMAGES_VERIFY',
+    ('POST', '/api/v1/configs/suggestions'): 'CONFIG_SUGGESTIONS',
     ('GET', '/api/v1/models/all'): 'MODEL_LIST_ALL',
+    ('GET', '/api/v1/models/export'): 'DATA_EXPORT',
     ('GET', '/api/v1/folders/{id}'): 'FOLDER_ACCESS_READ',
+    ('GET', '/api/v1/folders/shared'): 'FOLDER_SHARED_READ',
     ('POST', '/api/v1/memories/reindex'): 'MEMORY_REINDEX',
     ('GET', '/ollama/v1/models/{url_idx}'): 'OLLAMA_COMPAT_MODELS_READ',
     ('GET', '/ollama/api/tags/{url_idx}'): 'OLLAMA_COMPAT_TAGS_READ',
     ('GET', '/ollama/api/version/{url_idx}'): 'OLLAMA_COMPAT_VERSION_READ',
 }
 
-ABSENT_RUNTIME_ROUTES = {
+REMOVED_ROUTES = {
     ('GET', '/api/v1/images/config/url/verify'),
     ('POST', '/api/v1/utils/pdf'),
 }
@@ -104,10 +107,27 @@ def main() -> None:
         if row['action'] != expected_action:
             mismatches.append({'route': key, 'expected': expected_action, 'actual': row['action']})
 
-    absent_routes = []
-    for key in ABSENT_RUNTIME_ROUTES:
+    removed_routes = []
+    for key in REMOVED_ROUTES:
         if key in row_map:
-            absent_routes.append({'route': key, 'problem': 'legacy runtime route still registered'})
+            removed_routes.append({'route': key, 'problem': 'legacy runtime route still registered'})
+
+    mutating_generic_issues = []
+    for key in REQUIRED_ACTIONS:
+        method, _ = key
+        if method not in {'POST', 'PUT', 'PATCH', 'DELETE'}:
+            continue
+        row = row_map.get(key)
+        if row is None:
+            continue
+        if row['action'] in {'WRITE_OTHER', 'DELETE_OTHER'}:
+            mutating_generic_issues.append(
+                {
+                    'route': key,
+                    'problem': 'mutating route fell through to catch-all classification',
+                    'actual': row['action'],
+                }
+            )
 
     legacy_rule_issues = []
     for method, pattern_text in ABSENT_RULE_PATTERNS:
@@ -149,13 +169,14 @@ def main() -> None:
 
     report = {
         'mismatches': mismatches,
-        'absent_routes': absent_routes,
+        'removed_routes': removed_routes,
+        'mutating_generic_issues': mutating_generic_issues,
         'legacy_rule_issues': legacy_rule_issues,
         'admin_behavior_issues': admin_behavior_issues,
         'dead_rules': dead_rules,
     }
     print(json.dumps(report, indent=2, default=str))
-    if mismatches or absent_routes or legacy_rule_issues or admin_behavior_issues or dead_rules:
+    if mismatches or removed_routes or mutating_generic_issues or legacy_rule_issues or admin_behavior_issues or dead_rules:
         raise SystemExit(1)
 
 
