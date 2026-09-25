@@ -54,9 +54,16 @@ def test_scheduled_automation_permission_error_emits_audit_log(monkeypatch):
         assert audit_calls
         args = audit_calls[0][1]
         assert args[0] == 'TASK_AUTOMATION_SCHEDULED_ERROR'
+        assert args[1] == 'owner@example.com'
+        assert args[2] == 'user'
+        assert args[3] == 'auto-denied'
+        assert args[4] == 'automation'
         assert args[5] == 403
+        assert args[6] >= 0
         meta = audit_calls[0][2]['meta']
+        assert 'trigger=scheduler' in meta
         assert 'automation_id=auto-denied' in meta
+        assert 'status=error' in meta
         assert 'error_code=owner_not_permitted' in meta
         assert 'Denied automation' not in meta
 
@@ -112,9 +119,16 @@ def test_scheduled_channel_automation_success_emits_audit_log(monkeypatch):
         assert audit_calls
         args = audit_calls[0][1]
         assert args[0] == 'TASK_AUTOMATION_SCHEDULED'
+        assert args[1] == 'owner@example.com'
+        assert args[2] == 'admin'
+        assert args[3] == 'auto-channel'
+        assert args[4] == 'automation'
         assert args[5] == 200
+        assert args[6] >= 0
         meta = audit_calls[0][2]['meta']
+        assert 'trigger=scheduler' in meta
         assert 'automation_id=auto-channel' in meta
+        assert 'status=success' in meta
         assert 'channel_id=channel-1' in meta
         assert 'Channel automation' not in meta
 
@@ -172,8 +186,18 @@ def test_scheduled_automation_exception_audit_uses_stable_error_code(monkeypatch
 
         audit_calls = [call for call in calls if call[0] == 'audit']
         assert audit_calls
+        args = audit_calls[0][1]
+        assert args[0] == 'TASK_AUTOMATION_SCHEDULED_ERROR'
+        assert args[1] == 'owner@example.com'
+        assert args[2] == 'admin'
+        assert args[3] == 'auto-error'
+        assert args[4] == 'automation'
+        assert args[5] == 500
+        assert args[6] >= 0
         meta = audit_calls[0][2]['meta']
+        assert 'trigger=scheduler' in meta
         assert 'automation_id=auto-error' in meta
+        assert 'status=error' in meta
         assert 'error_code=execution_exception' in meta
         assert 'Secret automation name' not in meta
         assert 'sk-live-123' not in meta
