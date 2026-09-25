@@ -39,15 +39,15 @@ from open_webui.env import (
 )
 from open_webui.models.access_grants import AccessGrants
 from open_webui.models.chats import Chats
+from open_webui.models.config import Config
 from open_webui.models.files import Files
 from open_webui.models.folders import Folders
 from open_webui.models.knowledge import Knowledges
 from open_webui.models.notes import Notes
-from open_webui.models.config import Config
 from open_webui.models.users import UserModel
+from open_webui.retrieval.external import retrieve_external_knowledge
 from open_webui.retrieval.loaders.youtube import YoutubeLoader
 from open_webui.retrieval.vector.async_client import ASYNC_VECTOR_DB_CLIENT
-from open_webui.retrieval.external import retrieve_external_knowledge
 from open_webui.retrieval.vector.factory import get_vector_db_client
 from open_webui.retrieval.vector.main import GetResult, SearchResult
 from open_webui.retrieval.web.utils import get_web_loader
@@ -252,7 +252,11 @@ async def get_content_from_url(request, url: str) -> str:
 
 
 def _get_content_from_url_sync(request, url: str, loader_config):
-    from open_webui.retrieval.web.utils import validate_url, get_ssrf_safe_requests_session
+    from open_webui.retrieval.web.utils import (
+        _SSRFSafeAdapter,
+        get_ssrf_safe_requests_session,
+        validate_url,
+    )
 
     # Validate URL before making any request (blocks private IPs, non-HTTP, filter list)
     validate_url(url)

@@ -18,7 +18,7 @@
 </script>
 
 {#if loaded}
-	<div class="w-full h-full pb-2">
+	<div class="w-full h-full pb-2 overflow-y-auto scrollbar-hover">
 		<Dashboard />
 	</div>
 {/if}

@@ -1,6 +1,5 @@
 from typing import Optional
 
-
 TEMPORARY_CHAT_ID_PREFIX = 'temporary:'
 LEGACY_TEMPORARY_CHAT_ID_PREFIX = 'local:'  # Legacy temporary chat prefix.
 CHANNEL_CHAT_ID_PREFIX = 'channel:'

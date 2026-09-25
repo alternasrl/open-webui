@@ -496,6 +496,8 @@ async def lifespan(app: FastAPI):
     await publish_event(app, EVENTS.SYSTEM_SHUTDOWN_COMPLETED, source='system')
 
 
+from open_webui.middleware.access_log import setup_access_logging
+
 # Opt-in (ENABLE_ORJSON): orjson for request-body parsing and JSONResponse bodies;
 # response_model routes keep FastAPI's Pydantic fast path either way.
 apply_orjson_http_json()
@@ -516,6 +518,7 @@ app = FastAPI(
 async def recurrence_timeout_handler(request: Request, exc: RecurrenceEvaluationTimeout):
     return JSONResponse(status_code=400, content={'detail': str(exc)})
 
+setup_access_logging(app)
 
 # Used by readiness checks to gate traffic until startup work is done.
 app.state.startup_complete = False
