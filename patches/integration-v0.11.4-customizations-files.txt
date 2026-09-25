@@ -148,6 +148,3 @@ src/lib/components/admin/Analytics/routing-logic.test.ts
 src/lib/components/admin/Settings/Connections.svelte
 src/lib/components/admin/Settings/Connections/OllamaConnection.svelte
 src/lib/components/admin/Settings/Connections/OpenAIConnection.svelte
-
-Changes:
-
