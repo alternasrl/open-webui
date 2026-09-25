@@ -55,6 +55,25 @@ TIMER_POLL_INTERVAL = int(os.getenv('TIMER_POLL_INTERVAL', '1'))
 CALENDAR_ALERT_LOOKAHEAD_MINUTES = int(os.getenv('CALENDAR_ALERT_LOOKAHEAD_MINUTES', '10'))
 
 
+def _scheduled_audit_meta(
+    *,
+    trigger: str,
+    automation_id: str,
+    status: str,
+    chat_id: str | None = None,
+    channel_id: str | None = None,
+    error_code: str | None = None,
+) -> str:
+    parts = [f'trigger={trigger}', f'automation_id={automation_id}', f'status={status}']
+    if chat_id:
+        parts.append(f'chat_id={chat_id}')
+    if channel_id:
+        parts.append(f'channel_id={channel_id}')
+    if error_code:
+        parts.append(f'error_code={error_code}')
+    return '|'.join(parts)
+
+
 ############################
 # Worker Loop
 ############################
@@ -392,7 +411,12 @@ async def execute_automation(app, automation: AutomationModel, trigger: str = 's
                     'automation',
                     500,
                     0.0,
-                    meta=f'trigger={trigger}|name={automation.name}|error=user_not_found',
+                    meta=_scheduled_audit_meta(
+                        trigger=trigger,
+                        automation_id=automation.id,
+                        status='error',
+                        error_code='user_not_found',
+                    ),
                 )
             return
 
@@ -421,7 +445,12 @@ async def execute_automation(app, automation: AutomationModel, trigger: str = 's
                     'automation',
                     403,
                     time.time() - _start_time,
-                    meta=f'trigger={trigger}|name={automation.name}|error=owner_not_permitted',
+                    meta=_scheduled_audit_meta(
+                        trigger=trigger,
+                        automation_id=automation.id,
+                        status='error',
+                        error_code='owner_not_permitted',
+                    ),
                 )
             return
 
@@ -448,7 +477,12 @@ async def execute_automation(app, automation: AutomationModel, trigger: str = 's
                     'automation',
                     200,
                     time.time() - _start_time,
-                    meta=f'trigger={trigger}|name={automation.name}|channel_id={target.get("id", "")}',
+                    meta=_scheduled_audit_meta(
+                        trigger=trigger,
+                        automation_id=automation.id,
+                        status='success',
+                        channel_id=target.get('id'),
+                    ),
                 )
             return
 
@@ -521,7 +555,12 @@ async def execute_automation(app, automation: AutomationModel, trigger: str = 's
                     'automation',
                     500,
                     time.time() - _start_time,
-                    meta=f'trigger={trigger}|name={automation.name}|error=chat_create_failed',
+                    meta=_scheduled_audit_meta(
+                        trigger=trigger,
+                        automation_id=automation.id,
+                        status='error',
+                        error_code='chat_create_failed',
+                    ),
                 )
             return
 
@@ -593,7 +632,12 @@ async def execute_automation(app, automation: AutomationModel, trigger: str = 's
                 'automation',
                 200,
                 time.time() - _start_time,
-                meta=f'trigger={trigger}|name={automation.name}|chat_id={chat.id}',
+                meta=_scheduled_audit_meta(
+                    trigger=trigger,
+                    automation_id=automation.id,
+                    status='success',
+                    chat_id=chat.id,
+                ),
             )
 
     except Exception as e:
@@ -615,7 +659,12 @@ async def execute_automation(app, automation: AutomationModel, trigger: str = 's
                 'automation',
                 500,
                 time.time() - _start_time,
-                meta=f'trigger={trigger}|name={automation.name}|error={str(e)[:200]}',
+                meta=_scheduled_audit_meta(
+                    trigger=trigger,
+                    automation_id=automation.id,
+                    status='error',
+                    error_code='execution_exception',
+                ),
             )
 
 

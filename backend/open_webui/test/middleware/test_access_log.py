@@ -19,6 +19,7 @@ from open_webui.middleware.access_log import (
     _cache_data,
     _cache_lock,
     _classify_action,
+    _decode_allowed_oidc_audit_claims,
     _extract_object_ref,
     _outcome_from_status,
     _UserContext,
@@ -601,6 +602,27 @@ class TestExtractObjectRef:
 
 
 # ---------------------------------------------------------------------------
+# _decode_allowed_oidc_audit_claims
+# ---------------------------------------------------------------------------
+
+
+class TestAllowedOidcAuditClaims:
+    def test_only_allowlisted_claims_are_returned(self):
+        token = (
+            'eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.'
+            'eyJzdWIiOiJ1c2VyLTEyMyIsImVtYWlsIjoidXNlckBleGFtcGxlLmNvbSIsImdyb3VwcyI6WyJhZG1pbiJdLCJyb2xlcyI6WyJvd25lciJdLCJhbXIiOlsicHdkIiwibWZhIl0sImF1dGhfdGltZSI6MTcwMDAwMDAwMCwibm9uY2UiOiJzZWNyZXQifQ.'
+        )
+
+        claims = _decode_allowed_oidc_audit_claims(token)
+
+        assert claims == {'sub': 'user-123', 'mfa': 'pwd,mfa', 'auth_time': '1700000000'}
+        assert 'email' not in claims
+        assert 'groups' not in claims
+        assert 'roles' not in claims
+        assert 'nonce' not in claims
+
+
+# ---------------------------------------------------------------------------
 # _outcome_from_status
 # ---------------------------------------------------------------------------
 
@@ -862,10 +884,7 @@ class TestClassifyV0113Actions:
         assert is_nis2('POST', '/openai/models/0/download')
 
     def test_openai_provider_model_download_status(self):
-        assert (
-            action_of('GET', '/openai/models/0/download/status/job-42')
-            == 'MODEL_PROVIDER_DOWNLOAD_STATUS'
-        )
+        assert action_of('GET', '/openai/models/0/download/status/job-42') == 'MODEL_PROVIDER_DOWNLOAD_STATUS'
         assert not is_nis2('GET', '/openai/models/0/download/status/job-42')
 
     def test_openai_provider_model_load(self):

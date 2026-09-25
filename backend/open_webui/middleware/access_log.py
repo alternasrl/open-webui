@@ -145,7 +145,6 @@ NIS2 Action Categories
 """
 
 import hashlib
-import json
 import logging
 import re
 import sys
@@ -895,28 +894,30 @@ def _decode_id_token_claims(id_token_raw: str, user_hint: str = '') -> tuple[Opt
         return None, None
 
 
-# Claims to redact from the full token dump to avoid leaking opaque tokens
-# into the log (they add noise and may trigger WAF/DLP rules).
-_REDACTED_CLAIMS = frozenset({'at_hash', 'c_hash', 'nonce', 'jti'})
-
-
-def _decode_full_id_token(id_token_raw: str) -> Optional[dict]:
-    """Decode all claims from an OIDC id_token for debug/audit logging.
-
-    Returns the full decoded payload dict, with a small set of opaque
-    internal claims redacted.  Returns None on any error.
-    """
+def _decode_allowed_oidc_audit_claims(id_token_raw: str) -> dict[str, str]:
+    """Decode only the approved OIDC audit identifiers from an id_token."""
     if not id_token_raw or pyjwt is None:
-        return None
+        return {}
     try:
         decoded = pyjwt.decode(
             id_token_raw,
             options={'verify_signature': False},
             algorithms=['RS256', 'HS256', 'ES256', 'PS256', 'EdDSA'],
         )
-        return {k: v for k, v in decoded.items() if k not in _REDACTED_CLAIMS}
+        allowed: dict[str, str] = {}
+        if decoded.get('sub') is not None:
+            allowed['sub'] = str(decoded['sub'])
+        amr = decoded.get('amr')
+        acr = decoded.get('acr')
+        if amr:
+            allowed['mfa'] = ','.join(str(value) for value in amr) if isinstance(amr, list) else str(amr)
+        elif acr:
+            allowed['mfa'] = str(acr)
+        if decoded.get('auth_time') is not None:
+            allowed['auth_time'] = str(decoded['auth_time'])
+        return allowed
     except Exception:
-        return None
+        return {}
 
 
 def _resolve_user_context(user_id: str) -> _UserContext:
@@ -1222,12 +1223,11 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
             f'time={process_time:.3f}s'
         )
 
-        # For OIDC login events append the full decoded token claims for debug/audit.
-        # The raw id_token is decoded here (no signature verification) and the result
-        # is appended as a JSON field so that claim mapping issues are immediately visible.
+        # For OIDC login events append only explicitly approved identifiers.
         if action_type == 'AUTH_OIDC_LOGIN':
-            claims_dict = _decode_full_id_token(oidc_raw_id_token) if oidc_raw_id_token else None
-            log_msg += f' | claims={json.dumps(claims_dict, default=str) if claims_dict else "-"}'
+            allowed_claims = _decode_allowed_oidc_audit_claims(oidc_raw_id_token) if oidc_raw_id_token else {}
+            claims_meta = '|'.join(f'{key}={value}' for key, value in allowed_claims.items()) or '-'
+            log_msg += f' | oidc_claims={claims_meta}'
 
         # Use WARNING level for NIS2 security-relevant actions to aid SIEM/alerting
         if effective_nis2:
