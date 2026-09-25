@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
+from types import SimpleNamespace
 from fastapi.routing import APIRoute
 from open_webui.env import ENABLE_SCIM
 from open_webui.main import app
 from open_webui.middleware.access_log import _NIS2_ACTION_RULES
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 REQUIRED_ACTIONS = {
     ('GET', '/openai/models/{url_idx}/catalog'): 'MODEL_PROVIDER_CATALOG',
@@ -23,6 +26,16 @@ REQUIRED_ACTIONS = {
     ('GET', '/ollama/v1/models/{url_idx}'): 'OLLAMA_COMPAT_MODELS_READ',
     ('GET', '/ollama/api/tags/{url_idx}'): 'OLLAMA_COMPAT_TAGS_READ',
     ('GET', '/ollama/api/version/{url_idx}'): 'OLLAMA_COMPAT_VERSION_READ',
+}
+
+ABSENT_RUNTIME_ROUTES = {
+    ('GET', '/api/v1/images/config/url/verify'),
+    ('POST', '/api/v1/utils/pdf'),
+}
+
+ABSENT_RULE_PATTERNS = {
+    ('GET', r'^/api/v1/images/config/url/verify$'),
+    ('POST', r'^/api/v1/utils/pdf$'),
 }
 
 
@@ -63,6 +76,21 @@ def iter_runtime_routes() -> list[dict[str, object]]:
     return sorted(rows, key=lambda row: (row['path'], row['method']))
 
 
+def _exercise_inline_admin_guard(endpoint):
+    async def scenario():
+        try:
+            await endpoint(
+                request=SimpleNamespace(),
+                url_idx=0,
+                user=SimpleNamespace(role='user'),
+            )
+        except Exception as exc:
+            return exc
+        return None
+
+    return asyncio.run(scenario())
+
+
 def main() -> None:
     rows = iter_runtime_routes()
     row_map = {(row['method'], row['path']): row for row in rows}
@@ -76,18 +104,39 @@ def main() -> None:
         if row['action'] != expected_action:
             mismatches.append({'route': key, 'expected': expected_action, 'actual': row['action']})
 
+    absent_routes = []
+    for key in ABSENT_RUNTIME_ROUTES:
+        if key in row_map:
+            absent_routes.append({'route': key, 'problem': 'legacy runtime route still registered'})
+
+    legacy_rule_issues = []
+    for method, pattern_text in ABSENT_RULE_PATTERNS:
+        if any(rule_method == method and pattern.pattern == pattern_text for pattern, rule_method, _ in _NIS2_ACTION_RULES):
+            legacy_rule_issues.append({'method': method, 'pattern': pattern_text})
+
     admin_only_routes = {
+        ('GET', '/openai/models/{url_idx}'),
         ('GET', '/ollama/v1/models/{url_idx}'),
         ('GET', '/ollama/api/tags/{url_idx}'),
         ('GET', '/ollama/api/version/{url_idx}'),
     }
-    admin_dependency_issues = []
+    admin_behavior_issues = []
     for key in admin_only_routes:
         row = row_map[key]
         source = inspect.getsource(row['endpoint'])
         has_inline_admin_guard = 'url_idx is not None' in source and "user.role != 'admin'" in source
-        if 'get_admin_user' not in row['dependencies'] and not has_inline_admin_guard:
-            admin_dependency_issues.append({'route': key, 'dependencies': row['dependencies']})
+        if not has_inline_admin_guard:
+            admin_behavior_issues.append({'route': key, 'problem': 'missing inline admin guard in source'})
+            continue
+        exc = _exercise_inline_admin_guard(row['endpoint'])
+        if not isinstance(exc, StarletteHTTPException) or exc.status_code != 401:
+            admin_behavior_issues.append(
+                {
+                    'route': key,
+                    'problem': 'inline admin guard did not reject non-admin at runtime',
+                    'exception': repr(exc),
+                }
+            )
 
     dead_rules = []
     for pattern, method, action in _NIS2_ACTION_RULES:
@@ -100,11 +149,13 @@ def main() -> None:
 
     report = {
         'mismatches': mismatches,
-        'admin_dependency_issues': admin_dependency_issues,
+        'absent_routes': absent_routes,
+        'legacy_rule_issues': legacy_rule_issues,
+        'admin_behavior_issues': admin_behavior_issues,
         'dead_rules': dead_rules,
     }
     print(json.dumps(report, indent=2, default=str))
-    if mismatches or admin_dependency_issues or dead_rules:
+    if mismatches or absent_routes or legacy_rule_issues or admin_behavior_issues or dead_rules:
         raise SystemExit(1)
 
 

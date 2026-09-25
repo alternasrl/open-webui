@@ -15,17 +15,21 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from open_webui.middleware.access_log import (
+    AccessLogMiddleware,
     _NIS2_SECURITY_ACTIONS,
     _cache_data,
     _cache_lock,
     _classify_action,
     _decode_allowed_oidc_audit_claims,
+    _extract_event_object_ref,
     _extract_object_ref,
     _outcome_from_status,
     _UserContext,
     invalidate_user_cache,
     log_scheduled_activity,
 )
+from starlette.requests import Request
+from starlette.responses import Response
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -226,6 +230,10 @@ class TestClassifyConfig:
     def test_config_images(self):
         assert action_of('POST', '/api/v1/images/config/update') == 'CONFIG_IMAGES'
         assert is_nis2('POST', '/api/v1/images/config/update')
+
+    def test_config_images_verify(self):
+        assert action_of('POST', '/api/v1/images/verify') == 'CONFIG_IMAGES_VERIFY'
+        assert is_nis2('POST', '/api/v1/images/verify')
 
 
 # ---------------------------------------------------------------------------
@@ -601,6 +609,38 @@ class TestExtractObjectRef:
         assert obj_id is None
 
 
+class TestExtractEventObjectRef:
+    def test_models_export_ids_are_recorded_in_object_reference(self):
+        scope = {
+            'type': 'http',
+            'method': 'GET',
+            'path': '/api/v1/models/export',
+            'query_string': b'ids=model-a&ids=model-b',
+            'headers': [],
+        }
+        request = Request(scope)
+
+        obj_type, obj_id = _extract_event_object_ref(request.method, request.url.path, request.query_params)
+
+        assert obj_type == 'model'
+        assert obj_id == 'model-a,model-b'
+
+    def test_models_export_without_ids_keeps_empty_object_reference(self):
+        scope = {
+            'type': 'http',
+            'method': 'GET',
+            'path': '/api/v1/models/export',
+            'query_string': b'',
+            'headers': [],
+        }
+        request = Request(scope)
+
+        obj_type, obj_id = _extract_event_object_ref(request.method, request.url.path, request.query_params)
+
+        assert obj_type is None
+        assert obj_id is None
+
+
 # ---------------------------------------------------------------------------
 # _decode_allowed_oidc_audit_claims
 # ---------------------------------------------------------------------------
@@ -765,6 +805,57 @@ class TestLogScheduledActivity:
         assert 'time=12.346s' in record.getMessage()
 
 
+def test_models_export_dispatch_logs_filtered_ids_without_query_payload(monkeypatch):
+    async def scenario():
+        middleware = AccessLogMiddleware(lambda scope, receive, send: None)
+        monkeypatch.setattr(middleware, '_get_session_id', lambda request: 'session-12345678')
+        monkeypatch.setattr(middleware, '_extract_user_uuid', lambda request: None)
+        monkeypatch.setattr(middleware, '_get_oidc_claims_from_cookies', lambda request: (None, None))
+        monkeypatch.setattr(middleware, '_get_correlation_id', lambda request: None)
+        monkeypatch.setattr(middleware, '_get_client_ip', lambda request: '127.0.0.1')
+
+        logger = logging.getLogger('open_webui.access')
+        handler = MagicMock()
+        handler.level = logging.DEBUG
+        logger.addHandler(handler)
+        try:
+            async def call_next(request):
+                return Response(status_code=200)
+
+            request = Request(
+                {
+                    'type': 'http',
+                    'method': 'GET',
+                    'path': '/api/v1/models/export',
+                    'query_string': b'ids=model-a&ids=model-b',
+                    'headers': [(b'user-agent', b'pytest')],
+                    'client': ('127.0.0.1', 12345),
+                    'scheme': 'http',
+                    'server': ('testserver', 80),
+                }
+            )
+
+            response = await middleware.dispatch(request, call_next)
+        finally:
+            logger.removeHandler(handler)
+
+        assert response.status_code == 200
+        assert handler.handle.called, 'No log record emitted'
+        record = handler.handle.call_args[0][0]
+        msg = record.getMessage()
+
+        assert 'email=anonymous' in msg
+        assert 'action=DATA_EXPORT' in msg
+        assert 'outcome=success' in msg
+        assert 'object=model:model-a,model-b' in msg
+        assert '"GET /api/v1/models/export" 200' in msg
+        assert 'ids=' not in msg
+
+    import asyncio
+
+    asyncio.run(scenario())
+
+
 # ---------------------------------------------------------------------------
 # invalidate_user_cache
 # ---------------------------------------------------------------------------
@@ -879,6 +970,10 @@ class TestClassifyV0113Actions:
         assert action_of('GET', '/openai/models/0/catalog') == 'MODEL_PROVIDER_CATALOG'
         assert not is_nis2('GET', '/openai/models/0/catalog')
 
+    def test_openai_provider_model_list(self):
+        assert action_of('GET', '/openai/models/0') == 'MODEL_PROVIDER_LIST'
+        assert not is_nis2('GET', '/openai/models/0')
+
     def test_openai_provider_model_download(self):
         assert action_of('POST', '/openai/models/0/download') == 'MODEL_PROVIDER_DOWNLOAD'
         assert is_nis2('POST', '/openai/models/0/download')
@@ -905,6 +1000,22 @@ class TestClassifyV0113Actions:
     def test_memory_reindex(self):
         assert action_of('POST', '/api/v1/memories/reindex') == 'MEMORY_REINDEX'
         assert is_nis2('POST', '/api/v1/memories/reindex')
+
+    def test_models_all_is_explicit_non_critical_read(self):
+        assert action_of('GET', '/api/v1/models/all') == 'MODEL_LIST_ALL'
+        assert not is_nis2('GET', '/api/v1/models/all')
+
+    def test_folder_read_is_explicit_non_critical_read(self):
+        assert action_of('GET', '/api/v1/folders/folder-42') == 'FOLDER_ACCESS_READ'
+        assert not is_nis2('GET', '/api/v1/folders/folder-42')
+
+    def test_legacy_images_verify_path_has_no_specific_rule(self):
+        assert action_of('GET', '/api/v1/images/config/url/verify') == 'READ'
+        assert not is_nis2('GET', '/api/v1/images/config/url/verify')
+
+    def test_removed_utils_pdf_path_has_no_specific_rule(self):
+        assert action_of('POST', '/api/v1/utils/pdf') == 'WRITE_OTHER'
+        assert not is_nis2('POST', '/api/v1/utils/pdf')
 
     def test_ollama_admin_tags_read(self):
         assert action_of('GET', '/ollama/api/tags/0') == 'OLLAMA_COMPAT_TAGS_READ'

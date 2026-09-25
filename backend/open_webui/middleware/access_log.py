@@ -773,6 +773,32 @@ def _extract_object_ref(path: str) -> tuple[Optional[str], Optional[str]]:
     return None, None
 
 
+def _extract_event_object_ref(
+    method: str,
+    path: str,
+    query_params=None,
+) -> tuple[Optional[str], Optional[str]]:
+    """Extract the audited object reference for a request.
+
+    Most routes encode the target resource directly in the path. For export
+    routes that accept filtered resource IDs in the query string, preserve
+    those IDs in the object reference without logging request payloads or
+    exported content.
+    """
+    if method == 'GET' and path == '/api/v1/models/export' and query_params is not None:
+        raw_ids = query_params.getlist('ids') if hasattr(query_params, 'getlist') else []
+        ids: list[str] = []
+        for value in raw_ids:
+            for item in value.split(','):
+                item = item.strip()
+                if item and item not in ids:
+                    ids.append(item)
+        if ids:
+            return 'model', ','.join(ids)
+
+    return _extract_object_ref(path)
+
+
 # ---------------------------------------------------------------------------
 # Outcome mapping  (Log360 outcome / CEF outcome)
 # ---------------------------------------------------------------------------
@@ -1110,7 +1136,11 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
         action_type, is_nis2 = _classify_action(request.method, request.url.path)
 
         # Log360: Extract target object reference from URL path (CEF cs4 + cs5)
-        object_type, object_id = _extract_object_ref(request.url.path)
+        object_type, object_id = _extract_event_object_ref(
+            request.method,
+            request.url.path,
+            request.query_params,
+        )
 
         # Log360 UEBA: Capture User-Agent for anomaly detection
         user_agent = request.headers.get('user-agent', '-')
