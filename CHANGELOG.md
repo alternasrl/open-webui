@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.4-260925] - 2026-09-25
+
+Fork release based on upstream Open WebUI [v0.11.4](https://github.com/open-webui/open-webui/releases/tag/v0.11.4). See the [upstream changelog](https://github.com/open-webui/open-webui/blob/v0.11.4/CHANGELOG.md) for upstream changes.
+
+### Custom changes
+
+- Preserved the fork's Prompt Insights and admin analytics/routing/cross-filter UI, NIS2 access-log and audit paths, OIDC/OAuth compliance, MCP import compatibility, built-in tool handling, and request/stream behavior.
+- Completed NIS2 route and scheduled-automation audit coverage; sanitized audit logs and model-export references; removed retired route rules.
+- Reconciled the fork's migration history, refreshed dependency/security pins, restored fork UI fixes, and strengthened regression coverage.
+- Cleared integration-only frontend diagnostics.
+
 ## [0.11.4] - 2026-09-21
 
 ### Added

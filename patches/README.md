@@ -49,8 +49,8 @@ These are the actual `integration-v0.11.4` branch commits, not standalone replay
 - Migration verification remains on a single Alembic head; no new migration was required for the v0.11.4 reconciliation.
 - Frontend tests pass, but the clean upstream baseline still reports Svelte-check errors; after the integration fixes there are zero integration-only diagnostics.
 - Local production builds still need a heap override, while the Docker CI build config already supplies one, so the containerized build path remains the preferred verified path.
-- Version metadata remains `0.11.4`; the fork date suffix and release tags stay pending a separate explicit release cut.
+- Release version metadata is `0.11.4-260925`, matching the fork's dated source release tag.
 
-## Final gate
+## Release
 
-This document records the integration evidence only. It is **not** approval to merge, release, tag, or publish.
+The fork integration was released as [`v0.11.4-260925`](https://github.com/alternasrl/open-webui/releases/tag/v0.11.4-260925), based on upstream [`v0.11.4`](https://github.com/open-webui/open-webui/blob/v0.11.4/CHANGELOG.md).
