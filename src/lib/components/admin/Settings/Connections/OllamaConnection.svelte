@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { getContext, tick } from 'svelte';
-	const i18n = getContext('i18n');
+	const i18n: any = getContext('i18n');
 
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
 	import Switch from '$lib/components/common/Switch.svelte';
@@ -12,12 +12,14 @@
 	import ManageOllamaModal from './ManageOllamaModal.svelte';
 	import Download from '$lib/components/icons/Download.svelte';
 
-	export let onDelete = () => {};
-	export let onSubmit = () => {};
+	type Connection = { url: string; key: string; config: Record<string, any> };
+
+	export let onDelete: () => void = () => {};
+	export let onSubmit: (connection: Connection) => void | Promise<void> = () => {};
 
 	export let url = '';
 	export let idx = 0;
-	export let config = {};
+	export let config: Record<string, any> = {};
 
 	let showManageModal = false;
 	let showConfigModal = false;
@@ -36,7 +38,7 @@
 		onDelete();
 		showConfigModal = false;
 	}}
-	onSubmit={async (connection) => {
+	onSubmit={async (connection: Connection) => {
 		url = connection.url;
 		config = { ...connection.config, key: connection.key };
 		await onSubmit(connection);
