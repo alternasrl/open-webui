@@ -1288,7 +1288,8 @@ class OAuthClientManager:
                     detail='OAuth callback state is invalid or expired',
                 )
 
-            if not await get_verified_user_by_id(user_id):
+            user = await get_verified_user_by_id(user_id)
+            if not user:
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail='OAuth callback user is not authorized',
@@ -1332,6 +1333,8 @@ class OAuthClientManager:
                         provider=client_id,
                         token=token,
                     )
+                    if not session:
+                        raise RuntimeError('OAuth session was not persisted')
                     log.info('Stored OAuth session server-side for user %s, client_id %s', user_id, client_id)
                     # Invalidate access-log cache so subsequent requests pick up OIDC claims
                     try:
@@ -1369,6 +1372,9 @@ class OAuthClientManager:
             redirect_url = f'{redirect_url}/?error={urllib.parse.quote_plus(error_message)}'
             return RedirectResponse(url=redirect_url, headers=response.headers)
 
+        request.state.auth_audit_user = user
+        request.state.auth_audit_source = 'oauth_client'
+        request.state.auth_audit_outcome = 'completed'
         response = RedirectResponse(url=redirect_url, headers=response.headers)
         return response
 

@@ -139,6 +139,8 @@ class InterceptHandler(logging.Handler):
 def file_format(record: 'Record'):
     """
     Formats audit log records into a structured JSON string for file output.
+    Authentication outcomes are included only when supplied, distinguishing
+    MFA challenges from completed authentication without changing other records.
 
     Parameters:
     record (Record): A Loguru record containing extra audit data.
@@ -163,6 +165,8 @@ def file_format(record: 'Record'):
         'response_object': record['extra'].get('response_object', b''),
         'extra': record['extra'].get('extra', {}),
     }
+    if record['extra'].get('auth_outcome') is not None:
+        audit_data['auth_outcome'] = record['extra']['auth_outcome']
 
     record['extra']['file_extra'] = json.dumps(audit_data, default=str)
     return '{extra[file_extra]}\n'

@@ -75,6 +75,48 @@ def identity(monkeypatch):
     access_log.invalidate_user_cache(user.id)
 
 
+@pytest.fixture
+def audit_file(tmp_path):
+    import importlib
+
+    from loguru import logger
+    from open_webui.utils.logger import file_format
+
+    importlib.import_module('open_webui.main')
+    path = tmp_path / 'audit.jsonl'
+    handler = logger.add(
+        path,
+        format=file_format,
+        filter=lambda record: record['extra'].get('auditable') is True,
+    )
+    try:
+        yield path
+    finally:
+        logger.remove(handler)
+
+
+def test_audit_file_distinguishes_challenge_and_completed(audit_file):
+    from loguru import logger
+
+    writer = audit.AuditLogger(logger)
+    for outcome in ('challenge', 'completed', None):
+        writer.write(
+            audit.AuditLogEntry(
+                id='audit-entry',
+                user={'id': 'audit-user'},
+                audit_level='METADATA',
+                verb='GET',
+                request_uri='/oauth/provider/login/callback',
+                auth_outcome=outcome,
+            )
+        )
+    entries = [json.loads(line) for line in audit_file.read_text().splitlines()]
+    assert entries[0]['auth_outcome'] == 'challenge'
+    assert entries[1]['auth_outcome'] == 'completed'
+    assert entries[0] != entries[1]
+    assert 'auth_outcome' not in entries[2]
+
+
 def test_pending_mfa_has_no_application_session(identity, monkeypatch, caplog):
     user, credential = identity
     monkeypatch.setattr(
@@ -666,6 +708,128 @@ def test_oauth_client_callback_evicts_only_saved_sessions(saved, identity, monke
     result = asyncio.run(manager.handle_callback(req, 'client', Response()))
     assert result.status_code == 307
     assert (user.id not in access_log._cache_data) is saved
+
+
+@pytest.mark.parametrize(
+    'result',
+    [
+        'saved',
+        'not-saved',
+        'save-error',
+        'token-error',
+        'invalid-token',
+        'empty-token',
+        'invalid-state',
+        'unauthorized',
+        'mismatched-user',
+    ],
+)
+def test_oauth_client_callback_audits_provider_authorization(result, identity, monkeypatch, caplog, audit_file):
+    import importlib
+
+    from open_webui import events
+    from open_webui.models.oauth_sessions import OAuthSessions
+    from open_webui.utils import oauth
+    from starlette.middleware.sessions import SessionMiddleware
+
+    main = importlib.import_module('open_webui.main')
+    user, _ = identity
+    published = []
+
+    async def collect_event(app, event, request=None):
+        published.append(event)
+
+    monkeypatch.setattr(events, 'EVENT_SINKS', [SimpleNamespace(handle_event=collect_event)])
+    manager = oauth.OAuthClientManager.__new__(oauth.OAuthClientManager)
+    framework = SimpleNamespace(
+        get_state_data=AsyncMock(return_value=None if result == 'invalid-state' else {'user_id': user.id}),
+        clear_state_data=AsyncMock(),
+    )
+    token = (
+        {'error': 'provider-token-secret'}
+        if result == 'invalid-token'
+        else None if result == 'empty-token' else {'access_token': 'provider-token-secret'}
+    )
+    client = SimpleNamespace(
+        framework=framework,
+        authorize_access_token=AsyncMock(
+            return_value=token,
+            side_effect=ValueError('provider-token-secret') if result == 'token-error' else None,
+        ),
+    )
+    monkeypatch.setattr(manager, 'get_client', AsyncMock(return_value=client))
+    monkeypatch.setattr(manager, 'get_client_info', AsyncMock(return_value=SimpleNamespace(resource=None)))
+    monkeypatch.setattr(
+        oauth, 'get_verified_user_by_id', AsyncMock(return_value=None if result == 'unauthorized' else user)
+    )
+    monkeypatch.setattr(
+        oauth,
+        'get_optional_verified_user_from_request',
+        AsyncMock(return_value=SimpleNamespace(id='other-user') if result == 'mismatched-user' else None),
+    )
+    monkeypatch.setattr(
+        OAuthSessions,
+        'create_session',
+        AsyncMock(
+            return_value=None if result == 'not-saved' else SimpleNamespace(id='provider-session'),
+            side_effect=RuntimeError('database-token-secret') if result == 'save-error' else None,
+        ),
+    )
+    monkeypatch.setattr(oauth.Config, 'get', AsyncMock(return_value='http://testserver'))
+    monkeypatch.setattr(main, 'oauth_client_manager', manager)
+    monkeypatch.setattr(main, 'ENABLE_TOOL_SERVERS', True)
+    monkeypatch.setattr(audit, 'AUDIT_LOG_LEVEL', 'REQUEST_RESPONSE')
+    monkeypatch.setattr(audit.AuditLoggingMiddleware, '_get_authenticated_user', AsyncMock(return_value=None))
+    app = FastAPI()
+    app.add_api_route('/oauth/clients/{client_id}/callback', main.oauth_client_callback, methods=['GET'])
+    app.add_middleware(SessionMiddleware, secret_key='test-only')
+    app.add_middleware(access_log.AccessLogMiddleware)
+    app.add_middleware(
+        audit.AuditLoggingMiddleware,
+        audit_level=audit.AuditLevel.REQUEST_RESPONSE,
+        audit_get_requests=True,
+    )
+    with caplog.at_level(logging.INFO, logger='open_webui.access'):
+        with TestClient(app) as browser:
+            response = browser.get(
+                '/oauth/clients/client/callback?state=provider-state-secret&code=provider-code-secret',
+                follow_redirects=False,
+            )
+    assert response.status_code == 307
+    entries = [json.loads(line) for line in audit_file.read_text().splitlines()]
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry['response_status_code'] == 307
+    if result == 'saved':
+        assert 'action=OAUTH_CLIENT_AUTHORIZE | outcome=success | nis2=Y' in caplog.text
+        assert 'email=alice@example.com' in caplog.text
+        assert entry['user']['id'] == user.id
+        assert entry['auth_outcome'] == 'completed'
+        assert 'error=' not in response.headers['location']
+    else:
+        assert 'action=OAUTH_CLIENT_AUTHORIZE_FAIL | outcome=failure | nis2=Y' in caplog.text
+        assert 'outcome=success' not in caplog.text
+        assert entry['user'] == {}
+        assert entry['auth_outcome'] == 'failed'
+        assert 'error=' in response.headers['location']
+    assert 'AUTH_OIDC_LOGIN' not in caplog.text
+    assert 'action=AUTH_LOGIN' not in caplog.text
+    assert not any(event.event == events.EVENTS.AUTH_LOGIN.name for event in published)
+    assert not response.headers.get_list('set-cookie')
+    assert '-secret' not in audit_file.read_text() + caplog.text
+
+
+def test_oauth_client_redirect_without_completion_is_pending(caplog):
+    async def scenario():
+        async def redirect(req):
+            return Response(status_code=307)
+
+        await access_log.AccessLogMiddleware(None).dispatch(request('/oauth/clients/client/callback'), redirect)
+
+    with caplog.at_level(logging.INFO, logger='open_webui.access'):
+        asyncio.run(scenario())
+    assert 'action=OAUTH_CLIENT_AUTHORIZE_INCOMPLETE | outcome=pending | nis2=Y' in caplog.text
+    assert 'outcome=success' not in caplog.text
 
 
 @pytest.mark.parametrize('mode', ['permission-denied', 'stamp-revoked', 'connection-end'])

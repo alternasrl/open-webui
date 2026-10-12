@@ -35,6 +35,8 @@ covered by this middleware:
   • ``/api/v1/automations/*``        — Automation CRUD + run (code exec)
   • ``/api/v1/calendars/*``          — Calendar & event management
   • ``/oauth/clients/{id}/authorize`` — MCP OAuth 2.1 authorization flow
+  • ``/oauth/clients/{id}/callback`` — provider token acquisition, not app login;
+    success requires persisted provider session and a validated audit actor.
   • ``/oauth/backchannel-logout``     — IdP-initiated back-channel logout
   • ``/api/v1/configs/terminal_servers/verify``  — Terminal server verify
   • ``/api/v1/configs/terminal_servers/policy``  — Terminal execution policy
@@ -120,6 +122,7 @@ NIS2 Action Categories
   AUTH_*       — Authentication & session lifecycle
                  AUTH_OIDC_LOGIN         — OIDC/OAuth2 callback (success=302, fail=4xx → _FAIL)
                  AUTH_OAUTH_AUTHORIZE    — MCP OAuth 2.1 authorization initiation (v0.9.x)
+                 OAUTH_CLIENT_AUTHORIZE  — MCP provider token acquisition (not an application login)
   USER_*       — User account management
   GROUP_*      — Group & membership management
   CONFIG_*     — System configuration changes
@@ -247,10 +250,11 @@ def _compile_action_rules() -> list[tuple[re.Pattern, Optional[str], str]]:
         (rf'^/api/v1/auths/api_key$', 'DELETE', 'AUTH_API_KEY_DELETE'),
         (rf'^/api/v1/auths/oauth/{_ID}/token/exchange$', 'POST', 'AUTH_OAUTH_TOKEN'),
         (rf'^/api/v1/auths/oauth/sessions/', 'DELETE', 'AUTH_LOGOUT'),  # OAuth session revoke (v0.9.3)
+        # MCP provider authorization is distinct from application login.
+        (rf'^/oauth/clients/{_ID}/callback$', 'GET', 'OAUTH_CLIENT_AUTHORIZE'),
         # OIDC/OAuth2 callback endpoints (GET — browser redirect after IdP authentication)
         (rf'^/oauth/{_ID}/login/callback$', 'GET', 'AUTH_OIDC_LOGIN'),
         (rf'^/oauth/{_ID}/callback$', 'GET', 'AUTH_OIDC_LOGIN'),  # legacy path
-        (rf'^/oauth/clients/{_ID}/callback$', 'GET', 'AUTH_OIDC_LOGIN'),  # dynamic OAuth clients
         # MCP OAuth 2.1: client initiates authorization flow
         (rf'^/oauth/clients/{_ID}/authorize$', 'GET', 'AUTH_OAUTH_AUTHORIZE'),
         # IdP-initiated back-channel logout (RFC 7009 / OpenID Connect Back-Channel Logout)
@@ -706,6 +710,7 @@ _NIS2_SECURITY_ACTIONS = frozenset(
         'RESOURCE_RUN_AUTOMATION',
         # OAuth MCP authorization flow
         'AUTH_OAUTH_AUTHORIZE',
+        'OAUTH_CLIENT_AUTHORIZE',
         # Terminal server policy (execution environment config)
         'CONFIG_TERMINAL_SERVERS_VERIFY',
         'CONFIG_TERMINAL_SERVERS_POLICY',
@@ -1291,22 +1296,30 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
         outcome = _outcome_from_status(status_code)
 
         # Detect failed auth attempts (NIS2 Art.21 — incident detection)
-        # AUTH_OIDC_LOGIN: success = 302 redirect to app; failure = 4xx
-        if action_type in ('AUTH_LOGIN', 'AUTH_LOGIN_LDAP', 'AUTH_SIGNUP', 'AUTH_OIDC_LOGIN') and status_code >= 400:
+        if (
+            action_type in ('AUTH_LOGIN', 'AUTH_LOGIN_LDAP', 'AUTH_SIGNUP', 'AUTH_OIDC_LOGIN', 'OAUTH_CLIENT_AUTHORIZE')
+            and status_code >= 400
+        ):
             effective_action = f'{action_type}_FAIL'
             effective_nis2 = True
         else:
             effective_action = action_type
             effective_nis2 = is_nis2
         auth_outcome = getattr(request.state, 'auth_audit_outcome', None)
-        if status_code < 400 and action_type in ('AUTH_LOGIN', 'AUTH_LOGIN_LDAP', 'AUTH_OIDC_LOGIN', 'AUTH_SIGNUP'):
+        if status_code < 400 and action_type in (
+            'AUTH_LOGIN',
+            'AUTH_LOGIN_LDAP',
+            'AUTH_OIDC_LOGIN',
+            'AUTH_SIGNUP',
+            'OAUTH_CLIENT_AUTHORIZE',
+        ):
             if auth_outcome == 'failed':
                 effective_action = f'{action_type}_FAIL'
                 outcome = 'failure'
             elif auth_outcome != 'completed':
                 effective_action = f'{action_type}_{(auth_outcome or "incomplete").upper()}'
                 outcome = 'pending'
-            elif action_type == 'AUTH_OIDC_LOGIN':
+            elif action_type in ('AUTH_OIDC_LOGIN', 'OAUTH_CLIENT_AUTHORIZE'):
                 outcome = 'success'
 
         # Log NIS2-compliant con tutti i campi richiesti da Log360 SIEM

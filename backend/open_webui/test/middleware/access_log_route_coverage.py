@@ -11,6 +11,7 @@ from open_webui.middleware.access_log import _NIS2_ACTION_RULES
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 REQUIRED_ACTIONS = {
+    ('GET', '/oauth/clients/{client_id}/callback'): 'OAUTH_CLIENT_AUTHORIZE',
     ('POST', '/api/v1/auths/mfa/challenge'): 'AUTH_MFA_CHALLENGE',
     ('POST', '/api/v1/auths/mfa/enroll/start'): 'AUTH_MFA_ENROLL_START',
     ('POST', '/api/v1/auths/mfa/enroll/confirm'): 'AUTH_MFA_ENROLL_CONFIRM',

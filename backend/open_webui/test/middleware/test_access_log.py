@@ -123,8 +123,9 @@ class TestClassifyAuth:
     def test_oidc_callback_legacy(self):
         assert action_of('GET', '/oauth/google/callback') == 'AUTH_OIDC_LOGIN'
 
-    def test_oidc_dynamic_client_callback(self):
-        assert action_of('GET', '/oauth/clients/my-client-id/callback') == 'AUTH_OIDC_LOGIN'
+    def test_mcp_oauth_client_callback(self):
+        assert action_of('GET', '/oauth/clients/my-client-id/callback') == 'OAUTH_CLIENT_AUTHORIZE'
+        assert is_nis2('GET', '/oauth/clients/my-client-id/callback')
 
     def test_mcp_oauth_authorize(self):
         assert action_of('GET', '/oauth/clients/my-client-id/authorize') == 'AUTH_OAUTH_AUTHORIZE'
