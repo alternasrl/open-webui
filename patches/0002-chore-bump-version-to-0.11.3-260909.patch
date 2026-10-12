@@ -1,0 +1,31 @@
+diff --git a/package-lock.json b/package-lock.json
+index de3ebe7d0..b8e96f664 100644
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -1,12 +1,12 @@
+ {
+ 	"name": "open-webui",
+-	"version": "0.11.3",
++	"version": "0.11.3-260909",
+ 	"lockfileVersion": 3,
+ 	"requires": true,
+ 	"packages": {
+ 		"": {
+ 			"name": "open-webui",
+-			"version": "0.11.3",
++			"version": "0.11.3-260909",
+ 			"dependencies": {
+ 				"@azure/msal-browser": "^4.5.0",
+ 				"@codemirror/lang-javascript": "^6.2.2",
+diff --git a/package.json b/package.json
+index cb87387f0..e44012db8 100644
+--- a/package.json
++++ b/package.json
+@@ -1,6 +1,6 @@
+ {
+ 	"name": "open-webui",
+-	"version": "0.11.3",
++	"version": "0.11.3-260909",
+ 	"private": true,
+ 	"scripts": {
+ 		"dev": "npm run pyodide:fetch && vite dev --host",

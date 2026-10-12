@@ -503,6 +503,13 @@ async def lifespan(app: FastAPI):
 
     await publish_event(app, EVENTS.SYSTEM_SHUTDOWN_STARTED, source='system')
 
+    # Stop the producer before awaiting the claimed PI run, while DB/Redis resources remain open.
+    app.state.scheduler_worker_loop.cancel()
+    await asyncio.gather(app.state.scheduler_worker_loop, return_exceptions=True)
+    from open_webui.prompt_insights.pipeline import stop_prompt_insights
+
+    await stop_prompt_insights(app)
+
     # Shutdown: clean up shared resources
     from open_webui.utils.session_pool import close_session
 
@@ -520,10 +527,11 @@ async def lifespan(app: FastAPI):
     app.state.periodic_socket_authentication.cancel()
     app.state.periodic_usage_pool_cleanup.cancel()
     app.state.periodic_session_pool_cleanup.cancel()
-    app.state.scheduler_worker_loop.cancel()
 
     await publish_event(app, EVENTS.SYSTEM_SHUTDOWN_COMPLETED, source='system')
 
+
+from open_webui.middleware.access_log import setup_access_logging
 
 # ENABLE_ORJSON: orjson for request-body parsing and JSONResponse bodies;
 # response_model routes keep FastAPI's Pydantic fast path either way.
@@ -545,6 +553,8 @@ app = FastAPI(
 async def recurrence_timeout_handler(request: Request, exc: RecurrenceEvaluationTimeout):
     return JSONResponse(status_code=400, content={'detail': str(exc)})
 
+
+setup_access_logging(app)
 
 # Used by readiness checks to gate traffic until startup work is done.
 app.state.startup_complete = False

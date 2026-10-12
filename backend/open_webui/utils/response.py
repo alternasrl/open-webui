@@ -143,6 +143,26 @@ def merge_usage(current: dict | None, incoming: dict | None) -> dict:
     return result
 
 
+def merge_usage_snapshot(current: dict | None, incoming: dict | None) -> dict:
+    """Replace reported counters in a snapshot; retain omitted counters and metadata."""
+    current = normalize_usage(current or {}) if current else {}
+    incoming = incoming or {}
+    normalized = normalize_usage(incoming)
+    aliases = {
+        'input_tokens': {'input_tokens', 'prompt_tokens', 'prompt_eval_count', 'prompt_n', 'cache_n'},
+        'output_tokens': {'output_tokens', 'completion_tokens', 'eval_count', 'predicted_n'},
+    }
+    for field, keys in aliases.items():
+        if not keys.intersection(incoming):
+            normalized.pop(field, None)
+    result = {**current, **normalized}
+    if 'total_tokens' not in incoming and normalized:
+        result['total_tokens'] = result.get('input_tokens', 0) + result.get('output_tokens', 0)
+    if isinstance(current.get('routing'), dict) and isinstance(incoming.get('routing'), dict):
+        result['routing'] = {**current['routing'], **incoming['routing']}
+    return result
+
+
 def convert_ollama_tool_call_to_openai(tool_calls: list) -> list:
     openai_tool_calls = []
     for tool_call in tool_calls:

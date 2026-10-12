@@ -30,7 +30,6 @@ import requests
 import urllib3.connection
 import urllib3.connectionpool
 import validators
-from requests.adapters import HTTPAdapter
 from fastapi import HTTPException
 from fastapi.concurrency import run_in_threadpool
 from langchain_core.document_loaders import BaseLoader
@@ -55,6 +54,7 @@ from open_webui.retrieval.loaders.microsoft_web_iq import MicrosoftWebIQLoader
 from open_webui.retrieval.loaders.tavily import TavilyLoader
 from open_webui.retrieval.web.firecrawl import scrape_firecrawl_url
 from open_webui.utils.misc import is_host_allowed, is_host_blocked
+from requests.adapters import HTTPAdapter
 
 log = logging.getLogger(__name__)
 
@@ -1056,8 +1056,7 @@ class SafeWebBaseLoader(BaseLoader):
         self.default_parser = default_parser
         self.bs_kwargs = bs_kwargs or {}
         self.bs_get_text_kwargs = bs_get_text_kwargs or {}
-        # Preserve the synchronous loader's environment-proxy behavior.
-        self.session = get_ssrf_safe_requests_session()
+        self.session = get_ssrf_safe_requests_session(trust_env=trust_env)
         self.session.verify = verify_ssl
         self.session.headers = {
             'User-Agent': USER_AGENT or 'DefaultLangchainUserAgent',

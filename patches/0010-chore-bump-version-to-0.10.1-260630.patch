@@ -1,0 +1,22 @@
+From b10b6557a2dfd0440e9e2ea16d462158ac5a14fc Mon Sep 17 00:00:00 2001
+From: Fabio Paracchini <fparacchini@alteanet.it>
+Date: Tue, 30 Jun 2026 22:35:42 +0200
+Subject: [PATCH 10/10] chore: bump version to 0.10.1-260630
+
+Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>
+---
+ package.json | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/package.json b/package.json
+index 8566845b6..4bf0a89d5 100644
+--- a/package.json
++++ b/package.json
+@@ -1,6 +1,6 @@
+ {
+ 	"name": "open-webui",
+-	"version": "0.10.1",
++	"version": "0.10.1-260630",
+ 	"private": true,
+ 	"scripts": {
+ 		"dev": "npm run pyodide:fetch && vite dev --host",

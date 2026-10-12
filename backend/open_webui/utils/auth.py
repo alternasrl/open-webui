@@ -682,9 +682,13 @@ async def create_signin_response(
     if current.session_stamp != auth.session_stamp or current.password != auth.password:
         raise HTTPException(409, 'Authentication changed. Please sign in again.')
     config = await get_mfa_config()
+    request.state.auth_audit_user = user
+    request.state.auth_audit_source = source
     if config.ENABLE_MFA and user.role not in {'admin', 'user'}:
+        request.state.auth_audit_outcome = 'pending'
         return {'next_step': 'pending'}
     if is_mfa_required(source, config):
+        request.state.auth_audit_outcome = 'challenge'
         return await start_mfa_login(current, source, oauth_session_id=oauth_session_id, provider=provider)
     return await create_session_response(
         request, user, db, response, set_cookie=set_cookie, source=source, auth=current
@@ -747,6 +751,10 @@ async def create_session_response(
         source=source,
         data={'auth_method': source},
     )
+    request.state.auth_audit_user = user
+    request.state.auth_audit_source = source
+    request.state.auth_audit_outcome = 'completed'
+    request.state.auth_audit_mfa_verified = mfa_verified
     return {
         'token': token,
         'token_type': 'Bearer',

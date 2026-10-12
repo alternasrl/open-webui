@@ -22,6 +22,7 @@
 	import OllamaConnection from './Connections/OllamaConnection.svelte';
 	import AdminSettingRow from './AdminSettingRow.svelte';
 	import AdminSettingSection from './AdminSettingSection.svelte';
+	import { settleConnectionSave } from './connections-save';
 
 	const i18n: any = getContext('i18n');
 
@@ -86,8 +87,11 @@
 			if (res) {
 				toast.success($i18n.t('OpenAI API settings updated'));
 				await models.set(await getModels());
+				return true;
 			}
+			return false;
 		}
+		return null;
 	};
 
 	const updateOllamaHandler = async () => {
@@ -106,8 +110,11 @@
 			if (res) {
 				toast.success($i18n.t('Ollama API settings updated'));
 				await models.set(await getModels());
+				return true;
 			}
+			return false;
 		}
+		return null;
 	};
 
 	const updateConnectionsHandler = async () => {
@@ -212,10 +219,18 @@
 	});
 
 	const submitHandler = async () => {
-		updateOpenAIHandler();
-		updateOllamaHandler();
+		const { saved, errors } = await settleConnectionSave([
+			updateOpenAIHandler(),
+			updateOllamaHandler()
+		]);
 
-		dispatch('save');
+		for (const error of errors) {
+			toast.error(`${error}`);
+		}
+
+		if (saved) {
+			dispatch('save');
+		}
 
 		await config.set(await getBackendConfig());
 	};

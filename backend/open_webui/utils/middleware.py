@@ -129,7 +129,7 @@ from open_webui.utils.misc import (
 from open_webui.utils.oauth import get_system_oauth_token
 from open_webui.utils.payload import apply_params_to_form_data, apply_system_prompt_to_body, resolve_system_prompt
 from open_webui.utils.plugin import load_function_module_by_id
-from open_webui.utils.response import merge_usage, normalize_usage
+from open_webui.utils.response import merge_usage, merge_usage_snapshot
 from open_webui.utils.sanitize import sanitize_code
 from open_webui.utils.skills import (
     apply_skills_create_prompt,
@@ -382,6 +382,24 @@ def merge_streamed_reasoning_details(target: list, details) -> None:
                 append_to_text_field(existing, key, value)
             else:
                 existing[key] = value
+
+
+def merge_routing_usage(usage: dict | None, metadata: dict | None) -> dict:
+    usage = usage or {}
+    routing = (metadata or {}).get('routing') or {}
+    requested_model_id = routing.get('requested_model_id')
+    if not requested_model_id:
+        return usage
+
+    return {
+        **usage,
+        'routing': {
+            **(usage.get('routing') or {}),
+            'requested_model_id': requested_model_id,
+            'selected_model_id': routing.get('selected_model_id'),
+            'routed': routing.get('routed', True),
+        },
+    }
 
 
 def _split_tool_calls(
@@ -3672,7 +3690,14 @@ async def resume_tool_calls(request, form_data, user, model, metadata, message) 
             return True
 
 
-async def pause_for_tool_approval(chat_id: str, message_id: str, output: list[dict], form_data: dict, metadata: dict):
+async def pause_for_tool_approval(
+    chat_id: str,
+    message_id: str,
+    output: list[dict],
+    form_data: dict,
+    metadata: dict,
+    usage: dict | None = None,
+):
     result_call_ids = {
         item.get('call_id') for item in output if item.get('type') == 'function_call_output' and item.get('call_id')
     }
@@ -3699,6 +3724,7 @@ async def pause_for_tool_approval(chat_id: str, message_id: str, output: list[di
         {
             'done': False,
             'output': output,
+            **({'usage': merge_routing_usage(usage, metadata)} if usage else {}),
             'meta': {
                 **(metadata.get('tool_approval') or {}),
                 'session_id': metadata.get('session_id'),
@@ -3758,15 +3784,19 @@ def build_response_object(response, response_data):
     if isinstance(response, dict):
         return response_data
     if isinstance(response, JSONResponse):
+        headers = response.headers.mutablecopy()
+        for header in ('content-length', 'content-encoding'):
+            if header in headers:
+                del headers[header]
         return JSONResponse(
             content=response_data,
-            headers=response.headers,
+            headers=headers,
             status_code=response.status_code,
         )
     return response
 
 
-def update_assistant_message_from_stream(assistant_message, raw) -> bool:
+def update_assistant_message_from_stream(assistant_message, raw, metadata: dict | None = None) -> bool:
     """Accumulate the message and report whether the chunk contains [DONE]."""
     line = raw.decode('utf-8', 'replace') if isinstance(raw, bytes) else raw
     if not isinstance(line, str):
@@ -3801,13 +3831,17 @@ def update_assistant_message_from_stream(assistant_message, raw) -> bool:
             if output:
                 assistant_message['output'] = output
             if meta and meta.get('usage'):
-                assistant_message['usage'] = merge_usage(assistant_message.get('usage'), meta['usage'])
+                assistant_message['usage'] = merge_routing_usage(
+                    merge_usage_snapshot(assistant_message.get('usage'), meta['usage']), metadata
+                )
             continue
 
         raw_usage = data.get('usage', {}) or {}
         raw_usage.update(data.get('timings', {}))
         if raw_usage:
-            assistant_message['usage'] = merge_usage(assistant_message.get('usage'), raw_usage)
+            assistant_message['usage'] = merge_routing_usage(
+                merge_usage_snapshot(assistant_message.get('usage'), raw_usage), metadata
+            )
 
         for choice in data.get('choices', []):
             if choice.get('finish_reason'):
@@ -4261,6 +4295,10 @@ async def non_streaming_chat_response_handler(response, ctx):
     chat_id = metadata.get('chat_id') or ''
     save_to_chat = is_saved_chat_id(chat_id)
     continuing = bool(metadata.get('assistant_message_id'))
+    previous_usage = (ctx.get('assistant_message') or {}).get('usage') if continuing else None
+    usage = merge_routing_usage(merge_usage(previous_usage, response_data.get('usage')), metadata)
+    if usage:
+        response_data = {**response_data, 'usage': usage}
 
     if event_emitter:
         try:
@@ -4281,6 +4319,7 @@ async def non_streaming_chat_response_handler(response, ctx):
                         {
                             'error': {'content': error},
                             'done': True,
+                            **({'usage': usage} if usage else {}),
                         },
                     )
                 if isinstance(error, str) or isinstance(error, dict):
@@ -4399,7 +4438,6 @@ async def non_streaming_chat_response_handler(response, ctx):
                     )
 
                     # Save message in the database
-                    usage = normalize_usage(response_data.get('usage', {}) or {})
                     finish_reason = choices[0].get('finish_reason') if choices else None
 
                     if save_to_chat:
@@ -4437,7 +4475,6 @@ async def non_streaming_chat_response_handler(response, ctx):
     output = response_data.get('output')
     content = choices[0].get('message', {}).get('content') if choices else ''
     if ENABLE_API_OUTLET_FILTERS and (content or output):
-        usage = normalize_usage(response_data.get('usage', {}) or {})
         finish_reason = choices[0].get('finish_reason') if choices else None
         ctx['assistant_message'] = {
             **({'content': content} if content else {}),
@@ -4447,10 +4484,7 @@ async def non_streaming_chat_response_handler(response, ctx):
         }
         await outlet_filter_handler(ctx)
 
-    if isinstance(response, dict):
-        response = merge_events_into_response(response_data, events)
-
-    return response
+    return build_response_object(response, merge_events_into_response(response_data, events))
 
 
 async def streaming_chat_response_handler(response, ctx):
@@ -4846,7 +4880,7 @@ async def streaming_chat_response_handler(response, ctx):
                 prior_output, output = output, []
                 content_parts = []
 
-            usage = None
+            usage = merge_routing_usage((message or {}).get('usage') if continuing else None, metadata)
             finish_reason = None
             last_response_id = None
 
@@ -4951,6 +4985,8 @@ async def streaming_chat_response_handler(response, ctx):
                     nonlocal output
                     nonlocal prior_output
                     nonlocal last_response_id
+                    usage_before_response = usage
+                    response_usage = None
 
                     response_tool_calls = []
 
@@ -5215,7 +5251,11 @@ async def streaming_chat_response_handler(response, ctx):
 
                                         # Normalize and capture usage for DB persistence
                                         if response_metadata.get('usage'):
-                                            usage = merge_usage(usage, response_metadata['usage'])
+                                            response_usage = merge_usage_snapshot(
+                                                response_usage, response_metadata['usage']
+                                            )
+                                            usage = merge_usage(usage_before_response, response_usage)
+                                            usage = merge_routing_usage(usage, metadata)
                                             response_metadata['usage'] = usage
 
                                         if response_metadata.get('error'):
@@ -5257,7 +5297,9 @@ async def streaming_chat_response_handler(response, ctx):
                                     raw_usage = data.get('usage', {}) or {}
                                     raw_usage.update(data.get('timings', {}))  # llama.cpp
                                     if raw_usage:
-                                        usage = merge_usage(usage, raw_usage)
+                                        response_usage = merge_usage_snapshot(response_usage, raw_usage)
+                                        usage = merge_usage(usage_before_response, response_usage)
+                                        usage = merge_routing_usage(usage, metadata)
                                         await event_emitter(
                                             {
                                                 'type': 'chat:completion',
@@ -5979,6 +6021,7 @@ async def streaming_chat_response_handler(response, ctx):
                                 full_output(),
                                 form_data,
                                 metadata,
+                                usage,
                             )
                         await event_emitter({'type': 'chat:completion', 'data': {'output': full_output()}})
                         return
@@ -6019,6 +6062,7 @@ async def streaming_chat_response_handler(response, ctx):
                             full_output(),
                             form_data,
                             metadata,
+                            usage,
                         )
                         await event_emitter(
                             {
@@ -6666,7 +6710,12 @@ async def streaming_chat_response_handler(response, ctx):
                         if item.get('status') == 'in_progress' or is_running_tool_call:
                             item['status'] = 'incomplete'
 
-                    await event_emitter({'type': 'chat:tasks:cancel', 'data': {'output': cancelled_output}})
+                    await event_emitter(
+                        {
+                            'type': 'chat:tasks:cancel',
+                            'data': {'output': cancelled_output, **({'usage': usage} if usage else {})},
+                        }
+                    )
                     if save_to_chat:
                         await Chats.upsert_message_to_chat_by_id_and_message_id(
                             metadata['chat_id'],
@@ -6674,6 +6723,7 @@ async def streaming_chat_response_handler(response, ctx):
                             {
                                 'done': True,
                                 'output': cancelled_output,
+                                **({'usage': usage} if usage else {}),
                             },
                         )
                     await clear_response_stream(request.app.state.redis, response_stream_task_id)
@@ -6696,7 +6746,8 @@ async def streaming_chat_response_handler(response, ctx):
                 return f'data: {item}\n\n'
 
             try:
-                message = {}
+                routing_usage = merge_routing_usage(None, metadata)
+                message = {'usage': routing_usage} if routing_usage else {}
                 outlet_task = None
                 filter_context = FilterContext()
                 outlet_enabled = ENABLE_API_OUTLET_FILTERS and bool(filter_functions)
@@ -6747,7 +6798,7 @@ async def streaming_chat_response_handler(response, ctx):
 
                     if data:
                         if outlet_enabled:
-                            done = update_assistant_message_from_stream(message, data)
+                            done = update_assistant_message_from_stream(message, data, metadata)
                             if done and message and outlet_task is None:
                                 ctx['assistant_message'] = message
                                 # Start before yielding [DONE], which may trigger a disconnect.
@@ -6767,7 +6818,11 @@ async def streaming_chat_response_handler(response, ctx):
 
         return StreamingResponse(
             stream_wrapper(response.body_iterator, events),
-            headers=dict(response.headers),
+            headers={
+                key: value
+                for key, value in response.headers.items()
+                if key.lower() not in {'content-length', 'content-encoding'}
+            },
             background=response.background,
         )
 

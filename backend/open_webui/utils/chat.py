@@ -300,7 +300,11 @@ async def generate_chat_completion(
                 response.headers['content-type'] = 'text/event-stream'
                 return StreamingResponse(
                     convert_streaming_response_ollama_to_openai(response),
-                    headers=dict(response.headers),
+                    headers={
+                        key: value
+                        for key, value in response.headers.items()
+                        if key.lower() not in {'content-length', 'content-encoding'}
+                    },
                     background=response.background,
                 )
             else:

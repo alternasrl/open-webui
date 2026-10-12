@@ -56,6 +56,25 @@ TIMER_POLL_INTERVAL = int(os.getenv('TIMER_POLL_INTERVAL', '1'))
 CALENDAR_ALERT_LOOKAHEAD_MINUTES = int(os.getenv('CALENDAR_ALERT_LOOKAHEAD_MINUTES', '10'))
 
 
+def _scheduled_audit_meta(
+    *,
+    trigger: str,
+    automation_id: str,
+    status: str,
+    chat_id: str | None = None,
+    channel_id: str | None = None,
+    error_code: str | None = None,
+) -> str:
+    parts = [f'trigger={trigger}', f'automation_id={automation_id}', f'status={status}']
+    if chat_id:
+        parts.append(f'chat_id={chat_id}')
+    if channel_id:
+        parts.append(f'channel_id={channel_id}')
+    if error_code:
+        parts.append(f'error_code={error_code}')
+    return '|'.join(parts)
+
+
 ############################
 # Worker Loop
 ############################
@@ -120,6 +139,15 @@ async def scheduler_worker_loop(app) -> None:
                     await _check_calendar_alerts(app)
                 except Exception:
                     log.exception('Scheduler: calendar alert error')
+
+            # ── Prompt Insights ──
+            if os.getenv('PROMPT_INSIGHTS_ENABLED', 'false').lower() == 'true':
+                try:
+                    from open_webui.prompt_insights.pipeline import run_prompt_insights_if_due  # noqa: PLC0415
+
+                    await run_prompt_insights_if_due(app)
+                except Exception:
+                    log.exception('Scheduler: prompt insights error')
 
         except Exception:
             log.exception('Scheduler worker error')
@@ -350,13 +378,28 @@ async def _execute_channel_automation(
     )
 
 
-async def execute_automation(app, automation: AutomationModel) -> None:
+async def execute_automation(app, automation: AutomationModel, trigger: str = 'scheduler') -> None:
     """Execute an automation through the full chat completion pipeline.
 
     Creates a real chat or channel message, then calls chat_completion exactly like the frontend:
     session_id + chat_id + message_id → async task → pipeline handles everything
     (filters, model params, knowledge/RAG, tools, DB saves, webhooks).
+
+    Args:
+        trigger: "scheduler" (background cron) or "manual" (HTTP user action).
+                 Manual runs are already logged by the ASGI middleware with the
+                 real HTTP triggerer — this function only emits NIS2 log lines
+                 for scheduler-triggered runs.
     """
+    # Lazy import to avoid circular imports at module load time.
+    # access_log is only needed for scheduler-triggered runs.
+    if trigger == 'scheduler':
+        from open_webui.middleware.access_log import log_scheduled_activity
+    else:
+        log_scheduled_activity = None
+
+    _start_time = time.time()
+    user = None
     try:
         user = await Users.get_user_by_id(automation.user_id)
         if not user:
@@ -367,6 +410,22 @@ async def execute_automation(app, automation: AutomationModel) -> None:
                 subject_id=automation.id,
                 data={'name': automation.name, 'error': 'User not found'},
             )
+            if log_scheduled_activity:
+                log_scheduled_activity(
+                    'TASK_AUTOMATION_SCHEDULED_ERROR',
+                    'unknown',
+                    'unknown',
+                    automation.id,
+                    'automation',
+                    500,
+                    0.0,
+                    meta=_scheduled_audit_meta(
+                        trigger=trigger,
+                        automation_id=automation.id,
+                        status='error',
+                        error_code='user_not_found',
+                    ),
+                )
             return
 
         # Re-gate the rehydrated owner: a demoted/deactivated or de-permissioned owner must not run.
@@ -385,6 +444,22 @@ async def execute_automation(app, automation: AutomationModel) -> None:
                 subject_id=automation.id,
                 data={'name': automation.name, 'error': error},
             )
+            if log_scheduled_activity:
+                log_scheduled_activity(
+                    'TASK_AUTOMATION_SCHEDULED_ERROR',
+                    user.email,
+                    user.role,
+                    automation.id,
+                    'automation',
+                    403,
+                    time.time() - _start_time,
+                    meta=_scheduled_audit_meta(
+                        trigger=trigger,
+                        automation_id=automation.id,
+                        status='error',
+                        error_code='owner_not_permitted',
+                    ),
+                )
             return
 
         prompt = await prompt_template(automation.data['prompt'], user)
@@ -409,6 +484,22 @@ async def execute_automation(app, automation: AutomationModel) -> None:
         target = automation.data.get('target') or {}
         if target.get('type') == 'channel':
             await _execute_channel_automation(app, automation, user, prompt, model_id, token)
+            if log_scheduled_activity:
+                log_scheduled_activity(
+                    'TASK_AUTOMATION_SCHEDULED',
+                    user.email,
+                    user.role,
+                    automation.id,
+                    'automation',
+                    200,
+                    time.time() - _start_time,
+                    meta=_scheduled_audit_meta(
+                        trigger=trigger,
+                        automation_id=automation.id,
+                        status='success',
+                        channel_id=target.get('channel_id'),
+                    ),
+                )
             return
 
         folder_id = automation.folder_id
@@ -471,6 +562,22 @@ async def execute_automation(app, automation: AutomationModel) -> None:
                 subject_id=automation.id,
                 data={'name': automation.name, 'error': error},
             )
+            if log_scheduled_activity:
+                log_scheduled_activity(
+                    'TASK_AUTOMATION_SCHEDULED_ERROR',
+                    user.email,
+                    user.role,
+                    automation.id,
+                    'automation',
+                    500,
+                    time.time() - _start_time,
+                    meta=_scheduled_audit_meta(
+                        trigger=trigger,
+                        automation_id=automation.id,
+                        status='error',
+                        error_code='chat_create_failed',
+                    ),
+                )
             return
 
         # Notify frontend to refresh chat list
@@ -532,6 +639,22 @@ async def execute_automation(app, automation: AutomationModel) -> None:
             subject_id=automation.id,
             data={'name': automation.name, 'chat_id': chat.id},
         )
+        if log_scheduled_activity:
+            log_scheduled_activity(
+                'TASK_AUTOMATION_SCHEDULED',
+                user.email,
+                user.role,
+                automation.id,
+                'automation',
+                200,
+                time.time() - _start_time,
+                meta=_scheduled_audit_meta(
+                    trigger=trigger,
+                    automation_id=automation.id,
+                    status='success',
+                    chat_id=chat.id,
+                ),
+            )
 
     except Exception as e:
         log.exception(f'Automation {automation.id} failed')
@@ -543,6 +666,22 @@ async def execute_automation(app, automation: AutomationModel) -> None:
             subject_id=automation.id,
             data={'name': automation.name, 'error': error},
         )
+        if log_scheduled_activity:
+            log_scheduled_activity(
+                'TASK_AUTOMATION_SCHEDULED_ERROR',
+                getattr(user, 'email', 'unknown'),
+                getattr(user, 'role', 'unknown'),
+                automation.id,
+                'automation',
+                500,
+                time.time() - _start_time,
+                meta=_scheduled_audit_meta(
+                    trigger=trigger,
+                    automation_id=automation.id,
+                    status='error',
+                    error_code='execution_exception',
+                ),
+            )
 
 
 ####################

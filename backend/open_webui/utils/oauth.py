@@ -552,12 +552,15 @@ async def _get_oauth_server_metadata(
 
     # MCP 2025-03-26 defines origin-level defaults for servers without discovery.
     _, base_url = get_parsed_and_base_url(server_url)
-    return OAuthMetadata(
-        issuer=base_url,
-        authorization_endpoint=f'{base_url}/authorize',
-        token_endpoint=f'{base_url}/token',
-        registration_endpoint=f'{base_url}/register',
-    ), None
+    return (
+        OAuthMetadata(
+            issuer=base_url,
+            authorization_endpoint=f'{base_url}/authorize',
+            token_endpoint=f'{base_url}/token',
+            registration_endpoint=f'{base_url}/register',
+        ),
+        None,
+    )
 
 
 # TODO: Some OAuth providers require Initial Access Tokens (IATs) for dynamic client registration.
@@ -1129,7 +1132,13 @@ class OAuthClientManager:
 
             if refreshed_token:
                 # Update the session with new token data
-                session = await OAuthSessions.update_session_by_id(session.id, refreshed_token)
+                updated_session = await OAuthSessions.update_session_by_id(session.id, refreshed_token)
+                if not updated_session:
+                    return None
+                session = updated_session
+                from open_webui.middleware.access_log import invalidate_user_cache
+
+                invalidate_user_cache(session.user_id)
                 log.info('Successfully refreshed token for session %s', session.id)
                 return session.token
             else:
@@ -1304,9 +1313,8 @@ class OAuthClientManager:
             # Validate that we received a proper token response
             # If token exchange failed (e.g., 401), we may get an error response instead
             if token and not token.get('access_token'):
-                error_desc = token.get('error_description', token.get('error', 'Unknown error'))
-                error_message = f'Token exchange failed: {error_desc}'
-                log.error('Invalid token response for client_id %s: %s', client_id, error_desc)
+                error_message = 'OAuth token exchange failed'
+                log.error('Invalid token response for client_id %s', client_id)
                 token = None
 
             if token:
@@ -1325,21 +1333,28 @@ class OAuthClientManager:
                         token=token,
                     )
                     log.info('Stored OAuth session server-side for user %s, client_id %s', user_id, client_id)
+                    # Invalidate access-log cache so subsequent requests pick up OIDC claims
+                    try:
+                        from open_webui.middleware.access_log import invalidate_user_cache
+
+                        if session:
+                            invalidate_user_cache(user_id)
+                    except Exception:
+                        pass
                 except Exception as e:
                     error_message = 'Failed to store OAuth session server-side'
-                    log.error(f'Failed to store OAuth session server-side: {e}')
+                    log.error('Failed to store OAuth session server-side: error_type=%s', type(e).__name__)
             else:
                 if not error_message:
                     error_message = 'Failed to obtain OAuth token'
                 log.warning(error_message)
         except Exception as e:
-            error_message = _build_oauth_callback_error_message(e)
+            error_message = 'OAuth authentication failed'
             log.warning(
                 'OAuth callback error for user_id=%s client_id=%s: %s',
                 user_id,
                 client_id,
-                error_message,
-                exc_info=True,
+                type(e).__name__,
             )
         finally:
             if state and client is not None:
@@ -1349,6 +1364,7 @@ class OAuthClientManager:
         redirect_url = (str(webui_url or request.base_url)).rstrip('/')
 
         if error_message:
+            request.state.auth_audit_outcome = 'failed'
             log.debug(error_message)
             redirect_url = f'{redirect_url}/?error={urllib.parse.quote_plus(error_message)}'
             return RedirectResponse(url=redirect_url, headers=response.headers)
@@ -1478,7 +1494,13 @@ class OAuthManager:
 
                 if refreshed_token:
                     # Update the session with new token data
-                    session = await OAuthSessions.update_session_by_id(session.id, refreshed_token)
+                    updated_session = await OAuthSessions.update_session_by_id(session.id, refreshed_token)
+                    if not updated_session:
+                        return None
+                    session = updated_session
+                    from open_webui.middleware.access_log import invalidate_user_cache
+
+                    invalidate_user_cache(session.user_id)
                     log.info('Successfully refreshed token for session %s', session.id)
                     return session.token
                 else:
@@ -1670,6 +1692,12 @@ class OAuthManager:
             return user
 
         updated_user = await Users.update_user_role_by_id(user.id, determined_role, db=db)
+        if updated_user:
+            from open_webui.middleware.access_log import invalidate_user_cache
+            from open_webui.socket.main import disconnect_user_sessions
+
+            invalidate_user_cache(user.id)
+            await disconnect_user_sessions(user.id)
         user = updated_user or user
         user.role = determined_role
         await publish_event(
@@ -1940,23 +1968,26 @@ class OAuthManager:
                 try:
                     token = await client.authorize_access_token(request, **auth_params)
                 except Exception as retry_exc:
-                    detailed_error = _build_oauth_callback_error_message(retry_exc)
                     log.warning(
                         'OAuth callback error during authorize_access_token retry for provider %s: %s',
                         provider,
-                        detailed_error,
-                        exc_info=True,
+                        type(retry_exc).__name__,
                     )
                     raise HTTPException(400, detail=ERROR_MESSAGES.OAUTH_LOGIN_FAILED)
             except Exception as e:
-                detailed_error = _build_oauth_callback_error_message(e)
                 log.warning(
                     'OAuth callback error during authorize_access_token for provider %s: %s',
                     provider,
-                    detailed_error,
-                    exc_info=True,
+                    type(e).__name__,
                 )
                 raise HTTPException(400, detail=ERROR_MESSAGES.OAUTH_LOGIN_FAILED)
+
+            # Keep only bounded, encoded audit identifiers; never place the
+            # credential on request.state where another logger could serialize it.
+            if token.get('id_token'):
+                from open_webui.middleware.access_log import _decode_allowed_oidc_audit_claims
+
+                request.state.oidc_audit_claims = _decode_allowed_oidc_audit_claims(token['id_token'])
 
             # Try to get userinfo from the token first, some providers include it there
             user_data: UserInfo = token.get('userinfo')
@@ -1988,7 +2019,7 @@ class OAuthManager:
                 # Fallback to the default sub claim if not configured
                 sub = user_data.get(OAUTH_PROVIDERS[provider].get('sub_claim', 'sub'))
             if not sub:
-                log.warning(f'OAuth callback failed, sub is missing: {user_data}')
+                log.warning('OAuth callback failed: subject identifier is missing')
                 raise HTTPException(400, detail=ERROR_MESSAGES.OAUTH_LOGIN_FAILED)
             sub = str(sub)
 
@@ -2034,7 +2065,7 @@ class OAuthManager:
                 elif ENABLE_OAUTH_EMAIL_FALLBACK:
                     email = f'{provider}@{sub}.local'
                 else:
-                    log.warning(f'OAuth callback failed, email is missing: {user_data}')
+                    log.warning('OAuth callback failed: email is missing')
                     raise HTTPException(400, detail=ERROR_MESSAGES.OAUTH_LOGIN_FAILED)
 
             email = email.lower()
@@ -2043,7 +2074,7 @@ class OAuthManager:
                 '*' not in auth_config.OAUTH_ALLOWED_DOMAINS
                 and email.split('@')[-1] not in auth_config.OAUTH_ALLOWED_DOMAINS
             ):
-                log.warning(f'OAuth callback failed, e-mail domain is not in the list of allowed domains: {user_data}')
+                log.warning('OAuth callback failed: email domain is not allowed')
                 raise HTTPException(400, detail=ERROR_MESSAGES.OAUTH_LOGIN_FAILED)
 
             # Check if the user exists
@@ -2200,7 +2231,7 @@ class OAuthManager:
                 )
 
         except Exception as e:
-            log.error(f'Error during OAuth process: {e}')
+            log.error('Error during OAuth process: error_type=%s', type(e).__name__)
             error_message = (
                 e.detail
                 if isinstance(e, HTTPException) and e.detail
@@ -2212,6 +2243,7 @@ class OAuthManager:
         redirect_url = f'{redirect_base_url}/auth'
 
         if error_message:
+            request.state.auth_audit_outcome = 'failed'
             redirect_url = f'{redirect_url}?error={urllib.parse.quote_plus(error_message)}'
             return RedirectResponse(url=redirect_url, headers=response.headers)
 
@@ -2245,9 +2277,16 @@ class OAuthManager:
                 token=token,
                 db=db,
             )
+            if session:
+                try:
+                    from open_webui.middleware.access_log import invalidate_user_cache
+
+                    invalidate_user_cache(user.id)
+                except Exception:
+                    pass
 
         except Exception as e:
-            log.error(f'Failed to store OAuth session server-side: {e}')
+            log.error('Failed to store OAuth session server-side: error_type=%s', type(e).__name__)
 
         from open_webui.routers.mfa import CHALLENGE_COOKIE
         from open_webui.utils.auth import create_signin_response

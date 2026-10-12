@@ -12,7 +12,15 @@ import httpx
 from jsonschema import Draft202012Validator, FormatChecker
 from mcp import ClientSession
 from mcp.client.auth import OAuthClientProvider, TokenStorage
-from mcp.client.streamable_http import streamablehttp_client
+
+try:
+    from mcp.client.streamable_http import streamablehttp_client
+
+    _TRANSPORT_USES_HTTP_CLIENT = False
+except ImportError:
+    from mcp.client.streamable_http import streamable_http_client as streamablehttp_client
+
+    _TRANSPORT_USES_HTTP_CLIENT = True
 from mcp.shared.auth import OAuthClientInformationFull, OAuthClientMetadata, OAuthToken
 from mcp.types import ElicitRequestFormParams, ElicitResult
 from referencing import Registry
@@ -98,7 +106,10 @@ class MCPClient:
             if isinstance(params, ElicitRequestFormParams):
                 Draft202012Validator.check_schema(params.requestedSchema)
             else:
+                if any(char in params.url for char in ('\\', '\t', '\r', '\n')):
+                    return ElicitResult(action='cancel')
                 url = urlsplit(params.url)
+                url.port
                 if url.scheme not in ('http', 'https') or not url.hostname or url.username or url.password:
                     return ElicitResult(action='cancel')
 
@@ -129,14 +140,17 @@ class MCPClient:
     async def connect(self, url: str, headers: Optional[dict] = None, auth: Optional[httpx.Auth] = None):
         async with AsyncExitStack() as exit_stack:
             try:
-                self._streams_context = streamablehttp_client(
-                    url,
-                    headers=headers,
-                    auth=auth,
-                    httpx_client_factory=create_httpx_client
-                    if AIOHTTP_CLIENT_SESSION_TOOL_SERVER_SSL
-                    else create_insecure_httpx_client,
+                factory = (
+                    create_httpx_client if AIOHTTP_CLIENT_SESSION_TOOL_SERVER_SSL else create_insecure_httpx_client
                 )
+                if _TRANSPORT_USES_HTTP_CLIENT:
+                    # The renamed API takes an owned client, not the legacy factory keywords.
+                    http_client = await exit_stack.enter_async_context(factory(headers=headers, auth=auth))
+                    self._streams_context = streamablehttp_client(url, http_client=http_client)
+                else:
+                    self._streams_context = streamablehttp_client(
+                        url, headers=headers, auth=auth, httpx_client_factory=factory
+                    )
 
                 transport = await exit_stack.enter_async_context(self._streams_context)
                 read_stream, write_stream, _ = transport
@@ -150,9 +164,11 @@ class MCPClient:
                     result = await self.session.initialize()
                 self.instructions = result.instructions
                 self.exit_stack = exit_stack.pop_all()
-            except Exception as e:
+            except BaseException:
                 await self.disconnect()
-                raise e
+                self.session = None
+                self.instructions = None
+                raise
 
     async def list_tool_specs(self) -> Optional[dict]:
         if not self.session:

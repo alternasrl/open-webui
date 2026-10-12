@@ -357,6 +357,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 🏟️ **Arena models off by default.** "ENABLE_EVALUATION_ARENA_MODELS" now defaults to off, so new installations no longer show the built-in arena model in the model selector; existing installations keep their current setting. [Commit](https://github.com/open-webui/open-webui/commit/77e6bc28932bff9f1d2e1aad5933a2736416e081)
 - 🪶 **No second OpenCV build.** Installs, pip included, no longer pull in the desktop build of OpenCV next to the headless one Open WebUI already uses, about 115 MB less on x86_64; text read from images inside PDFs is unchanged. [#32125](https://github.com/open-webui/open-webui/pull/32125)
 
+## [0.11.4-260925] - 2026-09-25 (GIADA fork historical release)
+
+Fork release based on upstream Open WebUI [v0.11.4](https://github.com/open-webui/open-webui/releases/tag/v0.11.4). See the [upstream changelog](https://github.com/open-webui/open-webui/blob/v0.11.4/CHANGELOG.md) for upstream changes.
+
+### Custom changes
+
+- Preserved the fork's Prompt Insights and admin analytics/routing/cross-filter UI, NIS2 access-log and audit paths, OIDC/OAuth compliance, MCP import compatibility, built-in tool handling, and request/stream behavior.
+- Completed NIS2 route and scheduled-automation audit coverage; sanitized audit logs and model-export references; removed retired route rules.
+- Reconciled the fork's migration history, refreshed dependency/security pins, restored fork UI fixes, and strengthened regression coverage.
+- Cleared integration-only frontend diagnostics.
+
 ## [0.11.4] - 2026-09-21
 
 ### Added

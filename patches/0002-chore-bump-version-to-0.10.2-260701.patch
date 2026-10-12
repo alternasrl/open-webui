@@ -1,0 +1,45 @@
+From f35661856bdcf1f1f09cd7816e3373435b98186b Mon Sep 17 00:00:00 2001
+From: Fabio Paracchini <fparacchini@alteanet.it>
+Date: Thu, 2 Jul 2026 07:07:45 +0200
+Subject: [PATCH 2/2] chore: bump version to 0.10.2-260701
+
+Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>
+---
+ package-lock.json | 4 ++--
+ package.json      | 2 +-
+ 2 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/package-lock.json b/package-lock.json
+index 7c572b1bf..d1d5ff9a8 100644
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -1,12 +1,12 @@
+ {
+ 	"name": "open-webui",
+-	"version": "0.10.2",
++	"version": "0.10.2-260701",
+ 	"lockfileVersion": 3,
+ 	"requires": true,
+ 	"packages": {
+ 		"": {
+ 			"name": "open-webui",
+-			"version": "0.10.2",
++			"version": "0.10.2-260701",
+ 			"dependencies": {
+ 				"@azure/msal-browser": "^4.5.0",
+ 				"@codemirror/lang-javascript": "^6.2.2",
+diff --git a/package.json b/package.json
+index aeca4abd1..aeddccf69 100644
+--- a/package.json
++++ b/package.json
+@@ -1,6 +1,6 @@
+ {
+ 	"name": "open-webui",
+-	"version": "0.10.2",
++	"version": "0.10.2-260701",
+ 	"private": true,
+ 	"scripts": {
+ 		"dev": "npm run pyodide:fetch && vite dev --host",
+-- 
+2.54.0
+

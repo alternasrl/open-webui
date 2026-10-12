@@ -1,0 +1,915 @@
+diff --git a/backend/open_webui/models/chat_messages.py b/backend/open_webui/models/chat_messages.py
+index 34f2b1c50..c851a119b 100644
+--- a/backend/open_webui/models/chat_messages.py
++++ b/backend/open_webui/models/chat_messages.py
+@@ -51,6 +51,63 @@ def get_usage(data: dict) -> Optional[dict]:
+     return normalize_usage(usage) if usage else None
+ 
+ 
++def _routing_match(
++    selected_model_id: Optional[str],
++    requested_model_id: Optional[str],
++    model_selected: Optional[str],
++    model_requested: Optional[str],
++    model_mode: str,
++) -> bool:
++    """Apply dual-axis model filter semantics for routing analytics."""
++    mode = (model_mode or 'or').lower()
++
++    if mode == 'selected':
++        return not model_selected or selected_model_id == model_selected
++
++    if mode == 'requested':
++        return not model_requested or requested_model_id == model_requested
++
++    if mode == 'and':
++        selected_ok = not model_selected or selected_model_id == model_selected
++        requested_ok = not model_requested or requested_model_id == model_requested
++        return selected_ok and requested_ok
++
++    # Default: or
++    if not model_selected and not model_requested:
++        return True
++
++    selected_ok = bool(model_selected and selected_model_id == model_selected)
++    requested_ok = bool(model_requested and requested_model_id == model_requested)
++    return selected_ok or requested_ok
++
++
++def _summarize_routing_pairs(events: list[dict]) -> list[dict]:
++    """Aggregate routing events by requested->selected pair."""
++    counts: dict[tuple[str, str], int] = {}
++    for event in events:
++        requested_model_id = event.get('requested_model_id')
++        selected_model_id = event.get('selected_model_id')
++        if not requested_model_id or not selected_model_id:
++            continue
++
++        key = (requested_model_id, selected_model_id)
++        counts[key] = counts.get(key, 0) + 1
++
++    total = sum(counts.values())
++    if total == 0:
++        return []
++
++    return [
++        {
++            'requested_model_id': requested,
++            'selected_model_id': selected,
++            'count': count,
++            'percentage': round((count / total) * 100, 2),
++        }
++        for (requested, selected), count in sorted(counts.items(), key=lambda item: item[1], reverse=True)
++    ]
++
++
+ def _token_columns(dialect: str):
+     """Return (input_tokens, output_tokens) SQL column expressions.
+ 
+@@ -841,5 +898,108 @@ class ChatMessageTable:
+ 
+             return hourly_counts
+ 
++    async def get_routing_events(
++        self,
++        start_date: Optional[int] = None,
++        end_date: Optional[int] = None,
++        group_id: Optional[str] = None,
++        user_id: Optional[str] = None,
++        model_selected: Optional[str] = None,
++        model_requested: Optional[str] = None,
++        model_mode: str = 'or',
++        skip: int = 0,
++        limit: int = 100,
++        db: Optional[AsyncSession] = None,
++    ) -> list[dict]:
++        """Get routing events from assistant messages usage metadata."""
++        async with get_async_db_context(db) as db:
++            from open_webui.models.groups import GroupMember
++
++            stmt = select(
++                ChatMessage.id,
++                ChatMessage.chat_id,
++                ChatMessage.user_id,
++                ChatMessage.created_at,
++                ChatMessage.model_id,
++                ChatMessage.usage,
++            ).filter(
++                ChatMessage.role == 'assistant',
++                ChatMessage.model_id.isnot(None),
++                ChatMessage.usage.isnot(None),
++            )
++
++            if start_date:
++                stmt = stmt.filter(ChatMessage.created_at >= start_date)
++            if end_date:
++                stmt = stmt.filter(ChatMessage.created_at <= end_date)
++            if group_id:
++                group_users = select(GroupMember.user_id).filter(GroupMember.group_id == group_id).scalar_subquery()
++                stmt = stmt.filter(ChatMessage.user_id.in_(group_users))
++            if user_id:
++                stmt = stmt.filter(ChatMessage.user_id == user_id)
++            if model_selected and (model_mode or 'or').lower() in {'selected', 'and'}:
++                stmt = stmt.filter(ChatMessage.model_id == model_selected)
++
++            stmt = stmt.order_by(ChatMessage.created_at.desc()).offset(skip).limit(limit)
++            rows = (await db.execute(stmt)).all()
++
++            events = []
++            for row in rows:
++                usage = row.usage if isinstance(row.usage, dict) else {}
++                routing = usage.get('routing') if isinstance(usage, dict) else {}
++                requested_model_id = (routing or {}).get('requested_model_id')
++                selected_model_id = row.model_id
++
++                if not requested_model_id:
++                    continue
++
++                if not _routing_match(
++                    selected_model_id=selected_model_id,
++                    requested_model_id=requested_model_id,
++                    model_selected=model_selected,
++                    model_requested=model_requested,
++                    model_mode=model_mode,
++                ):
++                    continue
++
++                events.append(
++                    {
++                        'message_id': row.id,
++                        'chat_id': row.chat_id,
++                        'user_id': row.user_id,
++                        'created_at': row.created_at,
++                        'requested_model_id': requested_model_id,
++                        'selected_model_id': selected_model_id,
++                    }
++                )
++
++            return events
++
++    async def get_routing_summary(
++        self,
++        start_date: Optional[int] = None,
++        end_date: Optional[int] = None,
++        group_id: Optional[str] = None,
++        user_id: Optional[str] = None,
++        model_selected: Optional[str] = None,
++        model_requested: Optional[str] = None,
++        model_mode: str = 'or',
++        db: Optional[AsyncSession] = None,
++    ) -> list[dict]:
++        """Get routing pair summary (requested -> selected) with count and percentage."""
++        events = await self.get_routing_events(
++            start_date=start_date,
++            end_date=end_date,
++            group_id=group_id,
++            user_id=user_id,
++            model_selected=model_selected,
++            model_requested=model_requested,
++            model_mode=model_mode,
++            skip=0,
++            limit=1_000_000,
++            db=db,
++        )
++        return _summarize_routing_pairs(events)
++
+ 
+ ChatMessages = ChatMessageTable()
+diff --git a/backend/open_webui/routers/analytics.py b/backend/open_webui/routers/analytics.py
+index 093af9a49..d739ab037 100644
+--- a/backend/open_webui/routers/analytics.py
++++ b/backend/open_webui/routers/analytics.py
+@@ -239,6 +239,82 @@ class TokenUsageResponse(BaseModel):
+     total_tokens: int
+ 
+ 
++class RoutingSummaryEntry(BaseModel):
++    requested_model_id: str
++    selected_model_id: str
++    count: int
++    percentage: float
++
++
++class RoutingEventEntry(BaseModel):
++    message_id: str
++    chat_id: str
++    user_id: Optional[str] = None
++    created_at: int
++    requested_model_id: str
++    selected_model_id: str
++
++
++@router.get('/routing/summary', response_model=list[RoutingSummaryEntry])
++async def get_routing_summary(
++    start_date: Optional[int] = Query(None, description='Start timestamp (epoch)'),
++    end_date: Optional[int] = Query(None, description='End timestamp (epoch)'),
++    group_id: Optional[str] = Query(None, description='Filter by user group ID'),
++    user_id: Optional[str] = Query(None, description='Filter by user ID'),
++    model_selected: Optional[str] = Query(None, description='Filter by selected model ID'),
++    model_requested: Optional[str] = Query(None, description='Filter by requested model ID'),
++    model_mode: str = Query(
++        'or',
++        description="Model filter mode: 'or', 'and', 'selected', or 'requested'",
++    ),
++    user=Depends(get_admin_user),
++    db: AsyncSession = Depends(get_async_session),
++):
++    """Get routing pair summary (requested -> selected) with count and percentage."""
++    return await ChatMessages.get_routing_summary(
++        start_date=start_date,
++        end_date=end_date,
++        group_id=group_id,
++        user_id=user_id,
++        model_selected=model_selected,
++        model_requested=model_requested,
++        model_mode=model_mode,
++        db=db,
++    )
++
++
++@router.get('/routing/events', response_model=list[RoutingEventEntry])
++async def get_routing_events(
++    start_date: Optional[int] = Query(None, description='Start timestamp (epoch)'),
++    end_date: Optional[int] = Query(None, description='End timestamp (epoch)'),
++    group_id: Optional[str] = Query(None, description='Filter by user group ID'),
++    user_id: Optional[str] = Query(None, description='Filter by user ID'),
++    model_selected: Optional[str] = Query(None, description='Filter by selected model ID'),
++    model_requested: Optional[str] = Query(None, description='Filter by requested model ID'),
++    model_mode: str = Query(
++        'or',
++        description="Model filter mode: 'or', 'and', 'selected', or 'requested'",
++    ),
++    skip: int = Query(0, ge=0),
++    limit: int = Query(100, ge=1, le=1000),
++    user=Depends(get_admin_user),
++    db: AsyncSession = Depends(get_async_session),
++):
++    """Get routing events sourced from assistant message usage metadata."""
++    return await ChatMessages.get_routing_events(
++        start_date=start_date,
++        end_date=end_date,
++        group_id=group_id,
++        user_id=user_id,
++        model_selected=model_selected,
++        model_requested=model_requested,
++        model_mode=model_mode,
++        skip=skip,
++        limit=limit,
++        db=db,
++    )
++
++
+ @router.get('/tokens', response_model=TokenUsageResponse)
+ async def get_token_usage(
+     start_date: Optional[int] = Query(None),
+diff --git a/backend/open_webui/test/middleware/test_routing_usage_merge.py b/backend/open_webui/test/middleware/test_routing_usage_merge.py
+new file mode 100644
+index 000000000..6291e317a
+--- /dev/null
++++ b/backend/open_webui/test/middleware/test_routing_usage_merge.py
+@@ -0,0 +1,40 @@
++import ast
++from pathlib import Path
++
++
++def _load_merge_routing_usage():
++    middleware_path = Path(__file__).resolve().parents[2] / 'utils' / 'middleware.py'
++    source = middleware_path.read_text(encoding='utf-8')
++    module_ast = ast.parse(source)
++
++    fn_node = next(
++        node for node in module_ast.body if isinstance(node, ast.FunctionDef) and node.name == 'merge_routing_usage'
++    )
++    fn_source = ast.get_source_segment(source, fn_node)
++    namespace = {}
++    exec(fn_source, namespace)
++    return namespace['merge_routing_usage']
++
++
++merge_routing_usage = _load_merge_routing_usage()
++
++
++def test_merge_routing_usage_adds_requested_model_id():
++    usage = {'input_tokens': 10, 'output_tokens': 5}
++    metadata = {"routing": {"requested_model_id": "GPT-5-nano"}}
++
++    result = merge_routing_usage(usage, metadata)
++
++    assert result['input_tokens'] == 10
++    assert result['output_tokens'] == 5
++    assert result["routing"]["requested_model_id"] == "GPT-5-nano"
++    assert result["routing"]["routed"] is True
++
++
++def test_merge_routing_usage_noop_without_routing_metadata():
++    usage = {'input_tokens': 7, 'output_tokens': 3}
++
++    result = merge_routing_usage(usage, {"model": {"id": "some-model"}})
++
++    assert result == usage
++    assert "routing" not in result
+diff --git a/backend/open_webui/test/routers/test_analytics_routing_unit.py b/backend/open_webui/test/routers/test_analytics_routing_unit.py
+new file mode 100644
+index 000000000..3566b733f
+--- /dev/null
++++ b/backend/open_webui/test/routers/test_analytics_routing_unit.py
+@@ -0,0 +1,79 @@
++import ast
++from pathlib import Path
++
++
++def _load_routing_helpers():
++    chat_messages_path = Path(__file__).resolve().parents[2] / 'models' / 'chat_messages.py'
++    source = chat_messages_path.read_text(encoding='utf-8')
++    module_ast = ast.parse(source)
++
++    helper_nodes = [
++        node
++        for node in module_ast.body
++        if isinstance(node, ast.FunctionDef) and node.name in {'_routing_match', '_summarize_routing_pairs'}
++    ]
++    helper_source = '\n\n'.join(ast.get_source_segment(source, node) for node in helper_nodes)
++    namespace = {'Optional': str}
++    exec(helper_source, namespace)
++    return namespace['_routing_match'], namespace['_summarize_routing_pairs']
++
++
++_routing_match, _summarize_routing_pairs = _load_routing_helpers()
++
++
++def test_summarize_pairs_counts_requested_selected():
++    events = [
++        {'requested_model_id': 'GPT-5-nano', 'selected_model_id': 'DeepSeek-V4-flash'},
++        {'requested_model_id': 'GPT-5-nano', 'selected_model_id': 'DeepSeek-V4-flash'},
++        {'requested_model_id': 'GPT-5-nano', 'selected_model_id': 'Mistral-large-3'},
++    ]
++
++    pairs = _summarize_routing_pairs(events)
++
++    assert pairs[0]['requested_model_id'] == 'GPT-5-nano'
++    assert pairs[0]['selected_model_id'] == 'DeepSeek-V4-flash'
++    assert pairs[0]['count'] == 2
++    assert pairs[0]['percentage'] == 66.67
++
++    assert pairs[1]['requested_model_id'] == 'GPT-5-nano'
++    assert pairs[1]['selected_model_id'] == 'Mistral-large-3'
++    assert pairs[1]['count'] == 1
++    assert pairs[1]['percentage'] == 33.33
++
++
++def test_summarize_pairs_ignores_missing_requested_or_selected():
++    events = [
++        {'requested_model_id': None, 'selected_model_id': 'A'},
++        {'requested_model_id': 'A', 'selected_model_id': None},
++        {'requested_model_id': 'A', 'selected_model_id': 'B'},
++    ]
++
++    pairs = _summarize_routing_pairs(events)
++
++    assert len(pairs) == 1
++    assert pairs[0]['requested_model_id'] == 'A'
++    assert pairs[0]['selected_model_id'] == 'B'
++    assert pairs[0]['count'] == 1
++    assert pairs[0]['percentage'] == 100.0
++
++
++def test_routing_match_selected_mode():
++    assert _routing_match('A', 'B', model_selected='A', model_requested=None, model_mode='selected') is True
++    assert _routing_match('B', 'A', model_selected='A', model_requested=None, model_mode='selected') is False
++
++
++def test_routing_match_requested_mode():
++    assert _routing_match('A', 'B', model_selected=None, model_requested='B', model_mode='requested') is True
++    assert _routing_match('A', 'C', model_selected=None, model_requested='B', model_mode='requested') is False
++
++
++def test_routing_match_or_mode_with_dual_axis_filters():
++    assert _routing_match('SEL', 'REQ', model_selected='SEL', model_requested='X', model_mode='or') is True
++    assert _routing_match('SEL', 'REQ', model_selected='X', model_requested='REQ', model_mode='or') is True
++    assert _routing_match('SEL', 'REQ', model_selected='X', model_requested='Y', model_mode='or') is False
++
++
++def test_routing_match_and_mode_with_dual_axis_filters():
++    assert _routing_match('SEL', 'REQ', model_selected='SEL', model_requested='REQ', model_mode='and') is True
++    assert _routing_match('SEL', 'REQ', model_selected='SEL', model_requested='X', model_mode='and') is False
++    assert _routing_match('SEL', 'REQ', model_selected='X', model_requested='REQ', model_mode='and') is False
+\ No newline at end of file
+diff --git a/backend/open_webui/utils/middleware.py b/backend/open_webui/utils/middleware.py
+index 63de31fbb..00a1bd408 100644
+--- a/backend/open_webui/utils/middleware.py
++++ b/backend/open_webui/utils/middleware.py
+@@ -154,6 +154,23 @@ def output_id(prefix: str) -> str:
+     return f'{prefix}_{uuid4().hex[:24]}'
+ 
+ 
++def merge_routing_usage(usage: dict | None, metadata: dict | None) -> dict:
++    usage = usage or {}
++    routing = ((metadata or {}).get('routing') or {})
++    requested_model_id = routing.get('requested_model_id')
++    if not requested_model_id:
++        return usage
++
++    return {
++        **usage,
++        'routing': {
++            **(usage.get('routing') or {}),
++            'requested_model_id': requested_model_id,
++            'routed': True,
++        },
++    }
++
++
+ def _split_tool_calls(
+     tool_calls: list[dict],
+ ) -> list[dict]:
+@@ -3517,6 +3534,7 @@ async def non_streaming_chat_response_handler(response, ctx):
+ 
+                     # Save message in the database
+                     usage = normalize_usage(response_data.get('usage', {}) or {})
++                    usage = merge_routing_usage(usage, metadata)
+ 
+                     if not metadata.get('chat_id', '').startswith('channel:'):
+                         await Chats.upsert_message_to_chat_by_id_and_message_id(
+@@ -4053,6 +4071,9 @@ async def streaming_chat_response_handler(response, ctx):
+                                         # Normalize and capture usage for DB persistence
+                                         if response_metadata.get('usage'):
+                                             response_metadata['usage'] = normalize_usage(response_metadata['usage'])
++                                            response_metadata['usage'] = merge_routing_usage(
++                                                response_metadata['usage'], metadata
++                                            )
+                                             usage = response_metadata['usage']
+ 
+                                         processed_data.update(response_metadata)
+@@ -4073,6 +4094,7 @@ async def streaming_chat_response_handler(response, ctx):
+                                     raw_usage.update(data.get('timings', {}))  # llama.cpp
+                                     if raw_usage:
+                                         usage = normalize_usage(raw_usage)
++                                        usage = merge_routing_usage(usage, metadata)
+                                         await event_emitter(
+                                             {
+                                                 'type': 'chat:completion',
+diff --git a/src/lib/apis/analytics/index.ts b/src/lib/apis/analytics/index.ts
+index c419de50b..aa0b0e7e4 100644
+--- a/src/lib/apis/analytics/index.ts
++++ b/src/lib/apis/analytics/index.ts
+@@ -321,3 +321,125 @@ export const getModelOverview = async (token: string = '', modelId: string, days
+ 
+ 	return res;
+ };
++
++export const getRoutingSummary = async (
++	token: string = '',
++	options: {
++		startDate?: number | null;
++		endDate?: number | null;
++		groupId?: string | null;
++		userId?: string | null;
++		modelSelected?: string | null;
++		modelRequested?: string | null;
++		modelMode?: 'or' | 'and' | 'selected' | 'requested';
++	} = {}
++) => {
++	const {
++		startDate = null,
++		endDate = null,
++		groupId = null,
++		userId = null,
++		modelSelected = null,
++		modelRequested = null,
++		modelMode = 'or'
++	} = options;
++
++	let error = null;
++
++	const searchParams = new URLSearchParams();
++	if (startDate) searchParams.append('start_date', startDate.toString());
++	if (endDate) searchParams.append('end_date', endDate.toString());
++	if (groupId) searchParams.append('group_id', groupId);
++	if (userId) searchParams.append('user_id', userId);
++	if (modelSelected) searchParams.append('model_selected', modelSelected);
++	if (modelRequested) searchParams.append('model_requested', modelRequested);
++	if (modelMode) searchParams.append('model_mode', modelMode);
++
++	const res = await fetch(`${WEBUI_API_BASE_URL}/analytics/routing/summary?${searchParams.toString()}`, {
++		method: 'GET',
++		headers: {
++			Accept: 'application/json',
++			'Content-Type': 'application/json',
++			authorization: `Bearer ${token}`
++		}
++	})
++		.then(async (res) => {
++			if (!res.ok) throw await res.json();
++			return res.json();
++		})
++		.catch((err) => {
++			error = err.detail;
++			console.error(err);
++			return null;
++		});
++
++	if (error) {
++		throw error;
++	}
++
++	return res;
++};
++
++export const getRoutingEvents = async (
++	token: string = '',
++	options: {
++		startDate?: number | null;
++		endDate?: number | null;
++		groupId?: string | null;
++		userId?: string | null;
++		modelSelected?: string | null;
++		modelRequested?: string | null;
++		modelMode?: 'or' | 'and' | 'selected' | 'requested';
++		skip?: number;
++		limit?: number;
++	} = {}
++) => {
++	const {
++		startDate = null,
++		endDate = null,
++		groupId = null,
++		userId = null,
++		modelSelected = null,
++		modelRequested = null,
++		modelMode = 'or',
++		skip = 0,
++		limit = 100
++	} = options;
++
++	let error = null;
++
++	const searchParams = new URLSearchParams();
++	if (startDate) searchParams.append('start_date', startDate.toString());
++	if (endDate) searchParams.append('end_date', endDate.toString());
++	if (groupId) searchParams.append('group_id', groupId);
++	if (userId) searchParams.append('user_id', userId);
++	if (modelSelected) searchParams.append('model_selected', modelSelected);
++	if (modelRequested) searchParams.append('model_requested', modelRequested);
++	if (modelMode) searchParams.append('model_mode', modelMode);
++	if (skip) searchParams.append('skip', skip.toString());
++	if (limit) searchParams.append('limit', limit.toString());
++
++	const res = await fetch(`${WEBUI_API_BASE_URL}/analytics/routing/events?${searchParams.toString()}`, {
++		method: 'GET',
++		headers: {
++			Accept: 'application/json',
++			'Content-Type': 'application/json',
++			authorization: `Bearer ${token}`
++		}
++	})
++		.then(async (res) => {
++			if (!res.ok) throw await res.json();
++			return res.json();
++		})
++		.catch((err) => {
++			error = err.detail;
++			console.error(err);
++			return null;
++		});
++
++	if (error) {
++		throw error;
++	}
++
++	return res;
++};
+diff --git a/src/lib/components/admin/Analytics/Dashboard.svelte b/src/lib/components/admin/Analytics/Dashboard.svelte
+index 12fd379b6..153b47cc1 100644
+--- a/src/lib/components/admin/Analytics/Dashboard.svelte
++++ b/src/lib/components/admin/Analytics/Dashboard.svelte
+@@ -6,7 +6,9 @@
+ 		getModelAnalytics,
+ 		getUserAnalytics,
+ 		getDailyStats,
+-		getTokenUsage
++		getTokenUsage,
++		getRoutingSummary,
++		getRoutingEvents
+ 	} from '$lib/apis/analytics';
+ 	import { getGroups } from '$lib/apis/groups';
+ 	import Spinner from '$lib/components/common/Spinner.svelte';
+@@ -14,6 +16,7 @@
+ 	import ChevronDown from '$lib/components/icons/ChevronDown.svelte';
+ 	import ChartLine from './ChartLine.svelte';
+ 	import AnalyticsModelModal from './AnalyticsModelModal.svelte';
++	import RoutingUsage from './RoutingUsage.svelte';
+ 	import Tooltip from '$lib/components/common/Tooltip.svelte';
+ 	import { WEBUI_API_BASE_URL } from '$lib/constants';
+ 	import { formatNumber } from '$lib/utils';
+@@ -110,6 +113,24 @@
+ 	let filterByUserName: string | null = null;
+ 	let loadingModels = false;
+ 	let loadingUsers = false;
++	let loadingRouting = false;
++
++	let routingModelMode: 'or' | 'and' | 'selected' | 'requested' = 'or';
++	let routingPairs: Array<{
++		requested_model_id: string;
++		selected_model_id: string;
++		count: number;
++		percentage: number;
++	}> = [];
++	let routingEvents: Array<{
++		message_id: string;
++		chat_id: string;
++		user_id?: string | null;
++		created_at: number;
++		requested_model_id: string;
++		selected_model_id: string;
++	}> = [];
++	let routingSelectedPair: { requested_model_id: string; selected_model_id: string } | null = null;
+ 
+ 	// Sorting
+ 	let modelOrderBy = 'count';
+@@ -212,6 +233,7 @@
+ 		} catch (err) {
+ 			console.error('Model table reload failed:', err);
+ 		}
++		await loadRoutingAnalytics();
+ 		loadingModels = false;
+ 	};
+ 
+@@ -231,11 +253,75 @@
+ 		} catch (err) {
+ 			console.error('User table reload failed:', err);
+ 		}
++		await loadRoutingAnalytics();
+ 		loadingUsers = false;
+ 	};
+ 
++	const getRoutingModelFilters = () => {
++		if (routingSelectedPair) {
++			return {
++				modelSelected: routingSelectedPair.selected_model_id,
++				modelRequested: routingSelectedPair.requested_model_id
++			};
++		}
++
++		if (!filterByModelId) {
++			return { modelSelected: null, modelRequested: null };
++		}
++
++		if (routingModelMode === 'selected') {
++			return { modelSelected: filterByModelId, modelRequested: null };
++		}
++
++		if (routingModelMode === 'requested') {
++			return { modelSelected: null, modelRequested: filterByModelId };
++		}
++
++		return { modelSelected: filterByModelId, modelRequested: filterByModelId };
++	};
++
++	const loadRoutingAnalytics = async () => {
++		loadingRouting = true;
++		try {
++			const { start, end } = getDateRange(selectedPeriod);
++			const { modelSelected, modelRequested } = getRoutingModelFilters();
++
++			const [summaryRes, eventsRes] = await Promise.all([
++				getRoutingSummary(localStorage.token, {
++					startDate: start,
++					endDate: end,
++					groupId: selectedGroupId,
++					userId: filterByUserId,
++					modelSelected,
++					modelRequested,
++					modelMode: routingModelMode
++				}),
++				getRoutingEvents(localStorage.token, {
++					startDate: start,
++					endDate: end,
++					groupId: selectedGroupId,
++					userId: filterByUserId,
++					modelSelected,
++					modelRequested,
++					modelMode: routingModelMode,
++					skip: 0,
++					limit: 20
++				})
++			]);
++
++			routingPairs = summaryRes ?? [];
++			routingEvents = eventsRes ?? [];
++		} catch (err) {
++			console.error('Routing analytics load failed:', err);
++			routingPairs = [];
++			routingEvents = [];
++		}
++		loadingRouting = false;
++	};
++
+ 	$: if (selectedPeriod || selectedGroupId !== undefined) {
+ 		loadDashboard();
++		loadRoutingAnalytics();
+ 	}
+ 
+ 	onMount(async () => {
+@@ -297,6 +383,7 @@
+ 	}
+ 
+ 	onMount(loadDashboard);
++	onMount(loadRoutingAnalytics);
+ </script>
+ 
+ <!-- Header with title and period selector -->
+@@ -742,6 +829,33 @@
+ 		</div>
+ 	</div>
+ 
++	<div class="mt-4">
++		<RoutingUsage
++			pairs={routingPairs}
++			events={routingEvents}
++			loading={loadingRouting}
++			modelMode={routingModelMode}
++			selectedPair={routingSelectedPair}
++			modelFilterLabel={filterByModelName}
++			onModelModeChange={(mode) => {
++				routingModelMode = mode;
++				routingSelectedPair = null;
++				loadRoutingAnalytics();
++			}}
++			onSelectPair={(requestedModelId, selectedModelId) => {
++				routingSelectedPair = {
++					requested_model_id: requestedModelId,
++					selected_model_id: selectedModelId
++				};
++				loadRoutingAnalytics();
++			}}
++			onClearPair={() => {
++				routingSelectedPair = null;
++				loadRoutingAnalytics();
++			}}
++		/>
++	</div>
++
+ 	<div class="text-gray-500 text-xs mt-1.5 text-right">
+ 		ⓘ {$i18n.t('Message counts are based on assistant responses.')}
+ 	</div>
+diff --git a/src/lib/components/admin/Analytics/RoutingUsage.svelte b/src/lib/components/admin/Analytics/RoutingUsage.svelte
+new file mode 100644
+index 000000000..bce597fa8
+--- /dev/null
++++ b/src/lib/components/admin/Analytics/RoutingUsage.svelte
+@@ -0,0 +1,124 @@
++<script lang="ts">
++	import Spinner from '$lib/components/common/Spinner.svelte';
++
++	export let pairs: Array<{
++		requested_model_id: string;
++		selected_model_id: string;
++		count: number;
++		percentage: number;
++	}> = [];
++
++	export let events: Array<{
++		message_id: string;
++		chat_id: string;
++		user_id?: string | null;
++		created_at: number;
++		requested_model_id: string;
++		selected_model_id: string;
++	}> = [];
++
++	export let loading = false;
++	export let modelMode: 'or' | 'and' | 'selected' | 'requested' = 'or';
++	export let selectedPair: { requested_model_id: string; selected_model_id: string } | null = null;
++	export let modelFilterLabel: string | null = null;
++
++	export let onModelModeChange: (mode: 'or' | 'and' | 'selected' | 'requested') => void;
++	export let onSelectPair: (requestedModelId: string, selectedModelId: string) => void;
++	export let onClearPair: () => void;
++</script>
++
++<div>
++	<div class="flex items-center justify-between text-xs font-medium text-gray-700 dark:text-gray-300 mb-1 px-0.5">
++		<span>Routing (Requested → Selected)</span>
++		<div class="flex items-center gap-2">
++			{#if modelFilterLabel}
++				<span class="text-blue-500 font-normal">Filtered model: <span class="font-medium">{modelFilterLabel}</span></span>
++			{/if}
++			<label class="text-gray-500 dark:text-gray-400 font-normal" for="routing-mode">Mode</label>
++			<select
++				id="routing-mode"
++				value={modelMode}
++				class="rounded-sm px-1.5 py-0.5 text-xs bg-transparent border border-gray-200 dark:border-gray-700"
++				on:change={(e) => onModelModeChange((e.currentTarget as HTMLSelectElement).value as 'or' | 'and' | 'selected' | 'requested')}
++			>
++				<option value="or">or</option>
++				<option value="and">and</option>
++				<option value="selected">selected</option>
++				<option value="requested">requested</option>
++			</select>
++		</div>
++	</div>
++
++	{#if loading}
++		<div class="my-6 flex justify-center">
++			<Spinner className="size-4" />
++		</div>
++	{:else}
++		<div class="grid md:grid-cols-2 gap-4">
++			<div class="scrollbar-hidden relative whitespace-nowrap overflow-x-auto max-w-full">
++				<table class="w-full text-sm text-left text-gray-500 dark:text-gray-400 table-auto">
++					<thead class="text-xs text-gray-800 uppercase bg-transparent dark:text-gray-200">
++						<tr class="border-b-[1.5px] border-gray-50 dark:border-gray-850/30">
++							<th class="px-2.5 py-2 w-8">#</th>
++							<th class="px-2.5 py-2">Requested</th>
++							<th class="px-2.5 py-2">Selected</th>
++							<th class="px-2.5 py-2 text-right">Count</th>
++							<th class="px-2.5 py-2 text-right">%</th>
++						</tr>
++					</thead>
++					<tbody>
++						{#each pairs as pair, idx (`${pair.requested_model_id}-${pair.selected_model_id}`)}
++							<tr
++								class="bg-white dark:bg-gray-900 dark:border-gray-850 text-xs cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
++								class:bg-blue-50={selectedPair?.requested_model_id === pair.requested_model_id && selectedPair?.selected_model_id === pair.selected_model_id}
++								class:dark:bg-blue-950={selectedPair?.requested_model_id === pair.requested_model_id && selectedPair?.selected_model_id === pair.selected_model_id}
++								on:click={() => onSelectPair(pair.requested_model_id, pair.selected_model_id)}
++							>
++								<td class="px-3 py-1 text-gray-400">{idx + 1}</td>
++								<td class="px-3 py-1 font-medium text-gray-900 dark:text-white">{pair.requested_model_id}</td>
++								<td class="px-3 py-1">{pair.selected_model_id}</td>
++								<td class="px-3 py-1 text-right">{pair.count.toLocaleString()}</td>
++								<td class="px-3 py-1 text-right text-gray-400">{pair.percentage.toFixed(1)}%</td>
++							</tr>
++						{/each}
++						{#if pairs.length === 0}
++							<tr><td colspan="5" class="px-3 py-2 text-center text-gray-400">No routing data</td></tr>
++						{/if}
++					</tbody>
++				</table>
++			</div>
++
++			<div>
++				<div class="flex items-center justify-between text-xs text-gray-600 dark:text-gray-400 mb-1">
++					<span>Routing Events</span>
++					{#if selectedPair}
++						<button class="text-blue-500 hover:text-blue-600" on:click={onClearPair}>Clear pair</button>
++					{/if}
++				</div>
++				<div class="scrollbar-hidden relative whitespace-nowrap overflow-x-auto max-w-full">
++					<table class="w-full text-sm text-left text-gray-500 dark:text-gray-400 table-auto">
++						<thead class="text-xs text-gray-800 uppercase bg-transparent dark:text-gray-200">
++							<tr class="border-b-[1.5px] border-gray-50 dark:border-gray-850/30">
++								<th class="px-2.5 py-2">Time</th>
++								<th class="px-2.5 py-2">Requested</th>
++								<th class="px-2.5 py-2">Selected</th>
++							</tr>
++						</thead>
++						<tbody>
++							{#each events as event (event.message_id)}
++								<tr class="bg-white dark:bg-gray-900 dark:border-gray-850 text-xs">
++									<td class="px-3 py-1 text-gray-400">{new Date(event.created_at * 1000).toLocaleString()}</td>
++									<td class="px-3 py-1">{event.requested_model_id}</td>
++									<td class="px-3 py-1">{event.selected_model_id}</td>
++								</tr>
++							{/each}
++							{#if events.length === 0}
++								<tr><td colspan="3" class="px-3 py-2 text-center text-gray-400">No events</td></tr>
++							{/if}
++						</tbody>
++					</table>
++				</div>
++			</div>
++		</div>
++	{/if}
++</div>
+\ No newline at end of file
+diff --git a/src/lib/components/admin/Analytics/routing-logic.test.ts b/src/lib/components/admin/Analytics/routing-logic.test.ts
+new file mode 100644
+index 000000000..c5629a708
+--- /dev/null
++++ b/src/lib/components/admin/Analytics/routing-logic.test.ts
+@@ -0,0 +1,23 @@
++import { describe, expect, it } from 'vitest';
++
++function filterPair(
++	selected: string,
++	requested: string,
++	modelFilter: string,
++	mode: 'selected' | 'requested' | 'or' | 'and'
++) {
++	if (!modelFilter) return true;
++	if (mode === 'selected') return selected === modelFilter;
++	if (mode === 'requested') return requested === modelFilter;
++	if (mode === 'and') return selected === modelFilter && requested === modelFilter;
++	return selected === modelFilter || requested === modelFilter;
++}
++
++describe('routing filter mode', () => {
++	it('supports selected/requested/or/and', () => {
++		expect(filterPair('A', 'B', 'A', 'selected')).toBe(true);
++		expect(filterPair('A', 'B', 'B', 'requested')).toBe(true);
++		expect(filterPair('A', 'B', 'B', 'or')).toBe(true);
++		expect(filterPair('A', 'B', 'A', 'and')).toBe(false);
++	});
++});
+\ No newline at end of file

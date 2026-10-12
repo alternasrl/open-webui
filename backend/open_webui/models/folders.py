@@ -6,7 +6,7 @@ from typing import Optional
 
 from open_webui.internal.db import Base, JSONField, get_async_db_context
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import JSON, BigInteger, Boolean, Column, Text, delete, func, select, or_, and_
+from sqlalchemy import JSON, BigInteger, Boolean, Column, Text, and_, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 log = logging.getLogger(__name__)
