@@ -1,4 +1,34 @@
-# Patches — integration-v0.11.4
+# Patches — integration-v0.12.0
+
+**Base upstream tag:** `v0.12.0` (SHA `15818d88fd7bde1b73de33590f50d15d21e8d7c1`)
+**Candidate:** branch `integration-v0.12.0` (code state `7c5aac115`), not released: no tag, PR or image has been created.
+
+## Current artifact
+
+| File                                                                  | Purpose                                                                                                                                  |
+| --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `0001-chore-reconcile-fork-customizations-onto-v0.12.0-base.patch`   | Replayable runtime delta: the fork customizations reconciled onto upstream `v0.12.0` (174 files, 14500 insertions, 256 deletions).       |
+| `integration-v0.12.0-customizations-files.txt`                        | Inventory of the original fork delta (`v0.11.4`..fork head, 217 paths) used as the input of the decision matrix.                         |
+| `integration-v0.12.0-decisions.md`                                    | Decision matrix (217 rows, planned decision plus final outcome and proving test), quality gate, verification log and known limitations. |
+
+Regenerate exactly with raw (unfiltered) output:
+
+```bash
+git diff --binary 15818d88fd7bde1b73de33590f50d15d21e8d7c1 HEAD -- . ':(exclude)patches/**' ':(exclude)docs/**' ':(exclude).superpowers/**' \
+  > patches/0001-chore-reconcile-fork-customizations-onto-v0.12.0-base.patch
+```
+
+The patch is a **runtime patch, not a full history backup**. It excludes `patches/**` (non-recursive and no archive churn), `docs/**` and `.superpowers/**` (planning and workflow artifacts). Merge history, previous patch archives and reports remain in git history only. It includes tests, migrations and the 64 locale catalogs.
+
+Check: extract `git archive 15818d88f` into a scratch directory outside any git repository and run `git apply --check <patch>` there; the result is clean (exit 0), and applying it reproduces the candidate tree (except the excluded paths). Do not apply it to the already integrated candidate.
+
+Candidate migration graph: single head `e304e2e7c45a` (no-DDL merge of `6c7d8e9f0a1b` and the upstream head `b8f2c6d91a04`).
+
+## Older archives are provenance only
+
+Every other file in this directory (`0001`..`0019` patches, the dated routing-analytics patch, and the `integration-v0.11.3`/`v0.11.4` seeds and inventories) is retained as historical provenance. They target older upstream bases, must not be re-applied, and are not part of the v0.12.0 delta.
+
+# Previous integration — v0.11.4 (provenance only)
 
 **Base upstream tag:** `v0.11.4` (SHA `8bd8b4fac5e059578ac0c74b3c18d11139f88b7d`)
 **Regenerated:** 2026-09-25

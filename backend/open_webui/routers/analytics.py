@@ -17,7 +17,7 @@ from open_webui.models.prompt_insights import (
 )
 from open_webui.models.users import Users
 from open_webui.utils.auth import get_admin_user
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 log = logging.getLogger(__name__)
@@ -40,7 +40,7 @@ class ModelAnalyticsEntry(BaseModel):
     avg_tokens_per_second: Optional[float] = None
     error_requests: int = 0
     total_requests: int = 0
-    error_rate: float = 0.0
+    error_rate: float = Field(0.0, description='Error fraction (0..1); model table formats it as percent.')
 
 
 class ModelAnalyticsResponse(BaseModel):
@@ -83,7 +83,7 @@ async def get_model_analytics(
         start_date=start_date, end_date=end_date, group_id=group_id, user_id=user_id, db=db
     )
     unique_counts = await ChatMessages.get_unique_counts_by_model(
-        start_date=start_date, end_date=end_date, group_id=group_id, db=db
+        start_date=start_date, end_date=end_date, group_id=group_id, user_id=user_id, db=db
     )
     models = [
         ModelAnalyticsEntry(
@@ -179,7 +179,7 @@ class SummaryResponse(BaseModel):
     avg_tokens_per_second: Optional[float] = None
     error_requests: int = 0
     total_requests: int = 0
-    error_rate: float = 0.0
+    error_rate: float = Field(0.0, description='Error percentage (0..100); summary displays it directly.')
 
 
 @router.get('/summary', response_model=SummaryResponse)
@@ -233,7 +233,9 @@ async def get_daily_stats(
 ):
     """Get message counts grouped by model for time-series chart."""
     if granularity == 'hourly':
-        counts = await ChatMessages.get_hourly_message_counts_by_model(start_date=start_date, end_date=end_date, db=db)
+        counts = await ChatMessages.get_hourly_message_counts_by_model(
+            start_date=start_date, end_date=end_date, group_id=group_id, db=db
+        )
     else:
         counts = await ChatMessages.get_daily_message_counts_by_model(
             start_date=start_date, end_date=end_date, group_id=group_id, db=db
@@ -679,11 +681,15 @@ async def trigger_prompt_insights_run(
     db: AsyncSession = Depends(get_async_session),
 ):
     """Manually trigger a prompt insights run. No-op if a run is already in progress."""
-    window_end = int(time.time())
-    from open_webui.prompt_insights.pipeline import _resolve_window_start  # noqa: PLC0415
+    window_end = int(time.time()) - 1
+    from open_webui.prompt_insights.pipeline import (  # noqa: PLC0415
+        _claim_prompt_insights_run,
+        _resolve_window_start,
+        launch_prompt_insights,
+    )
 
     window_start = await _resolve_window_start(interval_hours=24, last_ns=None)
-    run = await PromptInsightsRuns.claim_run(window_start, window_end, db=db)
+    run = await _claim_prompt_insights_run(window_start, window_end, db=db)
     if run is None:
         active = await PromptInsightsRuns.get_active_run(db=db)
         return PromptInsightsRunTriggerResponse(
@@ -692,15 +698,7 @@ async def trigger_prompt_insights_run(
             run_id=active.id if active else None,
         )
 
-    async def _run_pipeline():
-        from open_webui.prompt_insights.pipeline import PromptInsightsPipeline  # noqa: PLC0415
-
-        try:
-            await PromptInsightsPipeline(request.app).run(window_start, window_end, run_id=run.id)
-        except Exception:
-            log.exception('Manual prompt insights run failed')
-
-    background_tasks.add_task(_run_pipeline)
+    await launch_prompt_insights(request.app, window_start, window_end, run.id)
     return PromptInsightsRunTriggerResponse(status='started', run_id=run.id)
 
 

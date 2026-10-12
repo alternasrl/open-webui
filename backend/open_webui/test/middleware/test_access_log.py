@@ -42,6 +42,27 @@ def classify(method: str, path: str):
     return _classify_action(method, path)
 
 
+@pytest.mark.parametrize(
+    ('method', 'path', 'expected'),
+    [
+        ('POST', '/api/v1/users/user-id/sessions/revoke', ('user', 'user-id')),
+        ('DELETE', '/api/v1/models/model/history/revision-id', ('model_history', 'revision-id')),
+        ('POST', '/api/v1/models/model/update/version', ('model', None)),
+        ('POST', '/api/v1/auths/mfa/verify', ('mfa', None)),
+        ('DELETE', '/api/v1/functions/id/function|injected/history/revision', ('function', 'function%7Cinjected')),
+        ('POST', '/api/v1/terminals/server/chats/chat-id/command', ('terminal_chat', 'chat-id')),
+    ],
+)
+def test_v0120_event_objects_have_only_sanitized_identifiers(method, path, expected):
+    assert _extract_event_object_ref(method, path) == expected
+
+
+def test_leaderboard_model_path_converter_keeps_history_action():
+    assert (
+        action_of('GET', '/api/v1/evaluations/leaderboard/org/model/history') == 'EVALUATION_LEADERBOARD_HISTORY_READ'
+    )
+
+
 def action_of(method: str, path: str) -> str:
     return classify(method, path)[0]
 
@@ -102,8 +123,9 @@ class TestClassifyAuth:
     def test_oidc_callback_legacy(self):
         assert action_of('GET', '/oauth/google/callback') == 'AUTH_OIDC_LOGIN'
 
-    def test_oidc_dynamic_client_callback(self):
-        assert action_of('GET', '/oauth/clients/my-client-id/callback') == 'AUTH_OIDC_LOGIN'
+    def test_mcp_oauth_client_callback(self):
+        assert action_of('GET', '/oauth/clients/my-client-id/callback') == 'OAUTH_CLIENT_AUTHORIZE'
+        assert is_nis2('GET', '/oauth/clients/my-client-id/callback')
 
     def test_mcp_oauth_authorize(self):
         assert action_of('GET', '/oauth/clients/my-client-id/authorize') == 'AUTH_OAUTH_AUTHORIZE'

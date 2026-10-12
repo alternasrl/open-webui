@@ -1,15 +1,21 @@
 import { OPENAI_API_BASE_URL, WEBUI_API_BASE_URL, WEBUI_BASE_URL } from '$lib/constants';
 
 export const getErrorMessage = (err: any, fallback = 'Server connection failed') => {
-	const detail = err?.detail;
-	if (typeof detail === 'string') return detail;
-
+	if (Array.isArray(err)) return fallback;
 	return (
-		detail?.error?.message ??
-		detail?.message ??
-		err?.error?.message ??
-		err?.message ??
-		(typeof err === 'string' ? err : fallback)
+		[
+			err?.detail?.error?.message,
+			err?.detail?.message,
+			err?.detail?.content,
+			err?.detail?.error,
+			err?.detail,
+			err?.error?.message,
+			err?.error?.content,
+			err?.error,
+			err?.message,
+			err?.content,
+			err
+		].find((value) => typeof value === 'string') ?? fallback
 	);
 };
 
@@ -128,7 +134,7 @@ export const getOpenAIModels = async (token: string, urlIdx?: number) => {
 			return res.json();
 		})
 		.catch((err) => {
-			error = `OpenAI: ${err?.error?.message ?? err?.message ?? 'Network Problem'}`;
+			error = `OpenAI: ${getErrorMessage(err, 'Network Problem')}`;
 			return [];
 		});
 

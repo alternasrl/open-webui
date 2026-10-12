@@ -35,6 +35,8 @@ covered by this middleware:
   • ``/api/v1/automations/*``        — Automation CRUD + run (code exec)
   • ``/api/v1/calendars/*``          — Calendar & event management
   • ``/oauth/clients/{id}/authorize`` — MCP OAuth 2.1 authorization flow
+  • ``/oauth/clients/{id}/callback`` — provider token acquisition, not app login;
+    success requires persisted provider session and a validated audit actor.
   • ``/oauth/backchannel-logout``     — IdP-initiated back-channel logout
   • ``/api/v1/configs/terminal_servers/verify``  — Terminal server verify
   • ``/api/v1/configs/terminal_servers/policy``  — Terminal execution policy
@@ -120,6 +122,7 @@ NIS2 Action Categories
   AUTH_*       — Authentication & session lifecycle
                  AUTH_OIDC_LOGIN         — OIDC/OAuth2 callback (success=302, fail=4xx → _FAIL)
                  AUTH_OAUTH_AUTHORIZE    — MCP OAuth 2.1 authorization initiation (v0.9.x)
+                 OAUTH_CLIENT_AUTHORIZE  — MCP provider token acquisition (not an application login)
   USER_*       — User account management
   GROUP_*      — Group & membership management
   CONFIG_*     — System configuration changes
@@ -170,9 +173,8 @@ except ImportError:
 #   - maxsize=2048 covers the full user base → ~100 % hit rate after warm-up.
 #   - TTL of 300 s ensures changes propagate within 5 min.
 #   - threading.Lock protects the dict; released during I/O.
-#   - DB lookups are synchronous but fast (PK index, single row).
-#     They run inside BaseHTTPMiddleware's worker thread, so the
-#     asyncio event loop is NOT blocked.
+#   - DB lookups use the upstream async models and are awaited without
+#     holding the cache lock.
 # ---------------------------------------------------------------------------
 
 _log = logging.getLogger(__name__)
@@ -230,6 +232,14 @@ def _compile_action_rules() -> list[tuple[re.Pattern, Optional[str], str]]:
     raw_rules: list[tuple[str, Optional[str], str]] = [
         # ── Authentication & Session ─────────────────────────────────────
         (rf'^/api/v1/auths/signin$', 'POST', 'AUTH_LOGIN'),
+        (rf'^/api/v1/auths/mfa/challenge$', 'POST', 'AUTH_MFA_CHALLENGE'),
+        (rf'^/api/v1/auths/mfa/enroll/start$', 'POST', 'AUTH_MFA_ENROLL_START'),
+        (rf'^/api/v1/auths/mfa/enroll/confirm$', 'POST', 'AUTH_MFA_ENROLL_CONFIRM'),
+        (rf'^/api/v1/auths/mfa/verify$', 'POST', 'AUTH_MFA_VERIFY'),
+        (rf'^/api/v1/auths/mfa/replace$', 'POST', 'AUTH_MFA_REPLACE'),
+        (rf'^/api/v1/auths/mfa/recover$', 'POST', 'AUTH_MFA_RECOVER'),
+        (rf'^/api/v1/auths/mfa/recovery/codes$', 'POST', 'AUTH_MFA_RECOVERY_ROTATE'),
+        (rf'^/api/v1/auths/mfa/status$', 'GET', 'AUTH_MFA_STATUS'),
         (rf'^/api/v1/auths/ldap$', 'POST', 'AUTH_LOGIN_LDAP'),
         (rf'^/api/v1/auths/signup$', 'POST', 'AUTH_SIGNUP'),
         (rf'^/api/v1/auths/signout$', 'POST', 'AUTH_LOGOUT'),
@@ -240,10 +250,11 @@ def _compile_action_rules() -> list[tuple[re.Pattern, Optional[str], str]]:
         (rf'^/api/v1/auths/api_key$', 'DELETE', 'AUTH_API_KEY_DELETE'),
         (rf'^/api/v1/auths/oauth/{_ID}/token/exchange$', 'POST', 'AUTH_OAUTH_TOKEN'),
         (rf'^/api/v1/auths/oauth/sessions/', 'DELETE', 'AUTH_LOGOUT'),  # OAuth session revoke (v0.9.3)
+        # MCP provider authorization is distinct from application login.
+        (rf'^/oauth/clients/{_ID}/callback$', 'GET', 'OAUTH_CLIENT_AUTHORIZE'),
         # OIDC/OAuth2 callback endpoints (GET — browser redirect after IdP authentication)
         (rf'^/oauth/{_ID}/login/callback$', 'GET', 'AUTH_OIDC_LOGIN'),
         (rf'^/oauth/{_ID}/callback$', 'GET', 'AUTH_OIDC_LOGIN'),  # legacy path
-        (rf'^/oauth/clients/{_ID}/callback$', 'GET', 'AUTH_OIDC_LOGIN'),  # dynamic OAuth clients
         # MCP OAuth 2.1: client initiates authorization flow
         (rf'^/oauth/clients/{_ID}/authorize$', 'GET', 'AUTH_OAUTH_AUTHORIZE'),
         # IdP-initiated back-channel logout (RFC 7009 / OpenID Connect Back-Channel Logout)
@@ -535,6 +546,30 @@ def _compile_action_rules() -> list[tuple[re.Pattern, Optional[str], str]]:
         (rf'^/ollama/v1/models/{_ID}$', 'GET', 'OLLAMA_COMPAT_MODELS_READ'),
         (rf'^/ollama/api/tags/{_ID}$', 'GET', 'OLLAMA_COMPAT_TAGS_READ'),
         (rf'^/ollama/api/version/{_ID}$', 'GET', 'OLLAMA_COMPAT_VERSION_READ'),
+        # ── v0.12.0 session and workspace operations ─────────────────────
+        (rf'^/api/v1/skills/import/preview$', 'POST', 'SKILL_IMPORT_PREVIEW'),
+        (rf'^/api/v1/skills/import$', 'POST', 'SKILL_IMPORT'),
+        (rf'^/api/v1/skills/load/url$', 'POST', 'SKILL_URL_LOAD'),
+        (rf'^/api/v1/models/model/update/version$', 'POST', 'MODEL_VERSION_RESTORE'),
+        (rf'^/api/v1/users/{_ID}/sessions/revoke$', 'POST', 'AUTH_SESSIONS_REVOKE'),
+        (rf'^/api/v1/functions/id/{_ID}/history/{_ID}$', 'DELETE', 'FUNCTION_HISTORY_DELETE'),
+        (rf'^/api/v1/functions/id/{_ID}/update/version$', 'POST', 'FUNCTION_VERSION_RESTORE'),
+        (rf'^/api/v1/tools/id/{_ID}/history/{_ID}$', 'DELETE', 'TOOL_HISTORY_DELETE'),
+        (rf'^/api/v1/tools/id/{_ID}/update/version$', 'POST', 'TOOL_VERSION_RESTORE'),
+        (rf'^/api/v1/models/model/history/{_ID}$', 'DELETE', 'MODEL_HISTORY_DELETE'),
+        (rf'^/api/v1/skills/id/{_ID}/clone$', 'POST', 'SKILL_CLONE'),
+        (rf'^/api/v1/skills/id/{_ID}/history/{_ID}$', 'DELETE', 'SKILL_HISTORY_DELETE'),
+        (rf'^/api/v1/skills/id/{_ID}/update/version$', 'POST', 'SKILL_VERSION_RESTORE'),
+        (rf'^/api/v1/skills/id/{_ID}/files(/content)?$', 'GET', 'SKILL_FILE_READ'),
+        (rf'^/api/v1/(functions|tools|skills|prompts)/id/{_ID}/history(/.*)?$', 'GET', 'WORKSPACE_HISTORY_READ'),
+        (rf'^/api/v1/models/model/history(/{_ID})?$', 'GET', 'WORKSPACE_HISTORY_READ'),
+        (rf'^/api/v1/groups/id/{_ID}/members$', 'GET', 'GROUP_MEMBERS_READ'),
+        (rf'^/api/v1/tools/id/{_ID}/specs$', 'GET', 'TOOL_SPECS_READ'),
+        (r'^/api/v1/evaluations/leaderboard/.+/history$', 'GET', 'EVALUATION_LEADERBOARD_HISTORY_READ'),
+        (rf'^/api/v1/terminals/{_ID}/chats/{_ID}/.+$', 'DELETE', 'TERMINAL_CHAT_PROXY_DELETE'),
+        (rf'^/api/v1/terminals/{_ID}/chats/{_ID}/.+$', 'POST', 'TERMINAL_CHAT_PROXY_WRITE'),
+        (rf'^/api/v1/terminals/{_ID}/chats/{_ID}/.+$', 'PUT', 'TERMINAL_CHAT_PROXY_WRITE'),
+        (rf'^/api/v1/terminals/{_ID}/chats/{_ID}/.+$', 'PATCH', 'TERMINAL_CHAT_PROXY_WRITE'),
         # ── Catch-all for remaining API write operations ─────────────────
         # These catch any unmatched POST/PUT/PATCH/DELETE on /api/ paths
         (rf'^/api/', 'DELETE', 'DELETE_OTHER'),
@@ -554,6 +589,28 @@ _NIS2_ACTION_RULES = _compile_action_rules()
 # (higher severity — should be flagged in SIEM/audit tools)
 _NIS2_SECURITY_ACTIONS = frozenset(
     {
+        'AUTH_MFA_CHALLENGE',
+        'AUTH_MFA_ENROLL_START',
+        'AUTH_MFA_ENROLL_CONFIRM',
+        'AUTH_MFA_VERIFY',
+        'AUTH_MFA_REPLACE',
+        'AUTH_MFA_RECOVER',
+        'AUTH_MFA_RECOVERY_ROTATE',
+        'AUTH_SESSIONS_REVOKE',
+        'FUNCTION_HISTORY_DELETE',
+        'FUNCTION_VERSION_RESTORE',
+        'TOOL_HISTORY_DELETE',
+        'TOOL_VERSION_RESTORE',
+        'MODEL_HISTORY_DELETE',
+        'MODEL_VERSION_RESTORE',
+        'SKILL_HISTORY_DELETE',
+        'SKILL_VERSION_RESTORE',
+        'SKILL_CLONE',
+        'SKILL_IMPORT',
+        'SKILL_IMPORT_PREVIEW',
+        'SKILL_URL_LOAD',
+        'TERMINAL_CHAT_PROXY_WRITE',
+        'TERMINAL_CHAT_PROXY_DELETE',
         # Authentication
         'AUTH_LOGIN',
         'AUTH_LOGIN_LDAP',
@@ -653,6 +710,7 @@ _NIS2_SECURITY_ACTIONS = frozenset(
         'RESOURCE_RUN_AUTOMATION',
         # OAuth MCP authorization flow
         'AUTH_OAUTH_AUTHORIZE',
+        'OAUTH_CLIENT_AUTHORIZE',
         # Terminal server policy (execution environment config)
         'CONFIG_TERMINAL_SERVERS_VERIFY',
         'CONFIG_TERMINAL_SERVERS_POLICY',
@@ -733,6 +791,9 @@ def _compile_object_id_patterns() -> list[tuple[re.Pattern, str]]:
         (rf'/calendars/events/{_ID}', 'calendar_event'),
         (rf'/evaluations/feedback/{_ID}', 'feedback'),
         (rf'/groups/id/{_ID}', 'group'),
+        (rf'/users/{_ID}/sessions/revoke$', 'user'),
+        (rf'/models/model/history/{_ID}$', 'model_history'),
+        (rf'/terminals/[^/]+/chats/{_ID}/', 'terminal_chat'),
         (rf'/users/{_ID}/update', 'user'),
         (rf'/users/{_ID}$', 'user'),
         (rf'/chats/{_ID}', 'chat'),
@@ -823,7 +884,12 @@ def _extract_event_object_ref(
         if ids:
             return 'model', ','.join(ids)
 
-    return _extract_object_ref(path)
+    if path.startswith('/api/v1/auths/mfa/'):
+        return 'mfa', None
+    if path == '/api/v1/models/model/update/version':
+        return 'model', None
+    object_type, object_id = _extract_object_ref(path)
+    return object_type, _sanitize_audit_object_id(object_id[:200]) if object_id else None
 
 
 # ---------------------------------------------------------------------------
@@ -880,8 +946,8 @@ def invalidate_user_cache(user_id: str) -> None:
 # ---------------------------------------------------------------------------
 # NIS2-required claims inside the OIDC id_token.
 #   sub  — unique subject identifier (mandatory per OIDC Core)
-#   amr  — Authentication Methods References (RFC 8176) — proves MFA
-#   acr  — Authentication Context Class Reference — alternative MFA signal
+#   amr/acr — IdP assurance metadata, never proof of local MFA verification.
+#             Local MFA is governed by upstream session claims and policy.
 # If any of these are absent the access-log cannot be fully NIS2-compliant.
 # ---------------------------------------------------------------------------
 _NIS2_REQUIRED_CLAIMS = ('sub',)
@@ -968,12 +1034,12 @@ def _decode_allowed_oidc_audit_claims(id_token_raw: str) -> dict[str, str]:
             allowed['mfa'] = str(acr)
         if decoded.get('auth_time') is not None:
             allowed['auth_time'] = str(decoded['auth_time'])
-        return allowed
+        return {key: quote(value[:200], safe='@.,-_:') for key, value in allowed.items()}
     except Exception:
         return {}
 
 
-def _resolve_user_context(user_id: str) -> _UserContext:
+async def _resolve_user_context(user_id: str) -> _UserContext:
     """Resolve email, oidc_sub, mfa_status and role for a user UUID.
 
     Uses the Users table for email + role and the OAuthSessions table for
@@ -1003,7 +1069,7 @@ def _resolve_user_context(user_id: str) -> _UserContext:
     try:
         from open_webui.models.users import Users
 
-        user = Users.get_user_by_id(user_id)
+        user = await Users.get_user_by_id(user_id)
         if user:
             if getattr(user, 'email', None):
                 email = str(user.email)
@@ -1016,7 +1082,7 @@ def _resolve_user_context(user_id: str) -> _UserContext:
     try:
         from open_webui.models.oauth_sessions import OAuthSessions
 
-        sessions = OAuthSessions.get_sessions_by_user_id(user_id)
+        sessions = await OAuthSessions.get_sessions_by_user_id(user_id)
         if sessions:
             # Take the most recent session
             session = sessions[0]
@@ -1024,7 +1090,8 @@ def _resolve_user_context(user_id: str) -> _UserContext:
             if isinstance(token_dict, dict):
                 id_token_raw = token_dict.get('id_token')
                 if id_token_raw and isinstance(id_token_raw, str):
-                    oidc_sub, mfa_status = _decode_id_token_claims(id_token_raw, user_hint=email or user_id)
+                    claims = _decode_allowed_oidc_audit_claims(id_token_raw)
+                    oidc_sub, mfa_status = claims.get('sub'), claims.get('mfa')
                 else:
                     _log.warning(
                         'NIS2-COMPLIANCE: OAuth session for user [%s] does not contain an id_token. '
@@ -1037,7 +1104,8 @@ def _resolve_user_context(user_id: str) -> _UserContext:
                 if not oidc_sub:
                     userinfo = token_dict.get('userinfo')
                     if isinstance(userinfo, dict):
-                        oidc_sub = userinfo.get('sub')
+                        sub = userinfo.get('sub')
+                        oidc_sub = _sanitize_audit_object_id(str(sub)[:200]) if sub else None
         else:
             # User is authenticated but has no OAuth session — local account or API key
             _log.debug(
@@ -1142,19 +1210,10 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
         # Genera o recupera session_id
         session_id = self._get_session_id(request)
 
-        # Estrai user UUID dal JWT, poi risolvi email + OIDC claims dal DB (con cache)
-        user_uuid = self._extract_user_uuid(request)
-        if user_uuid:
-            ctx = _resolve_user_context(user_uuid)
-            user_display = ctx.email or user_uuid
-            oidc_sub = ctx.oidc_sub
-            mfa_status = ctx.mfa_status
-            role = ctx.role
-        else:
-            user_display = 'anonymous'
-            role = None
-            # Fast path: try to extract OIDC claims from cookies (pre-login, API keys, etc.)
-            oidc_sub, mfa_status = self._get_oidc_claims_from_cookies(request)
+        # Authentication runs inside call_next. A cookie's unverified UUID is
+        # not an authenticated actor (in particular after session revocation).
+        user_display, role = 'anonymous', None
+        oidc_sub, mfa_status = None, None
 
         # NIS2: Extract correlation ID from WAF/ADSSPM
         correlation_id = self._get_correlation_id(request)
@@ -1203,34 +1262,15 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
         try:
             response = await call_next(request)
             status_code = response.status_code
-
-            # For OIDC callbacks the oauth_id_token cookie is written into the *response*
-            # (not available in the request yet). After call_next we can parse it from the
-            # Set-Cookie response headers so that oidc_sub and mfa are visible in the
-            # AUTH_OIDC_LOGIN log line itself, not only in subsequent requests.
-            oidc_raw_id_token: Optional[str] = None
-            if action_type == 'AUTH_OIDC_LOGIN' and not oidc_sub:
-                resp_sub, resp_mfa = self._extract_oidc_from_response_cookies(response)
-                if resp_sub:
-                    oidc_sub = resp_sub
-                    mfa_status = resp_mfa
-                    # grab the raw token from response cookie for full-claims dump
-                    for hdr in response.headers.getlist('set-cookie'):
-                        m = re.search(r'(?:^|;\s*)oauth_id_token=([^;]+)', hdr, re.IGNORECASE)
-                        if m:
-                            oidc_raw_id_token = m.group(1).strip()
-                            break
-                else:
-                    # Failure case: no cookie was issued. oauth.py stores the raw id_token
-                    # in request.state after a successful token exchange so we can still
-                    # log the identity of who failed to authenticate.
-                    raw = getattr(request.state, 'oidc_raw_id_token', None)
-                    if raw:
-                        state_sub, state_mfa = _decode_id_token_claims(raw)
-                        if state_sub:
-                            oidc_sub = state_sub
-                            mfa_status = state_mfa
-                        oidc_raw_id_token = raw
+            actor = getattr(request.state, 'auth_audit_user', None) or getattr(request.state, 'user', None)
+            if actor:
+                ctx = await _resolve_user_context(actor.id)
+                user_display = quote(str(actor.email or ctx.email or actor.id)[:200], safe='@.-_')
+                role = _sanitize_audit_object_id(str(actor.role or ctx.role or '-')[:200])
+                oidc_sub, mfa_status = ctx.oidc_sub, ctx.mfa_status
+            allowed_claims = getattr(request.state, 'oidc_audit_claims', {})
+            if allowed_claims:
+                oidc_sub, mfa_status = allowed_claims.get('sub'), allowed_claims.get('mfa')
 
         except Exception as e:
             # Log anche in caso di eccezione
@@ -1245,7 +1285,7 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
                 f'ua={user_agent} | '
                 f'{client_display} - '
                 f'"{request.method} {request.url.path}" EXCEPTION - '
-                f'{str(e)[:100]} | time={process_time:.3f}s'
+                f'error_type={type(e).__name__} | time={process_time:.3f}s'
             )
             raise
 
@@ -1256,13 +1296,31 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
         outcome = _outcome_from_status(status_code)
 
         # Detect failed auth attempts (NIS2 Art.21 — incident detection)
-        # AUTH_OIDC_LOGIN: success = 302 redirect to app; failure = 4xx
-        if action_type in ('AUTH_LOGIN', 'AUTH_LOGIN_LDAP', 'AUTH_SIGNUP', 'AUTH_OIDC_LOGIN') and status_code >= 400:
+        if (
+            action_type in ('AUTH_LOGIN', 'AUTH_LOGIN_LDAP', 'AUTH_SIGNUP', 'AUTH_OIDC_LOGIN', 'OAUTH_CLIENT_AUTHORIZE')
+            and status_code >= 400
+        ):
             effective_action = f'{action_type}_FAIL'
             effective_nis2 = True
         else:
             effective_action = action_type
             effective_nis2 = is_nis2
+        auth_outcome = getattr(request.state, 'auth_audit_outcome', None)
+        if status_code < 400 and action_type in (
+            'AUTH_LOGIN',
+            'AUTH_LOGIN_LDAP',
+            'AUTH_OIDC_LOGIN',
+            'AUTH_SIGNUP',
+            'OAUTH_CLIENT_AUTHORIZE',
+        ):
+            if auth_outcome == 'failed':
+                effective_action = f'{action_type}_FAIL'
+                outcome = 'failure'
+            elif auth_outcome != 'completed':
+                effective_action = f'{action_type}_{(auth_outcome or "incomplete").upper()}'
+                outcome = 'pending'
+            elif action_type in ('AUTH_OIDC_LOGIN', 'OAUTH_CLIENT_AUTHORIZE'):
+                outcome = 'success'
 
         # Log NIS2-compliant con tutti i campi richiesti da Log360 SIEM
         # Campi: duser, cs3, externalId, cs9, cs8, spriv, act, outcome, cs10,
@@ -1282,15 +1340,26 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
 
         # For OIDC login events append only explicitly approved identifiers.
         if action_type == 'AUTH_OIDC_LOGIN':
-            allowed_claims = _decode_allowed_oidc_audit_claims(oidc_raw_id_token) if oidc_raw_id_token else {}
             claims_meta = '|'.join(f'{key}={value}' for key, value in allowed_claims.items()) or '-'
             log_msg += f' | oidc_claims={claims_meta}'
+        log_msg += f' | local_mfa_verified={getattr(request.state, "auth_audit_mfa_verified", False)}'
 
         # Use WARNING level for NIS2 security-relevant actions to aid SIEM/alerting
         if effective_nis2:
             self.logger.warning(log_msg)
         else:
             self.logger.info(log_msg)
+        if status_code < 400 and auth_outcome == 'completed' and action_type.startswith('AUTH_MFA_'):
+            self.logger.warning(
+                log_msg.replace(f'action={effective_action} |', 'action=AUTH_LOGIN |', 1)
+                .replace(f'outcome={outcome} |', 'outcome=success |', 1)
+                .replace(
+                    f'object={object_type or "-"}:{object_id or "-"} |',
+                    f'object=user:{_sanitize_audit_object_id(str(actor.id))} |',
+                    1,
+                )
+                + f' | auth_method={getattr(request.state, "auth_audit_source", "-")}'
+            )
 
         # Aggiungi header alla risposta (opzionale)
         response.headers['X-Session-ID'] = session_id

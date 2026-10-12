@@ -6,6 +6,18 @@ sys.path.append(str(Path(__file__).resolve().parents[3]))
 from open_webui.prompt_insights.pipeline import should_run_prompt_insights
 
 
+def test_label_generation_uses_keyword_fallback_with_configured_model():
+    import asyncio
+    from types import SimpleNamespace
+    from open_webui.prompt_insights.pipeline import PromptInsightsPipeline
+
+    pipeline = PromptInsightsPipeline(SimpleNamespace(state=SimpleNamespace(MODELS={'model-a': {}})))
+    assert asyncio.run(pipeline._generate_label('Label this cluster', ['alpha', 'beta', 'gamma', 'delta'])) == (
+        'alpha beta gamma'
+    )
+    assert asyncio.run(pipeline._generate_label('Label this cluster', [])) == 'cluster'
+
+
 def test_run_when_no_history():
     assert should_run_prompt_insights(10_000, None, 24) is True
 

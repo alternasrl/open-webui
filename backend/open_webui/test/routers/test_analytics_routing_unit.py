@@ -1,6 +1,9 @@
 import ast
+import asyncio
 from pathlib import Path
 from typing import Optional
+
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 
 def _load_routing_helpers():
@@ -78,3 +81,62 @@ def test_routing_match_and_mode_with_dual_axis_filters():
     assert _routing_match('SEL', 'REQ', model_selected='SEL', model_requested='REQ', model_mode='and') is True
     assert _routing_match('SEL', 'REQ', model_selected='SEL', model_requested='X', model_mode='and') is False
     assert _routing_match('SEL', 'REQ', model_selected='X', model_requested='REQ', model_mode='and') is False
+
+
+def test_model_cross_filter_and_tokens_use_same_actor_scope(monkeypatch):
+    from open_webui.internal import db as internal_db
+    from open_webui.models.chats import Chat
+    from open_webui.models.chat_messages import ChatMessage, ChatMessages
+    from open_webui.routers import analytics
+
+    monkeypatch.setattr(internal_db, 'DATABASE_ENABLE_SESSION_SHARING', True)
+
+    async def scenario():
+        engine = create_async_engine('sqlite+aiosqlite:///:memory:')
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(
+                    lambda db: Chat.metadata.create_all(db, tables=[Chat.__table__, ChatMessage.__table__])
+                )
+            async with async_sessionmaker(engine)() as db:
+                for actor in ['actor', 'owner']:
+                    await ChatMessages.upsert_message(
+                        actor,
+                        f'chat-{actor}',
+                        actor,
+                        {
+                            'role': 'assistant',
+                            'model': 'model',
+                            'timestamp': 1_780_000_000,
+                            'usage': {'input_tokens': 10, 'output_tokens': 3},
+                        },
+                        db=db,
+                    )
+                response = await analytics.get_model_analytics(
+                    start_date=None,
+                    end_date=None,
+                    group_id=None,
+                    user_id='actor',
+                    user=None,
+                    db=db,
+                )
+                assert len(response.models) == 1
+                assert response.models[0].count == 1
+                assert response.models[0].unique_users == 1
+                assert response.models[0].unique_chats == 1
+                tokens = await analytics.get_token_usage(
+                    start_date=None,
+                    end_date=None,
+                    group_id=None,
+                    user_id='actor',
+                    model_id='model',
+                    user=None,
+                    db=db,
+                )
+                assert tokens.total_input_tokens == 10
+                assert tokens.total_output_tokens == 3
+                assert tokens.total_tokens == 13
+        finally:
+            await engine.dispose()
+
+    asyncio.run(scenario())

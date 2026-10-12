@@ -28,6 +28,7 @@
 	import { WEBUI_API_BASE_URL } from '$lib/constants';
 	import { formatNumber } from '$lib/utils';
 	import { goto } from '$app/navigation';
+	import type { Instance } from 'tippy.js';
 	import {
 		createRequestTracker,
 		deriveRoutingFilters,
@@ -145,6 +146,7 @@
 		{ input_tokens: number; output_tokens: number; total_tokens: number }
 	> = {};
 	let totalTokens = { input: 0, output: 0, total: 0 };
+	let tokenTooltip: Instance | null = null;
 
 	let loading = true;
 
@@ -520,9 +522,13 @@
 			const nameB = b.name ?? b.model_id;
 			return modelDirection === 'asc' ? nameA.localeCompare(nameB) : nameB.localeCompare(nameA);
 		}
-		if (modelOrderBy === 'tokens') {
-			const aTokens = tokenStats[a.model_id]?.total_tokens ?? 0;
-			const bTokens = tokenStats[b.model_id]?.total_tokens ?? 0;
+		if (['tokens', 'input_tokens', 'output_tokens'].includes(modelOrderBy)) {
+			const tokenKey =
+				modelOrderBy === 'tokens'
+					? 'total_tokens'
+					: (modelOrderBy as 'input_tokens' | 'output_tokens');
+			const aTokens = tokenStats[a.model_id]?.[tokenKey] ?? 0;
+			const bTokens = tokenStats[b.model_id]?.[tokenKey] ?? 0;
 			return modelDirection === 'asc' ? aTokens - bTokens : bTokens - aTokens;
 		}
 		if (modelOrderBy === 'users') {
@@ -581,13 +587,16 @@
 	}
 </script>
 
-<!-- Header with title and period selector -->
-<div
-	class="pt-0.5 pb-1 gap-1 flex flex-row justify-between items-center sticky top-0 z-10 bg-white dark:bg-gray-900"
->
-	<div class="text-lg font-medium px-0.5 shrink-0">
+<svelte:window
+	on:keydown={(event) => {
+		if (event.key === 'Escape') tokenTooltip?.hide();
+	}}
+/>
+
+<div class="flex items-center justify-between mb-2 gap-2">
+	<h2 class="text-sm font-medium text-gray-900 dark:text-white shrink-0">
 		{$i18n.t('Analytics')}
-	</div>
+	</h2>
 	<div class="flex items-center gap-2 flex-wrap justify-end min-w-0">
 		{#if groups.length > 0}
 			<select
@@ -643,9 +652,26 @@
 			>
 			{$i18n.t('messages')}</span
 		>
-		<Tooltip content={$i18n.t('Token counts are estimates and may not reflect actual API usage')}>
-			<span class="cursor-help"
-				><span class="font-medium text-gray-900 dark:text-gray-300"
+		<Tooltip
+			as="button"
+			className="whitespace-nowrap rounded-sm cursor-pointer hover:underline decoration-dotted underline-offset-4 focus-visible:outline focus-visible:outline-offset-2"
+			placement="bottom"
+			interactive
+			tippyOptions={{
+				trigger: 'mouseenter focus click',
+				appendTo: () => document.body,
+				aria: { content: 'describedby', expanded: true },
+				onCreate: (instance) => (tokenTooltip = instance),
+				onDestroy: () => (tokenTooltip = null)
+			}}
+			content={`<div class="p-1 text-left">
+				<div class="flex justify-between gap-6"><span>${$i18n.t('Input')}</span><span class="tabular-nums">${totalTokens.input.toLocaleString()}</span></div>
+				<div class="flex justify-between gap-6 mt-1"><span>${$i18n.t('Output')}</span><span class="tabular-nums">${totalTokens.output.toLocaleString()}</span></div>
+				<div class="mt-2 max-w-56 text-gray-400">${$i18n.t('Token counts are estimates and may not reflect actual API usage')}</div>
+			</div>`}
+		>
+			<span
+				><span class="font-normal text-gray-900 dark:text-gray-300"
 					>{formatNumber(totalTokens.total)}</span
 				>
 				{$i18n.t('tokens')}</span
@@ -852,6 +878,26 @@
 									{/if}
 								</div>
 							</th>
+							{#each [{ key: 'input_tokens', label: 'Input' }, { key: 'output_tokens', label: 'Output' }] as column}
+								<th
+									scope="col"
+									class="px-2.5 py-2 cursor-pointer select-none text-right"
+									on:click={() => toggleModelSort(column.key)}
+								>
+									<div class="flex gap-1.5 items-center justify-end">
+										{$i18n.t(column.label)}
+										{#if modelOrderBy === column.key}
+											<span class="font-normal">
+												{#if modelDirection === 'asc'}<ChevronUp
+														className="size-2"
+													/>{:else}<ChevronDown className="size-2" />{/if}
+											</span>
+										{:else}
+											<span class="invisible"><ChevronUp className="size-2" /></span>
+										{/if}
+									</div>
+								</th>
+							{/each}
 							<th
 								scope="col"
 								class="px-2.5 py-2 cursor-pointer select-none text-right"
@@ -947,6 +993,9 @@
 											alt={model.name}
 											class="size-5 rounded-full object-cover shrink-0"
 											on:error={(e) => {
+												// LICENSE covers this Open WebUI fallback logo.
+												// Do not alter, remove, obscure, or replace it except as LICENSE permits:
+												// https://docs.openwebui.com/license.
 												(e.currentTarget as HTMLImageElement).src = '/favicon.png';
 											}}
 										/>
@@ -966,6 +1015,12 @@
 								<td class="px-3 py-1 text-right">{(model.unique_chats ?? 0).toLocaleString()}</td>
 								<td class="px-3 py-1 text-right"
 									>{formatNumber(tokenStats[model.model_id]?.total_tokens ?? 0)}</td
+								>
+								<td class="px-3 py-1 text-right"
+									>{formatNumber(tokenStats[model.model_id]?.input_tokens ?? 0)}</td
+								>
+								<td class="px-3 py-1 text-right"
+									>{formatNumber(tokenStats[model.model_id]?.output_tokens ?? 0)}</td
 								>
 								<td class="px-3 py-1 text-right text-gray-400">
 									{model.avg_ttft_ms != null ? model.avg_ttft_ms.toFixed(0) + ' ms' : '—'}
@@ -987,7 +1042,7 @@
 						{/each}
 						{#if sortedModels.length === 0}
 							<tr
-								><td colspan="10" class="px-3 py-2 text-center text-gray-400"
+								><td colspan="12" class="px-3 py-2 text-center text-gray-400"
 									>{$i18n.t('No data')}</td
 								></tr
 							>

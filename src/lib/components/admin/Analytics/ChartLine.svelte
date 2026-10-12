@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { getContext } from 'svelte';
+	const i18n = getContext<any>('i18n');
 	import dayjs from 'dayjs';
 
 	interface Props {
@@ -93,7 +95,7 @@
 				{@const idx = i === labelCount - 1 ? data.length - 1 : Math.min(i * step, data.length - 1)}
 				{#if data[idx]}
 					<span class={i === 0 ? 'text-left' : i === labelCount - 1 ? 'text-right' : 'text-center'}
-						>{dayjs(data[idx].date).format(dateFormat)}</span
+						>{dayjs(data[idx].date).locale($i18n.language).format(dateFormat)}</span
 					>
 				{/if}
 			{/each}
@@ -110,9 +112,9 @@
 			>
 				<div class="mb-1.5 text-[10px] text-gray-400">
 					{#if hovered.date?.includes(':')}
-						{dayjs(hovered.date).format('MMM D, h A')}
+						{dayjs(hovered.date).locale($i18n.language).format('MMM D, h A')}
 					{:else}
-						{dayjs(hovered.date).format('MMM D, YYYY')}
+						{dayjs(hovered.date).locale($i18n.language).format('MMM D, YYYY')}
 					{/if}
 				</div>
 				{#each Object.entries(hovered.models || {})

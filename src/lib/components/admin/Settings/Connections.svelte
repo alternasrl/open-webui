@@ -22,6 +22,7 @@
 	import OllamaConnection from './Connections/OllamaConnection.svelte';
 	import AdminSettingRow from './AdminSettingRow.svelte';
 	import AdminSettingSection from './AdminSettingSection.svelte';
+	import { settleConnectionSave } from './connections-save';
 
 	const i18n: any = getContext('i18n');
 
@@ -88,8 +89,9 @@
 				await models.set(await getModels());
 				return true;
 			}
+			return false;
 		}
-		return false;
+		return null;
 	};
 
 	const updateOllamaHandler = async () => {
@@ -110,8 +112,9 @@
 				await models.set(await getModels());
 				return true;
 			}
+			return false;
 		}
-		return false;
+		return null;
 	};
 
 	const updateConnectionsHandler = async () => {
@@ -216,9 +219,16 @@
 	});
 
 	const submitHandler = async () => {
-		const [openaiOk, ollamaOk] = await Promise.all([updateOpenAIHandler(), updateOllamaHandler()]);
+		const { saved, errors } = await settleConnectionSave([
+			updateOpenAIHandler(),
+			updateOllamaHandler()
+		]);
 
-		if (openaiOk || ollamaOk) {
+		for (const error of errors) {
+			toast.error(`${error}`);
+		}
+
+		if (saved) {
 			dispatch('save');
 		}
 
@@ -433,7 +443,7 @@
 
 	<div class="flex justify-end pt-6 text-sm font-normal">
 		<button
-			class="px-3.5 py-1.5 text-sm font-normal bg-black hover:bg-gray-900 text-white dark:bg-white dark:text-black dark:hover:bg-gray-100 transition rounded-full"
+			class="flex h-7 shrink-0 items-center justify-center gap-1.5 rounded-lg bg-gray-900 px-2.5 text-xs font-normal text-white transition hover:bg-black disabled:opacity-60 dark:bg-gray-100 dark:text-gray-900 dark:hover:bg-white"
 			type="submit"
 		>
 			{$i18n.t('Save')}

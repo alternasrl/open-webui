@@ -143,6 +143,26 @@ def merge_usage(current: dict | None, incoming: dict | None) -> dict:
     return result
 
 
+def merge_usage_snapshot(current: dict | None, incoming: dict | None) -> dict:
+    """Replace reported counters in a snapshot; retain omitted counters and metadata."""
+    current = normalize_usage(current or {}) if current else {}
+    incoming = incoming or {}
+    normalized = normalize_usage(incoming)
+    aliases = {
+        'input_tokens': {'input_tokens', 'prompt_tokens', 'prompt_eval_count', 'prompt_n', 'cache_n'},
+        'output_tokens': {'output_tokens', 'completion_tokens', 'eval_count', 'predicted_n'},
+    }
+    for field, keys in aliases.items():
+        if not keys.intersection(incoming):
+            normalized.pop(field, None)
+    result = {**current, **normalized}
+    if 'total_tokens' not in incoming and normalized:
+        result['total_tokens'] = result.get('input_tokens', 0) + result.get('output_tokens', 0)
+    if isinstance(current.get('routing'), dict) and isinstance(incoming.get('routing'), dict):
+        result['routing'] = {**current['routing'], **incoming['routing']}
+    return result
+
+
 def convert_ollama_tool_call_to_openai(tool_calls: list) -> list:
     openai_tool_calls = []
     for tool_call in tool_calls:
@@ -224,6 +244,8 @@ def convert_response_ollama_to_openai(ollama_response: dict) -> dict:
     response = openai_chat_completion_message_template(
         model, message_content, reasoning_content, openai_tool_calls, usage
     )
+    if not openai_tool_calls and ollama_response.get('done_reason'):
+        response['choices'][0]['finish_reason'] = ollama_response['done_reason']
     return response
 
 
@@ -247,6 +269,7 @@ async def convert_streaming_response_ollama_to_openai(ollama_streaming_response)
             has_tool_calls = True
 
         done = data.get('done', False)
+        done_reason = data.get('done_reason')
 
         usage = None
         if done:
@@ -263,6 +286,8 @@ async def convert_streaming_response_ollama_to_openai(ollama_streaming_response)
 
         if done and has_tool_calls:
             data['choices'][0]['finish_reason'] = 'tool_calls'
+        elif done_reason:
+            data['choices'][0]['finish_reason'] = done_reason
 
         line = f'data: {JSONCodec.dumps(data)}\n\n'
         yield line

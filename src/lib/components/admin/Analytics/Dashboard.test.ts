@@ -19,11 +19,28 @@ function getModelUsageBody() {
 	return getModelUsageBlock().split('<tbody>')[1].split('</tbody>')[0];
 }
 
+// The Input/Output headers come from one `{#each}` that renders two <th> elements.
+function countHeaderColumns(header: string) {
+	const literal = (header.match(/<th\b/g) ?? []).length;
+	const eachColumns = (header.match(/\{#each \[((?:\{[^}]*\},?\s*)+)\] as column\}/) ?? [])[1];
+	const generated = eachColumns ? (eachColumns.match(/\{/g) ?? []).length : 0;
+	return generated ? literal - 1 + generated : literal;
+}
+
 describe('Analytics dashboard Model Usage layout', () => {
+	it('renders one 12-column table with input/output token columns and a matching empty state', () => {
+		const block = getModelUsageBlock();
+		expect(countHeaderColumns(getModelUsageHeader())).toBe(12);
+		expect(block).toContain("{ key: 'input_tokens', label: 'Input' }");
+		expect(block).toContain("{ key: 'output_tokens', label: 'Output' }");
+		expect(block).toContain('toggleModelSort(column.key)');
+		expect(block).toContain('colspan="12"');
+	});
+
 	it('keeps header and body column counts aligned', () => {
 		const header = getModelUsageHeader();
 		const body = getModelUsageBody();
-		const headerColumns = (header.match(/<th\b/g) ?? []).length;
+		const headerColumns = countHeaderColumns(header);
 		const rows = body.match(/<tr[\s\S]*?<\/tr>/g) ?? [];
 
 		expect((getModelUsageBlock().match(/<thead/g) ?? []).length).toBe(1);
@@ -46,7 +63,7 @@ describe('Analytics dashboard Model Usage layout', () => {
 		expect((block.match(/\$i18n\.t\('TTFT'\)/g) ?? []).length).toBe(1);
 		expect((block.match(/\$i18n\.t\('Tok\/s'\)/g) ?? []).length).toBe(1);
 		expect((block.match(/\$i18n\.t\('Err%'\)/g) ?? []).length).toBe(1);
-		expect((firstRow.match(/<td\b/g) ?? []).length).toBe(10);
+		expect((firstRow.match(/<td\b/g) ?? []).length).toBe(12);
 		expect(block).toContain(
 			'selectedModel = { id: model.model_id, name: model.name ?? model.model_id }'
 		);

@@ -63,6 +63,7 @@ class AuditLogEntry:
     # `Request Response` level
     response_object: Any = None
     response_status_code: Optional[int] = None
+    auth_outcome: Optional[str] = None
 
 
 class AuditLevel(str, Enum):
@@ -128,6 +129,17 @@ class AuditContext:
             self.response_body.extend(chunk[: self.max_body_size - len(self.response_body)])
 
 
+def redact_passwords(body: str) -> str:
+    if 'password' not in body.lower():
+        return body
+    return re.sub(
+        r'"(\w*password)"\s*:\s*"(?:[^"\\]|\\.)*"',
+        r'"\1": "********"',
+        body,
+        flags=re.IGNORECASE,
+    )
+
+
 class AuditLoggingMiddleware:
     """
     ASGI middleware that intercepts HTTP requests and responses to perform audit logging. It captures request/response bodies (depending on audit level), headers, HTTP methods, and user information, then logs a structured audit entry at the end of the request cycle.
@@ -188,10 +200,27 @@ class AuditLoggingMiddleware:
         if self._should_skip_auditing(request):
             return await self.app(scope, receive, send)
 
+        capture_body = not (
+            request.url.path.startswith(
+                (
+                    '/api/v1/auths',
+                    '/oauth/',
+                    '/api/v1/functions',
+                    '/api/v1/tools',
+                    '/api/v1/models',
+                    '/api/v1/skills',
+                    '/api/v1/prompts',
+                    '/api/v1/files',
+                    '/api/v1/terminals',
+                )
+            )
+        )
         async with self._audit_context(request) as context:
 
             async def send_wrapper(message: ASGISendEvent) -> None:
-                if self.audit_level == AuditLevel.REQUEST_RESPONSE:
+                if self.audit_level == AuditLevel.REQUEST_RESPONSE and (
+                    capture_body or message['type'] == 'http.response.start'
+                ):
                     await self._capture_response(message, context)
 
                 await send(message)
@@ -202,7 +231,7 @@ class AuditLoggingMiddleware:
                 nonlocal original_receive
                 message = await original_receive()
 
-                if self.audit_level in (
+                if capture_body and self.audit_level in (
                     AuditLevel.REQUEST,
                     AuditLevel.REQUEST_RESPONSE,
                 ):
@@ -313,39 +342,9 @@ class AuditLoggingMiddleware:
         return None
 
     def _decode_jwt_claims(self, token: str) -> Optional[dict[str, Any]]:
-        """
-        Decode a JWT token without signature verification to extract
-        NIS2-relevant OIDC claims.
-        """
-        try:
-            decoded = pyjwt.decode(
-                token,
-                options={'verify_signature': False},
-                algorithms=['RS256', 'HS256', 'ES256'],
-            )
+        from open_webui.middleware.access_log import _decode_allowed_oidc_audit_claims
 
-            claims = OIDCClaims(
-                sub=decoded.get('sub'),
-                auth_time=decoded.get('auth_time'),
-                amr=decoded.get('amr'),
-                acr=decoded.get('acr'),
-                ad_groups=(
-                    decoded.get('groups') or decoded.get('ad_groups') or decoded.get('roles') or decoded.get('wids')
-                ),
-            )
-
-            # Only return if we have at least one meaningful claim
-            claims_dict = asdict(claims)
-            if any(v is not None for v in claims_dict.values()):
-                # Filter out None values for cleaner logs
-                return {k: v for k, v in claims_dict.items() if v is not None}
-
-        except pyjwt.exceptions.DecodeError:
-            logger.debug('Failed to decode JWT for OIDC claims extraction')
-        except Exception as e:
-            logger.debug(f'Unexpected error extracting OIDC claims: {str(e)}')
-
-        return None
+        return _decode_allowed_oidc_audit_claims(token) or None
 
     def _extract_correlation_id(self, request: Request) -> Optional[str]:
         """Extract X-Request-ID header passed by WAF/ADSSPM for NIS2 correlation."""
@@ -418,45 +417,12 @@ class AuditLoggingMiddleware:
 
         return None
 
-    def _decode_jwt_claims(self, token: str) -> Optional[dict[str, Any]]:
-        """
-        Decode a JWT token without signature verification to extract
-        NIS2-relevant OIDC claims.
-        """
-        try:
-            decoded = pyjwt.decode(
-                token,
-                options={'verify_signature': False},
-                algorithms=['RS256', 'HS256', 'ES256'],
-            )
-
-            claims = OIDCClaims(
-                sub=decoded.get('sub'),
-                auth_time=decoded.get('auth_time'),
-                amr=decoded.get('amr'),
-                acr=decoded.get('acr'),
-                ad_groups=(
-                    decoded.get('groups') or decoded.get('ad_groups') or decoded.get('roles') or decoded.get('wids')
-                ),
-            )
-
-            # Only return if we have at least one meaningful claim
-            claims_dict = asdict(claims)
-            if any(v is not None for v in claims_dict.values()):
-                # Filter out None values for cleaner logs
-                return {k: v for k, v in claims_dict.items() if v is not None}
-
-        except pyjwt.exceptions.DecodeError:
-            logger.debug('Failed to decode JWT for OIDC claims extraction')
-        except Exception as e:
-            logger.debug(f'Unexpected error extracting OIDC claims: {str(e)}')
-
-        return None
-
     ALWAYS_LOG_ENDPOINTS = (
         '/api/v1/auths/signin',
         '/api/v1/auths/signout',
         '/api/v1/auths/signup',
+        '/api/v1/auths/mfa',
+        '/oauth/',
     )
 
     def _should_skip_auditing(self, request: Request) -> bool:
@@ -501,31 +467,29 @@ class AuditLoggingMiddleware:
 
     async def _log_audit_entry(self, request: Request, context: AuditContext):
         try:
-            user = await self._get_authenticated_user(request)
+            user = getattr(request.state, 'auth_audit_user', None) or getattr(request.state, 'user', None)
+            if user is None:
+                user = await self._get_authenticated_user(request)
 
             user = user.model_dump(include={'id', 'name', 'email', 'role'}) if user else {}
 
             # NIS2: Extract correlation ID and OIDC claims
             correlation_id = self._extract_correlation_id(request)
-            oidc_claims = self._extract_oidc_claims(request)
+            oidc_claims = getattr(request.state, 'oidc_audit_claims', None) or self._extract_oidc_claims(request)
 
             request_body = context.request_body.decode('utf-8', errors='replace')
             response_body = context.response_body.decode('utf-8', errors='replace')
 
             # Redact sensitive information
-            if 'password' in request_body:
-                request_body = re.sub(
-                    r'"password":\s*"(.*?)"',
-                    '"password": "********"',
-                    request_body,
-                )
+            request_body = redact_passwords(request_body)
+            response_body = redact_passwords(response_body)
 
             entry = AuditLogEntry(
                 id=str(uuid.uuid4()),
                 user=user,
                 audit_level=self.audit_level.value,
                 verb=request.method,
-                request_uri=str(request.url),
+                request_uri=request.url.path,
                 correlation_id=correlation_id,
                 oidc_claims=oidc_claims,
                 response_status_code=context.metadata.get('response_status_code', None),
@@ -533,6 +497,7 @@ class AuditLoggingMiddleware:
                 user_agent=request.headers.get('user-agent'),
                 request_object=request_body,
                 response_object=response_body,
+                auth_outcome=getattr(request.state, 'auth_audit_outcome', None),
             )
 
             self.audit_logger.write(entry)

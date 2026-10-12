@@ -173,3 +173,105 @@ def test_emerging_topics_sorted_by_growth_desc():
     result = _compute_growth_ratio(rows, min_volume=5, min_growth_ratio=1.5)
     assert result[0]['canonical_label_hash'] == 'fast'
     assert result[1]['canonical_label_hash'] == 'slow'
+
+
+@pytest.mark.parametrize('method,path', EXPECTED_ROUTES)
+def test_prompt_insights_api_rejects_non_admin(method, path):
+    import asyncio
+    from types import SimpleNamespace
+    import httpx
+    from fastapi import FastAPI
+    from open_webui.routers.analytics import router
+    from open_webui.internal.db import get_async_session
+    from open_webui.utils.auth import get_current_user
+
+    async def scenario():
+        app = FastAPI()
+        app.include_router(router)
+
+        async def non_admin():
+            return SimpleNamespace(id='user-1', role='user')
+
+        async def no_database():
+            raise AssertionError('Non-admin must be rejected before accessing insights')
+            yield
+
+        app.dependency_overrides[get_current_user] = non_admin
+        app.dependency_overrides[get_async_session] = no_database
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
+            response = await client.request(method, path.replace('{cluster_id}', 'cluster-1'))
+        assert response.status_code == 401
+
+    asyncio.run(scenario())
+
+
+def test_manual_run_is_nonblocking_tracked_and_exclusive(tmp_path, monkeypatch):
+    import asyncio
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    import httpx
+    from fastapi import FastAPI
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from open_webui.routers.analytics import router
+    from open_webui.models.prompt_insights import Base, PromptInsightsRuns
+    from open_webui.utils.auth import get_current_user
+    from open_webui.prompt_insights import pipeline
+    import open_webui.internal.db as internal_db
+
+    async def scenario():
+        engine = create_async_engine(f'sqlite+aiosqlite:///{tmp_path / "manual.db"}')
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+
+        @asynccontextmanager
+        async def get_test_db():
+            async with sessions() as session:
+                yield session
+
+        async def get_session():
+            async with sessions() as session:
+                yield session
+
+        async def admin():
+            return SimpleNamespace(id='admin', role='admin')
+
+        started = asyncio.Event()
+
+        class BlockingPipeline:
+            def __init__(self, app):
+                pass
+
+            async def run(self, *args, **kwargs):
+                started.set()
+                await asyncio.Event().wait()
+
+        monkeypatch.setattr(internal_db, 'get_async_db', get_test_db)
+        monkeypatch.setattr(pipeline, 'PromptInsightsPipeline', BlockingPipeline)
+        app = FastAPI()
+        app.state.redis = None
+        app.include_router(router)
+        app.dependency_overrides[get_current_user] = admin
+        app.dependency_overrides[internal_db.get_async_session] = get_session
+
+        try:
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
+                first = await asyncio.wait_for(client.post('/prompt-insights/run'), timeout=1)
+                assert first.status_code == 200
+                assert first.json()['status'] == 'started'
+                await asyncio.wait_for(started.wait(), timeout=1)
+                assert not app.state.prompt_insights_task.done()
+                second = await client.post('/prompt-insights/run')
+                assert second.json() == {
+                    'status': 'skipped',
+                    'reason': 'run_in_progress',
+                    'run_id': first.json()['run_id'],
+                }
+                assert await pipeline.run_prompt_insights_if_due(app) is None
+                assert await PromptInsightsRuns.count_runs() == 1
+        finally:
+            if hasattr(app.state, 'prompt_insights_task'):
+                await pipeline.stop_prompt_insights(app)
+            await engine.dispose()
+
+    asyncio.run(scenario())

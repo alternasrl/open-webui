@@ -4,20 +4,27 @@ Ties together PII scrubbing, embedding, clustering, keyword extraction,
 and persistence.  Entry points for the scheduler:
 
     should_run_prompt_insights(now_ns, last_completed_ns, interval_hours) -> bool
-    run_prompt_insights_if_due(app) -> None
+    run_prompt_insights_if_due(app) -> str | None
     PromptInsightsPipeline(app).run(window_start, window_end) -> dict
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import time
-from typing import Optional
+from typing import TYPE_CHECKING, Callable, Optional, TypeVar
+from uuid import uuid4
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+    from open_webui.models.prompt_insights import PromptInsightsRunModel
 
 log = logging.getLogger(__name__)
 
 _NS_PER_HOUR = 60 * 60 * 1_000_000_000
+_T = TypeVar('_T')
 
 
 # ---------------------------------------------------------------------------
@@ -48,25 +55,23 @@ def should_run_prompt_insights(
 async def _resolve_window_start(interval_hours: int, last_ns: Optional[int]) -> int:
     """Resolve window_start for the pipeline.
 
-    If last_ns is not None, use it (incremental mode).
-    If last_ns is None, check if any completed run exists:
-      - If no runs exist, return 0 (backfill all historical chats).
-      - Otherwise, return now - interval_hours (normal window).
+    Resume after the last successfully processed second, including after restart.
+    Failed attempts must not turn the initial historical backfill into a recent-only window.
     """
     if last_ns is not None:
-        return last_ns // 1_000_000_000
+        return last_ns // 1_000_000_000 + 1
 
     from open_webui.internal.db import get_async_db  # noqa: PLC0415
     from open_webui.models.prompt_insights import PromptInsightsRuns  # noqa: PLC0415
 
     async with get_async_db() as db:
-        count = await PromptInsightsRuns.count_runs(db=db)
+        completed = await PromptInsightsRuns.get_latest_completed_run(db=db)
 
-    if count == 0:
+    if completed is None:
         log.info('Backfill mode: processing all historical chats')
         return 0
     else:
-        return int(time.time()) - interval_hours * 3600
+        return completed.window_end + 1
 
 
 async def run_prompt_insights_if_due(app) -> Optional[str]:
@@ -76,6 +81,7 @@ async def run_prompt_insights_if_due(app) -> Optional[str]:
     last-completed timestamp on app.state to survive the process lifetime
     without a dedicated config table row.
     """
+    run = None
     try:
         interval_hours = int(os.getenv('PROMPT_INSIGHTS_INTERVAL_HOURS', '24'))
         now_ns = time.time_ns()
@@ -84,41 +90,145 @@ async def run_prompt_insights_if_due(app) -> Optional[str]:
         if not should_run_prompt_insights(now_ns, last_ns, interval_hours):
             return
 
-        from open_webui.internal.db import get_async_db  # noqa: PLC0415
-        from open_webui.models.prompt_insights import PromptInsightsRuns  # noqa: PLC0415
-
-        # Compute window: previous run end (or backfill) → now (seconds)
-        window_end = int(time.time())
+        # Inclusive bounds must exclude the still-open current second.
+        window_end = int(time.time()) - 1
         window_start = await _resolve_window_start(interval_hours, last_ns)
 
-        async with get_async_db() as db:
-            run = await PromptInsightsRuns.claim_run(window_start, window_end, db=db)
+        run = await _claim_prompt_insights_run(window_start, window_end)
         if run is None:
             return None
 
-        async def _run_claimed_pipeline() -> None:
-            try:
-                await PromptInsightsPipeline(app).run(window_start, window_end, run_id=run.id)
-                app.state._prompt_insights_last_run_ns = time.time_ns()
-            except Exception:
-                log.exception('Scheduled prompt insights run failed (run=%s)', run.id)
-
-        from open_webui.tasks import create_task  # noqa: PLC0415
-
-        task_id, _ = await create_task(
-            getattr(app.state, 'redis', None),
-            _run_claimed_pipeline(),
-            id='prompt-insights',
-        )
-        return task_id
-    except Exception:
+        return await launch_prompt_insights(app, window_start, window_end, run.id)
+    except (Exception, asyncio.CancelledError) as exc:
+        if run is not None:
+            await _fail_claimed_run(
+                run.id, 'Run cancelled before launch' if isinstance(exc, asyncio.CancelledError) else str(exc)
+            )
+        if isinstance(exc, asyncio.CancelledError):
+            raise
         log.exception('run_prompt_insights_if_due: unhandled error')
         return None
+
+
+async def _claim_prompt_insights_run(
+    window_start: int,
+    window_end: int,
+    db: Optional[AsyncSession] = None,
+) -> Optional[PromptInsightsRunModel]:
+    """Own a committed claim through acquisition and DB-context cleanup."""
+    from open_webui.internal.db import get_async_db
+    from open_webui.models.prompt_insights import PromptInsightsRuns
+
+    run = None
+
+    async def acquire() -> Optional[PromptInsightsRunModel]:
+        nonlocal run
+        if db is not None:
+            run = await PromptInsightsRuns.claim_run(window_start, window_end, db=db)
+        else:
+            async with get_async_db() as session:
+                run = await PromptInsightsRuns.claim_run(window_start, window_end, db=session)
+        return run
+
+    acquisition = asyncio.create_task(acquire())
+    try:
+        # Cancellation must not interrupt a commit whose outcome we don't yet know.
+        return await asyncio.shield(acquisition)
+    except (Exception, asyncio.CancelledError) as exc:
+
+        async def release() -> None:
+            await asyncio.gather(acquisition, return_exceptions=True)
+            if run is not None:
+                await _fail_claimed_run(
+                    run.id, 'Claim acquisition cancelled' if isinstance(exc, asyncio.CancelledError) else str(exc)
+                )
+
+        cleanup = asyncio.create_task(release())
+        cancellation = None
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError as cancelled:
+                # Repeated shutdown cancellation must not abandon claim cleanup.
+                cancellation = cancelled
+        cleanup.result()
+        if cancellation is not None:
+            raise cancellation from exc
+        raise
+
+
+async def _fail_claimed_run(run_id: str, error: str) -> None:
+    from open_webui.internal.db import get_async_db
+    from open_webui.models.prompt_insights import PromptInsightsRuns
+
+    try:
+        async with get_async_db() as db:
+            active = await PromptInsightsRuns.get_active_run(db=db)
+            if active and active.id == run_id:
+                await PromptInsightsRuns.fail_run(run_id, error, db=db)
+                await db.commit()
+    except Exception:
+        log.exception('PromptInsights: could not release failed claim (run=%s)', run_id)
+
+
+async def launch_prompt_insights(app, window_start: int, window_end: int, run_id: str) -> str:
+    """Launch an already-claimed run; retain the local task for lifespan shutdown."""
+    from open_webui.tasks import create_task, tasks
+
+    async def _run_claimed_pipeline() -> None:
+        try:
+            await PromptInsightsPipeline(app).run(window_start, window_end, run_id=run_id)
+            app.state._prompt_insights_last_run_ns = window_end * 1_000_000_000
+        except asyncio.CancelledError:
+            await _fail_claimed_run(run_id, 'Run cancelled')
+            raise
+        except Exception as exc:
+            await _fail_claimed_run(run_id, str(exc))
+            log.exception('Prompt insights run failed (run=%s)', run_id)
+
+    task_id = str(uuid4())
+    coroutine = _run_claimed_pipeline()
+    try:
+        task_id, task = await create_task(
+            getattr(app.state, 'redis', None), coroutine, id='prompt-insights', task_id=task_id
+        )
+    except (Exception, asyncio.CancelledError):
+        # Redis registration can fail after create_task has already started the local task.
+        task = tasks.get(task_id)
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        else:
+            coroutine.close()
+        await _fail_claimed_run(run_id, 'Task registration failed')
+        raise
+    app.state.prompt_insights_task = task
+    app.state.prompt_insights_run_id = run_id
+    return task_id
+
+
+async def stop_prompt_insights(app) -> None:
+    """Cancel and await the local run, including one cancelled before its first step."""
+    task = getattr(app.state, 'prompt_insights_task', None)
+    if task is not None:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await _fail_claimed_run(app.state.prompt_insights_run_id, 'Run cancelled at shutdown')
 
 
 # ---------------------------------------------------------------------------
 # Pipeline orchestrator
 # ---------------------------------------------------------------------------
+
+
+async def _run_cpu_stage(operation: Callable[..., _T], *args: object) -> _T:
+    worker = asyncio.create_task(asyncio.to_thread(operation, *args))
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        # Threads cannot be cancelled; drain the pure computation before releasing the run.
+        await asyncio.gather(worker, return_exceptions=True)
+        raise
 
 
 class PromptInsightsPipeline:
@@ -141,15 +251,9 @@ class PromptInsightsPipeline:
             PromptInsightsTable,
             _canonical_label_hash,
         )
-        from open_webui.prompt_insights.clusterer import cluster_embeddings  # noqa: PLC0415
-        from open_webui.prompt_insights.embedder import PromptInsightsEmbedder  # noqa: PLC0415
-        from open_webui.prompt_insights.labeler import build_cluster_label_prompt  # noqa: PLC0415
-        from open_webui.prompt_insights.pii_scrubber import scrub_pii  # noqa: PLC0415
-        from open_webui.prompt_insights.tfidf import extract_cluster_keywords  # noqa: PLC0415
 
         if run_id is None:
-            async with get_async_db() as db:
-                run = await PromptInsightsRuns.claim_run(window_start, window_end, db=db)
+            run = await _claim_prompt_insights_run(window_start, window_end)
             if run is None:
                 active = await PromptInsightsRuns.get_active_run()
                 log.info('PromptInsights: run already active%s; skipping', f' ({active.id})' if active else '')
@@ -163,6 +267,12 @@ class PromptInsightsPipeline:
             run_id = run.id
 
         try:
+            from open_webui.prompt_insights.clusterer import cluster_embeddings  # noqa: PLC0415
+            from open_webui.prompt_insights.embedder import PromptInsightsEmbedder  # noqa: PLC0415
+            from open_webui.prompt_insights.labeler import build_cluster_label_prompt  # noqa: PLC0415
+            from open_webui.prompt_insights.pii_scrubber import scrub_pii  # noqa: PLC0415
+            from open_webui.prompt_insights.tfidf import extract_cluster_keywords  # noqa: PLC0415
+
             # -- 1. Fetch user messages within the time window --
             records = await self._fetch_prompts(window_start, window_end)
             if not records:
@@ -185,10 +295,10 @@ class PromptInsightsPipeline:
                 await db.commit()
 
             # -- 4. Cluster --
-            labels, noise_indices = cluster_embeddings(embeddings)
+            labels, noise_indices = await _run_cpu_stage(cluster_embeddings, embeddings)
 
             # -- 5. Keywords → labels → persist clusters --
-            keywords_by_cluster = extract_cluster_keywords(scrubbed_texts, labels)
+            keywords_by_cluster = await _run_cpu_stage(extract_cluster_keywords, scrubbed_texts, labels)
 
             bucket = _time_bucket(window_start)
             cluster_ids = sorted(set(labels) - {-1})
@@ -239,7 +349,7 @@ class PromptInsightsPipeline:
                         db=db,
                     )
                     await db.commit()
-                except Exception:
+                except (Exception, asyncio.CancelledError):
                     await db.rollback()
                     raise
 
@@ -259,14 +369,10 @@ class PromptInsightsPipeline:
                 'noise_count': noise_count,
             }
 
-        except Exception as exc:
-            log.exception('PromptInsights pipeline failed (run=%s)', run_id)
-            try:
-                async with get_async_db() as db:
-                    await PromptInsightsRuns.fail_run(run_id, str(exc), db=db)
-                    await db.commit()
-            except Exception:
-                log.exception('PromptInsights: could not mark run as failed')
+        except (Exception, asyncio.CancelledError) as exc:
+            if not isinstance(exc, asyncio.CancelledError):
+                log.exception('PromptInsights pipeline failed (run=%s)', run_id)
+            await _fail_claimed_run(run_id, str(exc) or 'Run cancelled')
             raise
 
     # ------------------------------------------------------------------

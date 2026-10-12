@@ -11,6 +11,37 @@ from open_webui.middleware.access_log import _NIS2_ACTION_RULES
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 REQUIRED_ACTIONS = {
+    ('GET', '/oauth/clients/{client_id}/callback'): 'OAUTH_CLIENT_AUTHORIZE',
+    ('POST', '/api/v1/auths/mfa/challenge'): 'AUTH_MFA_CHALLENGE',
+    ('POST', '/api/v1/auths/mfa/enroll/start'): 'AUTH_MFA_ENROLL_START',
+    ('POST', '/api/v1/auths/mfa/enroll/confirm'): 'AUTH_MFA_ENROLL_CONFIRM',
+    ('POST', '/api/v1/auths/mfa/verify'): 'AUTH_MFA_VERIFY',
+    ('POST', '/api/v1/auths/mfa/replace'): 'AUTH_MFA_REPLACE',
+    ('POST', '/api/v1/auths/mfa/recover'): 'AUTH_MFA_RECOVER',
+    ('POST', '/api/v1/auths/mfa/recovery/codes'): 'AUTH_MFA_RECOVERY_ROTATE',
+    ('GET', '/api/v1/auths/mfa/status'): 'AUTH_MFA_STATUS',
+    ('POST', '/api/v1/users/{user_id}/sessions/revoke'): 'AUTH_SESSIONS_REVOKE',
+    ('DELETE', '/api/v1/functions/id/{id}/history/{history_id}'): 'FUNCTION_HISTORY_DELETE',
+    ('POST', '/api/v1/functions/id/{id}/update/version'): 'FUNCTION_VERSION_RESTORE',
+    ('DELETE', '/api/v1/tools/id/{id}/history/{history_id}'): 'TOOL_HISTORY_DELETE',
+    ('POST', '/api/v1/tools/id/{id}/update/version'): 'TOOL_VERSION_RESTORE',
+    ('DELETE', '/api/v1/models/model/history/{history_id}'): 'MODEL_HISTORY_DELETE',
+    ('POST', '/api/v1/models/model/update/version'): 'MODEL_VERSION_RESTORE',
+    ('DELETE', '/api/v1/skills/id/{id}/history/{history_id}'): 'SKILL_HISTORY_DELETE',
+    ('POST', '/api/v1/skills/id/{id}/update/version'): 'SKILL_VERSION_RESTORE',
+    ('POST', '/api/v1/skills/id/{id}/clone'): 'SKILL_CLONE',
+    ('POST', '/api/v1/skills/import'): 'SKILL_IMPORT',
+    ('POST', '/api/v1/skills/import/preview'): 'SKILL_IMPORT_PREVIEW',
+    ('POST', '/api/v1/skills/load/url'): 'SKILL_URL_LOAD',
+    ('GET', '/api/v1/skills/id/{id}/files'): 'SKILL_FILE_READ',
+    ('GET', '/api/v1/skills/id/{id}/files/content'): 'SKILL_FILE_READ',
+    ('GET', '/api/v1/groups/id/{id}/members'): 'GROUP_MEMBERS_READ',
+    ('GET', '/api/v1/tools/id/{id}/specs'): 'TOOL_SPECS_READ',
+    ('GET', '/api/v1/evaluations/leaderboard/{model_id:path}/history'): 'EVALUATION_LEADERBOARD_HISTORY_READ',
+    ('POST', '/api/v1/terminals/{server_id}/chats/{chat_id}/{path:path}'): 'TERMINAL_CHAT_PROXY_WRITE',
+    ('PUT', '/api/v1/terminals/{server_id}/chats/{chat_id}/{path:path}'): 'TERMINAL_CHAT_PROXY_WRITE',
+    ('PATCH', '/api/v1/terminals/{server_id}/chats/{chat_id}/{path:path}'): 'TERMINAL_CHAT_PROXY_WRITE',
+    ('DELETE', '/api/v1/terminals/{server_id}/chats/{chat_id}/{path:path}'): 'TERMINAL_CHAT_PROXY_DELETE',
     ('GET', '/openai/models/{url_idx}/catalog'): 'MODEL_PROVIDER_CATALOG',
     ('GET', '/openai/models/{url_idx}'): 'MODEL_PROVIDER_LIST',
     ('POST', '/openai/models/{url_idx}/download'): 'MODEL_PROVIDER_DOWNLOAD',
@@ -30,6 +61,14 @@ REQUIRED_ACTIONS = {
     ('GET', '/ollama/api/tags/{url_idx}'): 'OLLAMA_COMPAT_TAGS_READ',
     ('GET', '/ollama/api/version/{url_idx}'): 'OLLAMA_COMPAT_VERSION_READ',
 }
+
+for resource in ('functions', 'tools', 'skills', 'prompts'):
+    identifier = '{prompt_id}' if resource == 'prompts' else '{id}'
+    for suffix in ('history', 'history/diff', 'history/{history_id}'):
+        REQUIRED_ACTIONS[('GET', f'/api/v1/{resource}/id/{identifier}/{suffix}')] = 'WORKSPACE_HISTORY_READ'
+for suffix in ('history', 'history/{history_id}'):
+    REQUIRED_ACTIONS[('GET', f'/api/v1/models/model/{suffix}')] = 'WORKSPACE_HISTORY_READ'
+REQUIRED_ACTIONS[('GET', '/api/v1/skills/id/{id}/history/diff/file')] = 'WORKSPACE_HISTORY_READ'
 
 REMOVED_ROUTES = {
     ('GET', '/api/v1/images/config/url/verify'),
@@ -217,10 +256,15 @@ def build_report() -> dict[str, list]:
         ('GET', '/ollama/v1/models/{url_idx}'),
         ('GET', '/ollama/api/tags/{url_idx}'),
         ('GET', '/ollama/api/version/{url_idx}'),
+        ('POST', '/ollama/verify'),
     }
     admin_behavior_issues = []
     for key in admin_only_routes:
         row = row_map[key]
+        if key == ('POST', '/ollama/verify'):
+            if 'get_admin_user' not in row['dependencies']:
+                admin_behavior_issues.append({'route': key, 'problem': 'missing admin dependency'})
+            continue
         source = inspect.getsource(row['endpoint'])
         has_inline_admin_guard = 'url_idx is not None' in source and "user.role != 'admin'" in source
         if not has_inline_admin_guard:
