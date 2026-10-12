@@ -888,7 +888,9 @@
 										{$i18n.t(column.label)}
 										{#if modelOrderBy === column.key}
 											<span class="font-normal">
-												{#if modelDirection === 'asc'}<ChevronUp className="size-2" />{:else}<ChevronDown className="size-2" />{/if}
+												{#if modelDirection === 'asc'}<ChevronUp
+														className="size-2"
+													/>{:else}<ChevronDown className="size-2" />{/if}
 											</span>
 										{:else}
 											<span class="invisible"><ChevronUp className="size-2" /></span>
