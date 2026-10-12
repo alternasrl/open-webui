@@ -248,3 +248,146 @@
 | `src/lib/i18n/locales/vi-VN/translation.json` | adapt | [overlap=si; conflitto=si] Partire dal catalogo SHA upstream e aggiungere solo le 13 chiavi custom mancanti (valori fork vuoti); mai sovrascrivere valori non vuoti. Parser sort=true/defaultValue vuoto/keepRemoved=false: rivedere rimozioni. | Task 8: custom-analytics-translations.test.ts; JSON senza doppioni/placeholder intatti; i18n:parse dopo sorgenti | 2, 8 |
 | `src/lib/i18n/locales/zh-CN/translation.json` | adapt | [overlap=si; conflitto=si] Partire dal catalogo SHA upstream e aggiungere solo le 13 chiavi custom mancanti (valori fork vuoti); mai sovrascrivere valori non vuoti. Parser sort=true/defaultValue vuoto/keepRemoved=false: rivedere rimozioni. | Task 8: custom-analytics-translations.test.ts; JSON senza doppioni/placeholder intatti; i18n:parse dopo sorgenti | 2, 8 |
 | `src/lib/i18n/locales/zh-TW/translation.json` | adapt | [overlap=si; conflitto=si] Partire dal catalogo SHA upstream e aggiungere solo le 13 chiavi custom mancanti (valori fork vuoti); mai sovrascrivere valori non vuoti. Parser sort=true/defaultValue vuoto/keepRemoved=false: rivedere rimozioni. | Task 8: custom-analytics-translations.test.ts; JSON senza doppioni/placeholder intatti; i18n:parse dopo sorgenti | 2, 8 |
+
+## Quality gate (Task 9)
+
+Eseguito il 2026-10-12, limitatamente agli step 1–4. **Gate deployment BLOCCATO:
+nessuna certificazione release/container.** Step 5 affidato al controller.
+Merge verificato: `9192174ea`; candidato codice finale:
+`d8c47553dd90fee42a493eae981a028e0ff5d069` (solo correzione Prettier del
+sort-icon Analytics, 32 test mirati passati). Il commit di questa sezione
+modifica esclusivamente documentazione.
+
+Tutti i comandi partono dal worktree `integration-v0.12.0`.
+`S=.superpowers/sdd/2026-10-12-reconcile-v0.12.0`,
+`R=$S/artifacts/run-task-7-tests.py`, `T=backend/open_webui/test`.
+Per Python: `. "$S/test-env.sh"`; Python 3.11 del venv `.worktrees/.venv-v0120`.
+Per Node: `export PATH=/opt/homebrew/opt/node@22/bin:$PATH`.
+Log e runner riproducibili rimangono nel workspace ignorato `$S/artifacts/`,
+non nei file committati.
+
+| comando | exit code | risultato | SHA | baseline issue |
+| --- | --- | --- | --- | --- |
+| `python "$R" -q -rs "$T/models/test_migration_v0120_reconciliation.py" "$T/middleware" "$T/routers" "$T/models" "$T/utils" "$T/retrieval"` | 0 | Gate mirati Tasks 3–7: 534 passed, 8 skipped, 35 warnings | `9192174ea` | 3 casi PostgreSQL senza TEST_POSTGRES_URL; 5 ML senza dipendenze opzionali hdbscan/scikit-learn |
+| `python "$R" -q -rs` | 0 | Suite aggregata: 534 passed, 8 skipped, 0 failed; rete/DNS bloccati | `9192174ea` | Stessi skip; backend invariato in `d8c4755` |
+| `npm run test:frontend -- --run --exclude '**/.superpowers/**' src/lib/components/admin/Analytics` | 0 | 7 file, 32 test; fix formatter verificato prima del commit | `d8c4755` | Nessuno |
+| `npm run test:frontend -- --run --exclude '**/.superpowers/**'` | 0 | 12 file, 120 test, nessuno skip | `d8c4755` | 116 test custom + 4 upstream; esclusi soltanto archivi di verifica |
+| `npm run check` | 1 | **5967 errors + 189 warnings**, 313 file; zero diagnostiche nuove normalizzando percorsi workspace/node_modules e offset di riga | `d8c4755` | Non e un type-check passato: baseline upstream anch'essa fallita |
+| `npm run check` nella copia `git archive 15818d88f`, node_modules condiviso via symlink | 1 | **6040 errors + 189 warnings**, 316 file; confronto multiset: 73 diagnostiche rimosse, zero aggiunte | `15818d88f` | Errori upstream riprodotti, inclusi i18n store e dichiarazioni moduli |
+| `git diff --check 15818d88f HEAD` | 2 | 8701 segnalazioni whitespace | `d8c4755` | FORK contro UP: 8702; zero nuove per path/tipo/contenuto. Principalmente archivi patch/provenienza; non riscritti |
+| `git diff --check d8c4755^ d8c4755` | 0 | Fix nuovo pulito | `d8c4755` | Nessuno |
+| `python -m black --check --target-version py311 <79 file Python cambiati rispetto a UP>` | 1 | 73 invariati, 6 da formattare; selezione esatta nel log JSON | `9192174ea` | Tutti e sei riprodotti su FORK; cinque assenti o falliti anche su UP. Nessuna correzione cosmetica estranea |
+| `node_modules/.bin/prettier --check <90 file src cambiati rispetto a UP>` | 0 | Tutti puliti dopo fix; selezione esatta nel log JSON | `d8c4755` | Opzione legacy pluginSearchDirs ignorata dal formatter; iniziale Dashboard fallito, corretto |
+| `NODE_OPTIONS=--max-old-space-size=8192 npx vite build` | 0 | Build statica prodotta in build/ | `d8c4755` | **Non** equivale a npm run build/Pyodide completo |
+| `ENABLE_PLUGINS=false python -c '<assert flag dal modulo env>'` | 0 | Master disabilita tools/functions/tool servers; orjson default true | `d8c4755` | Nessuno; comando integrale nel report |
+| `python "$S/artifacts/task-9-runtime.py"` | 1 | Smoke iniziale e riavvio passati; primo setup rollback fallito per archivio privo di CHANGELOG.md | `9192174ea` | Errore harness, non prodotto; corretto includendo package.json e CHANGELOG.md nell'archivio |
+| `python "$S/artifacts/task-9-runtime.py" --rollback-only` | 0 | Fork head → candidato, sentinel preservati → restore byte-identico → fork alembic current riuscito | `9192174ea` / `6d4a5ebd5` | Prova SQLite locale; non certifica immagine precedente o servizi remoti |
+| `python "$S/artifacts/task-9-runtime.py" --restart-only` | 0 | Runtime finale, persistenza, health/version/frontend/auth/Analytics/PI/NIS2 verificati | `d8c4755` | Provider esterni disabilitati; nessuna verifica LLM reale |
+| `docker info` | 1 | Daemon non raggiungibile; non avviato/modificato | `d8c4755` | Docker build/run/digest: **BLOCKED**, non eseguiti |
+
+### Runtime non-Docker e limiti
+
+Uvicorn `open_webui.main:app` su loopback/porta libera; `DATA_DIR=$S/tmp/smoke`,
+SQLite nuovo, `ENABLE_DB_MIGRATIONS=true`, `FRONTEND_BUILD_DIR=$PWD/build`,
+`OFFLINE_MODE=true`, API Ollama/OpenAI disabilitate. Guard supplementare nega
+connessioni non-loopback. Verificati `/health` 200, `/api/version` 0.12.0,
+`/` 200, primo signup admin, signin, routing summary e Prompt Insights summary
+200 admin / 401 anonimo; access log `AUTH_SIGNUP` e `AUTH_LOGIN`, `nis2=Y`.
+DB con **una sola head `e304e2e7c45a`**, tabelle custom incluse; stesso utente
+autenticabile e tabelle persistenti dopo riavvio. Tutti i PID avviati fermati.
+Automazioni/provider mock sono coperti dalla suite, non da esecuzioni LLM reali.
+
+Pyodide locale contiene soltanto il lockfile: browser Python/wheel offline non
+certificati. `npm run build` prepara Pyodide prima di Vite; non e stato
+sostituito da una falsa attestazione di bundling. Rispetto a FORK,
+`scripts/prepare-pyodide.js` aggiunge lxml, python-pptx, python-docx, xlsxwriter
+e dipendenze; conservati bundle custom black/openpyxl/seaborn. Docker mantiene
+Node 22 e `npm run build`; CI inietta heap **12288 MiB**, frontend CI **8192 MiB**,
+Dockerfile base lascia l'heap commentato. Nuovi build arg `BUILD_CHANNEL`/
+`APP_BUILD_CHANNEL`; `WEBUI_BUILD_VERSION` rinominato `WEBUI_BUILD_HASH`.
+`docker-compose.yaml` e workflow frontend invariati rispetto a FORK.
+
+### Comandi Docker da eseguire successivamente
+
+**Non eseguiti; digest immagine non disponibile.** Eseguire in ambiente
+controllato con daemon gia disponibile, senza push/tag di release:
+
+```bash
+export PATH=/opt/homebrew/opt/node@22/bin:$PATH
+S=.superpowers/sdd/2026-10-12-reconcile-v0.12.0
+rtk proxy awk '/^FROM --platform=\$BUILDPLATFORM node:/ {print; print "ENV NODE_OPTIONS=\"--max-old-space-size=12288\""; next} {print}' Dockerfile > "$S/artifacts/Dockerfile.ci"
+rtk docker buildx build --load --platform linux/arm64 \
+  --file "$S/artifacts/Dockerfile.ci" \
+  --build-arg BUILD_HASH=d8c47553dd90fee42a493eae981a028e0ff5d069 \
+  --build-arg BUILD_CHANNEL=unknown \
+  --build-arg USE_CUDA=false --build-arg USE_OLLAMA=false \
+  --build-arg USE_SLIM=false --build-arg USE_PERMISSION_HARDENING=false \
+  --tag open-webui:quality-v0120 .
+rtk proxy mkdir -p "$S/tmp/docker-smoke"
+rtk docker run -d --name quality-v0120 \
+  --publish 127.0.0.1:18080:8080 \
+  --mount "type=bind,source=$PWD/$S/tmp/docker-smoke,target=/app/backend/data" \
+  --env ENABLE_DB_MIGRATIONS=true --env OFFLINE_MODE=true \
+  --env ENABLE_OLLAMA_API=false --env ENABLE_OPENAI_API=false \
+  --env ENABLE_ADMIN_ANALYTICS=true --env PROMPT_INSIGHTS_ENABLED=false \
+  --env WEBUI_SECRET_KEY='replace-with-at-least-32-random-bytes' \
+  open-webui:quality-v0120
+rtk curl --fail http://127.0.0.1:18080/health
+rtk curl --fail http://127.0.0.1:18080/api/version
+rtk docker image inspect open-webui:quality-v0120 --format '{{.Id}}'
+```
+
+Completare signup/signin, RBAC Analytics/PI, audit NIS2, automazione con provider
+mock e riavvio/persistenza prima di `rtk docker stop quality-v0120` e
+`rtk docker rm quality-v0120`. Docker build usa il percorso CI CPU standard,
+che scarica Pyodide e modelli; conservare log/digest. Le varianti slim/CUDA/
+Ollama richiedono gate propri, non deducibili da questa prova.
+
+### Multi-instance, servizi opzionali e default
+
+- **Multi-instance non applicabile localmente** (una istanza, SQLite).
+  In produzione fermare tutte le istanze che condividono il DB, backup,
+  migrazione e aggiornamento simultaneo; **vietato rolling update sullo stesso
+  schema**.
+- **Redis non applicabile localmente**, nessun servizio Redis attivo.
+  Se usato: `ENABLE_WEBSOCKET_SUPPORT=true`, `WEBSOCKET_MANAGER=redis`,
+  `WEBSOCKET_REDIS_URL` (fallback `REDIS_URL`), chiavi/segreti condivisi tra
+  istanze. ACL necessarie: `+publish +subscribe +psubscribe &socketio &socketio#*`
+  oltre alle autorizzazioni keyspace/sessioni previste dal deployment.
+  Provare streaming, approvazioni, ripresa sessione. Il default
+  `WEBSOCKET_REDIS_ROOM_CHANNELS=true` seleziona il manager per-room
+  (`env.py:473–500`, `socket/main.py:106`); `false` e solo compatibilita
+  messaggi, non deroga al vincolo schema.
+- **Milvus non applicabile localmente** (nessun RAG con Milvus).
+  Se usato: `VECTOR_DB=milvus`, `MILVUS_URI`, `MILVUS_DB`, `MILVUS_TOKEN`
+  (`config.py:603–615`), backup verificato e spazio per seconda copia,
+  finestra di migrazione al primo avvio; non aggiornare simultaneamente il
+  server Milvus. Hybrid nativo richiede **Milvus >=2.5**.
+- `ENABLE_PLUGINS` master default true forza `ENABLE_TOOLS`,
+  `ENABLE_FUNCTIONS`, `ENABLE_TOOL_SERVERS` false quando spento
+  (`env.py:1193–1197`). MCP guardato in `utils/tools.py:207`, tools/server
+  filtrati a `:349`, OpenAPI/MCP discovery in `routers/tools.py:92–146`,
+  terminal in `routers/terminals.py:90,122,299`, direct connections e terminal
+  esclusi dal payload chat in `utils/middleware.py:2803–2807`.
+- orjson default true (`env.py:161–162`); installazione HTTP JSON in
+  `main.py:536–538`. Arena default off (`config.py:2072`), chiave persistente
+  `evaluation.arena.enable` (`:3179`); `models/config.py:247–267` inserisce
+  soltanto default mancanti, preservando valori DB esistenti.
+
+### Piano rollback e prova restore
+
+1. Prima dell'upgrade fermare tutte le istanze; salvare DB, volumi/storage,
+   vector store e configurazione, con digest esatto dell'immagine precedente.
+   Per SQLite chiudere connessioni e includere/checkpointare eventuali WAL;
+   per DB remoti usare backup transazionale nativo e verificare il restore.
+2. Rehearsal eseguito: archivio FORK `6d4a5ebd5`, `alembic upgrade head`
+   a `6c7d8e9f0a1b`, sentinel anonimi auth/content e tutte le cinque tabelle PI;
+   file DB chiuso copiato, upgrade candidato a `e304e2e7c45a`, dati preservati.
+3. Ripristino copia precedente **byte-identica**; head e sentinel verificati.
+   `python -m alembic -c alembic.ini current` dal codice FORK apre il DB e
+   restituisce `6c7d8e9f0a1b (head)`. Backup nel workspace ignorato, non
+   committato. Nessun downgrade in-place o semplice cambio tag proposto.
+4. **Ancora BLOCKED:** avviare l'immagine precedente, identificata dal suo
+   digest, sul restore isolato e ripetere health/login/RBAC/persistenza.
+   La prova Alembic/SQLite non sostituisce quella container, ne un restore
+   PostgreSQL/Milvus/Redis se richiesti dal deployment reale.
