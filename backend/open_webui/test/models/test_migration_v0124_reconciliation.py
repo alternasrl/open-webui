@@ -12,6 +12,17 @@ from alembic.script import ScriptDirectory
 
 # Loading revision modules imports open_webui.env; keep that import off any real data or database.
 os.environ.setdefault('WEBUI_SECRET_KEY', 'migration-tests-only')
+DB_CONNECTION_VARS = (
+    'DATABASE_TYPE',
+    'DATABASE_USER',
+    'DATABASE_PASSWORD',
+    'DATABASE_HOST',
+    'DATABASE_PORT',
+    'DATABASE_NAME',
+)
+# env.py prefers these over DATABASE_URL, so they must never reach a real server.
+for _name in DB_CONNECTION_VARS:
+    os.environ.pop(_name, None)
 _SCRATCH = tempfile.mkdtemp(prefix='owui-migration-')
 os.environ['DATA_DIR'] = _SCRATCH
 os.environ['DATABASE_URL'] = f'sqlite:///{_SCRATCH}/import-only.db'
@@ -36,14 +47,14 @@ def _scripts() -> ScriptDirectory:
 
 
 def _upgrade(url: str, revision: str, data_dir: Path) -> None:
-    env = os.environ.copy()
+    env = {key: value for key, value in os.environ.items() if key not in DB_CONNECTION_VARS}
     env.update(
         DATABASE_URL=url,
         DATABASE_SCHEMA='',
         DATA_DIR=str(data_dir),
         WEBUI_SECRET_KEY='migration-tests-only',
         USE_SLIM_DOCKER='true',
-        VECTOR_DB='pgvector',
+        VECTOR_DB='pgvector',  # avoids the chromadb import in the slim runtime
         OLLAMA_BASE_URL='http://127.0.0.1:9',
         OLLAMA_BASE_URLS='http://127.0.0.1:9',
         ENABLE_DB_MIGRATIONS='false',

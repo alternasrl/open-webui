@@ -22,6 +22,19 @@ VERSIONS = APP / 'migrations' / 'versions'
 UPSTREAM = '15818d88fd7bde1b73de33590f50d15d21e8d7c1'
 FORK = '6d4a5ebd5fb3f1f0c4c3de210fe5da8395c37153'
 FORK_HEAD = '6c7d8e9f0a1b'
+UPSTREAM_V0124 = 'v0.12.4'
+UPSTREAM_V0124_HEAD = '0bd252b206fb'
+# Published fork release (v0.12.0-261012) whose history already contains the e304e2e7c45a merge.
+FORK_PUBLISHED = 'ccf8f5fa35a81d7e295e31346ae427a877ffb800'
+FORK_PUBLISHED_HEAD = 'e304e2e7c45a'
+DB_CONNECTION_VARS = (
+    'DATABASE_TYPE',
+    'DATABASE_USER',
+    'DATABASE_PASSWORD',
+    'DATABASE_HOST',
+    'DATABASE_PORT',
+    'DATABASE_NAME',
+)
 UPSTREAM_HEAD = 'b8f2c6d91a04'
 PI_TABLES = {
     'prompt_insights_run',
@@ -83,6 +96,9 @@ def test_single_head_and_published_parents_unchanged():
         if revision in published:
             assert published[revision] == parents, f'divergent published parent: {revision}'
         published[revision] = parents
+    for sha in (UPSTREAM_V0124, FORK_PUBLISHED):
+        for revision, parents in _published_graph(sha).items():
+            assert published.setdefault(revision, parents) == parents, f'divergent published parent: {revision}'
     graph = {}
     for path in VERSIONS.glob('*.py'):
         revision, parents = _revision_metadata(path.read_text())
@@ -112,10 +128,10 @@ def test_single_head_and_published_parents_unchanged():
     heads = set(graph) - parents
     assert len(heads) == 1, f'expected one head, got {sorted(heads)}'
     head = heads.pop()
-    # v0.12.4 adds upstream revisions and one further merge head (see test_migration_v0124_reconciliation).
-    assert head not in published
-    assert graph[head] == ('0bd252b206fb', 'e304e2e7c45a')
-    assert graph['e304e2e7c45a'] == (FORK_HEAD, UPSTREAM_HEAD)
+    # The only unpublished revision is the v0.12.4 merge (see test_migration_v0124_reconciliation).
+    assert set(graph) - set(published) == {head}
+    assert graph[head] == (UPSTREAM_V0124_HEAD, FORK_PUBLISHED_HEAD)
+    assert graph[FORK_PUBLISHED_HEAD] == (FORK_HEAD, UPSTREAM_HEAD)
     assert _scripts().get_heads() == [head]
     merge = _scripts().get_revision(head).module
     # A future DDL operation in the merge must not silently mutate either history.
@@ -126,7 +142,7 @@ def test_single_head_and_published_parents_unchanged():
 
 
 def _migration_env(url: str, schema: str = '') -> dict[str, str]:
-    env = os.environ.copy()
+    env = {key: value for key, value in os.environ.items() if key not in DB_CONNECTION_VARS}
     env.update(
         DATABASE_URL=url,
         DATABASE_SCHEMA=schema,
