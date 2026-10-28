@@ -220,8 +220,8 @@ DELETE /api/v1/chats/{id}/tags CHAT_TAGS_DELETE authenticated security
 GET /api/v1/chats/{id}/tags CHAT_TAGS_READ authenticated access
 POST /api/v1/chats/{id}/tags CHAT_TAG_ADD authenticated security
 POST /api/v1/chats/{id}/unread CHAT_UNREAD authenticated access
-GET /api/v1/configs/banners CONFIG_BANNERS_READ authenticated security
-POST /api/v1/configs/banners CONFIG_BANNERS admin access
+GET /api/v1/configs/banners CONFIG_BANNERS_READ authenticated access
+POST /api/v1/configs/banners CONFIG_BANNERS admin security
 GET /api/v1/configs/code_execution CONFIG_CODE_EXECUTION_READ admin security
 POST /api/v1/configs/code_execution CONFIG_CODE_EXECUTION admin security
 GET /api/v1/configs/connections CONFIG_CONNECTIONS_READ admin security

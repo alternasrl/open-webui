@@ -565,3 +565,110 @@ def test_model_usage_retains_upstream_state_link_without_query_secrets(monkeypat
     assert entry['audit_level'] == 'METADATA' and entry['model_id'] == 'model-id'
     assert options['extra'] == {'event': 'model_usage', 'request_id': 'request-link'}
     assert 'query-secret' not in json.dumps(entry)
+
+
+def _audit_wrapped_request(mounted, monkeypatch, method, path, body, headers=None):
+    monkeypatch.setattr(audit, 'AUDIT_LOG_LEVEL', 'REQUEST_RESPONSE')
+    inner = audit.AuditLoggingMiddleware(app, audit_level=audit.AuditLevel.REQUEST_RESPONSE, audit_get_requests=True)
+
+    async def wrapped(scope, receive, send):
+        # AppHTTPMiddleware sets the token inside the app, after the audit layer.
+        scope.setdefault('state', {})['token'] = SimpleNamespace(credentials='token-secret')
+        await inner(scope, receive, send)
+
+    async def call():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=wrapped, raise_app_exceptions=False),
+            base_url='http://testserver',
+            headers={'Authorization': '******', **(headers or {})},
+        ) as client:
+            return await client.request(method, path, json=body)
+
+    return asyncio.run(call())
+
+
+@pytest.mark.parametrize(
+    ('method', 'path'),
+    [
+        ('POST', '/openai/config/update'),
+        ('POST', '/ollama/config/update'),
+        ('POST', '/api/v1/configs/import'),
+        ('POST', '/api/v1/retrieval/config/update'),
+        ('POST', '/api/v1/audio/config/update'),
+        ('POST', '/api/v1/images/config/update'),
+        ('POST', '/api/v1/users/user/variables/update'),
+    ],
+)
+def test_config_write_bodies_never_reach_the_audit_log(mounted, monkeypatch, method, path):
+    body = {
+        'ENABLE_OPENAI_API': True,
+        'OPENAI_API_KEYS': ['sk-marker-secret'],
+        'config': {'nested': [{'api_key': 'sk-marker-secret'}]},
+    }
+    _audit_wrapped_request(mounted, monkeypatch, method, path, body)
+    assert mounted.entries
+    assert 'sk-marker' not in json.dumps(mounted.entries) + mounted.logs.text
+
+
+def test_secret_keys_are_redacted_recursively_in_captured_bodies():
+    body = json.dumps(
+        {
+            'OPENAI_API_KEYS': ['sk-marker-secret'],
+            'Authorization': 'Bearer sk-marker-secret',
+            'items': [{'inner': {'client_secret': 'sk-marker-secret', 'token': 'sk-marker-secret'}}],
+            'max_tokens': 128,
+            'name': 'kept',
+        }
+    )
+    redacted = audit.redact_passwords(body)
+    assert 'sk-marker' not in redacted
+    parsed = json.loads(redacted)
+    assert parsed['max_tokens'] == 128 and parsed['name'] == 'kept'
+    truncated = audit.redact_passwords('{"api_key": "sk-marker-secret", "OPENAI_API_KEYS": ["sk-marker-secret"], "x')
+    assert 'sk-marker' not in truncated
+
+
+def test_audit_identity_claims_ignore_forged_client_tokens(mounted, monkeypatch):
+    forged = auth.create_token({'sub': 'forged-sub', 'amr': ['forged-mfa'], 'auth_time': 1})
+    monkeypatch.setattr(
+        access_log, '_resolve_user_context', AsyncMock(return_value=access_log._UserContext(None, None, None, None))
+    )
+
+    async def identity(request: Request):
+        request.state.user = mounted.user
+        return mounted.user
+
+    monkeypatch.setitem(app.dependency_overrides, auth.get_admin_user, identity)
+    monkeypatch.setitem(app.dependency_overrides, auth.get_verified_user, identity)
+    _audit_wrapped_request(
+        mounted,
+        monkeypatch,
+        'POST',
+        '/api/v1/configs/banners',
+        [],
+        headers={'Authorization': 'Bearer ' + forged, 'Cookie': f'oauth_id_token={forged}; token={forged}'},
+    )
+    assert mounted.entries
+    dumped = json.dumps(mounted.entries)
+    assert 'forged-sub' not in dumped and 'forged-mfa' not in dumped
+    assert all(not entry['oidc_claims'] for entry in mounted.entries)
+
+
+def test_scheduled_activity_log_encodes_email_and_meta(caplog):
+    caplog.set_level(logging.WARNING, logger='open_webui.access')
+    access_log.log_scheduled_activity(
+        action='TASK_AUTOMATION_SCHEDULED',
+        user_email='a@b.co\nWARNING forged | action=AUTH_LOGIN',
+        user_role='user\n|x',
+        object_id='id\n|y',
+        object_type='automation',
+        status_code=200,
+        duration_s=0.1,
+        meta='trigger=scheduler|name=Daily\nReport | action=AUTH_LOGIN',
+    )
+    messages = [r.getMessage() for r in caplog.records if r.name == 'open_webui.access']
+    assert len(messages) == 1
+    message = messages[0]
+    assert '\n' not in message
+    assert message.count(' | action=') == 1  # only the real field separator
+    assert 'email=a@b.co%0AWARNING%20forged%20%7C%20action' in message

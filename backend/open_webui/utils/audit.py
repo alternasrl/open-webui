@@ -1,3 +1,4 @@
+import json
 import re
 import uuid
 from contextlib import asynccontextmanager
@@ -157,15 +158,41 @@ def log_model_usage(request: Request, user: UserModel, model_id: str, usage: Opt
         logger.error('Failed to log model usage: {}', e)
 
 
+_SECRET_NAME = r'(?:\w*(?:password|passwd|secret|credential|authorization|api[_-]?keys?|tokens?)|keys?|\w+_keys?)'
+_SECRET_KEY = re.compile(_SECRET_NAME, re.IGNORECASE)
+_SECRET_JSON_FALLBACK = re.compile(
+    r'"(' + _SECRET_NAME + r')"\s*:\s*(?:"(?:[^"\\]|\\.)*"|\[[^\]]*\])',
+    re.IGNORECASE,
+)
+
+
+def _redact_secret_values(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: (
+                '********'
+                if isinstance(key, str) and _SECRET_KEY.fullmatch(key) and isinstance(item, (str, list, dict))
+                else _redact_secret_values(item)
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_secret_values(item) for item in value]
+    return value
+
+
 def redact_passwords(body: str) -> str:
-    if 'password' not in body.lower():
+    """Mask credential-like values (passwords, API keys, tokens, secrets) in a JSON body."""
+    if not body:
         return body
-    return re.sub(
-        r'"(\w*password)"\s*:\s*"(?:[^"\\]|\\.)*"',
-        r'"\1": "********"',
-        body,
-        flags=re.IGNORECASE,
-    )
+    try:
+        parsed = json.loads(body)
+    except ValueError:
+        # Truncated or non-JSON payloads: fall back to pattern masking.
+        return _SECRET_JSON_FALLBACK.sub(r'"\1": "********"', body)
+    if not isinstance(parsed, (dict, list)):
+        return body
+    return json.dumps(_redact_secret_values(parsed), ensure_ascii=False)
 
 
 class AuditLoggingMiddleware:
@@ -232,7 +259,7 @@ class AuditLoggingMiddleware:
         request.state.audit_level = self.audit_level.value
         policy = match_route_policy(request.method, request.url.path)
         private_payload = policy and (
-            policy.action.startswith(('APP_', 'CHANNEL_'))
+            policy.action.startswith(('APP_', 'CHANNEL_', 'CONFIG_', 'USER_VARIABLES_'))
             or policy.action in {'CALENDAR_ACCESS_UPDATE', 'INTERFACE_VISIBILITY_UPDATE', 'WORKSPACE_SEARCH_READ'}
         )
         capture_body = not private_payload and not (
@@ -310,11 +337,6 @@ class AuditLoggingMiddleware:
 
         return None
 
-    def _decode_jwt_claims(self, token: str) -> Optional[dict[str, Any]]:
-        from open_webui.middleware.access_log import _decode_allowed_oidc_audit_claims
-
-        return _decode_allowed_oidc_audit_claims(token) or None
-
     def _extract_correlation_id(self, request: Request) -> Optional[str]:
         """Extract X-Request-ID header passed by WAF/ADSSPM for NIS2 correlation."""
         from open_webui.middleware.access_log import AccessLogMiddleware
@@ -336,43 +358,18 @@ class AuditLoggingMiddleware:
 
         return AccessLogMiddleware._get_client_ip(self, request)
 
-    def _extract_oidc_claims(self, request: Request) -> Optional[dict[str, Any]]:
-        """
-        Extract NIS2-relevant OIDC claims from JWT tokens.
+    async def _resolve_oidc_claims(self, request: Request, user: dict) -> dict[str, Any]:
+        """Identity-assurance claims from trusted server state only, never client-supplied tokens."""
+        claims = getattr(request.state, 'oidc_audit_claims', None)
+        if not claims and user.get('id'):
+            from open_webui.middleware.access_log import _resolve_user_context
 
-        Tries in order:
-          1. oauth_id_token cookie (OIDC ID token from ADSSPM)
-          2. Authorization Bearer token
-          3. token cookie (session JWT)
-
-        Extracts only bounded sub, auth_time and MFA identifiers.
-        """
-        tokens_to_try = []
-
-        # Priority 1: OIDC ID token cookie (set by OAuth flow)
-        oauth_id_token = request.cookies.get('oauth_id_token')
-        if oauth_id_token:
-            tokens_to_try.append(oauth_id_token)
-
-        # Priority 2: Authorization ******
-        auth_header = request.headers.get('Authorization')
-        if auth_header and auth_header.startswith('Bearer '):
-            bearer_token = auth_header[len('Bearer ') :]
-            # Skip API keys
-            if not bearer_token.startswith('sk-'):
-                tokens_to_try.append(bearer_token)
-
-        # Priority 3: Session token cookie
-        session_token = request.cookies.get('token')
-        if session_token:
-            tokens_to_try.append(session_token)
-
-        for token in tokens_to_try:
-            claims = self._decode_jwt_claims(token)
-            if claims:
-                return claims
-
-        return None
+            try:
+                ctx = await _resolve_user_context(user['id'])
+                claims = {'sub': ctx.oidc_sub, 'mfa': ctx.mfa_status}
+            except Exception:
+                claims = None
+        return claims or {}
 
     ALWAYS_LOG_ENDPOINTS = (
         '/api/v1/auths/signin',
@@ -437,12 +434,7 @@ class AuditLoggingMiddleware:
             correlation_id = self._extract_correlation_id(request)
             from open_webui.middleware.access_log import _bounded_oidc_audit_claims
 
-            oidc_claims = (
-                _bounded_oidc_audit_claims(
-                    getattr(request.state, 'oidc_audit_claims', None) or self._extract_oidc_claims(request) or {}
-                )
-                or None
-            )
+            oidc_claims = _bounded_oidc_audit_claims(await self._resolve_oidc_claims(request, user)) or None
 
             request_body = context.request_body.decode('utf-8', errors='replace')
             response_body = context.response_body.decode('utf-8', errors='replace')

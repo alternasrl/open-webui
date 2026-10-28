@@ -63,8 +63,8 @@ La task 7 (UI/i18n) non ha prodotto commit (sez. 9).
 | Client MCP su mcp 2.3.0 / httpx2              | adattato     | `utils/mcp/client.py`, `test/utils/test_mcp_v0120.py`                                                    |
 | Retrieval: `trust_env`, sicurezza web loader  | adattato     | `retrieval/utils.py`, `retrieval/web/utils.py`, `test/retrieval/test_web_loader_safety.py`               |
 | Validazione path audio                        | preservato   | `routers/audio/__init__.py`, `test/routers/test_v0120_audio_validation.py`                               |
-| Invalidazione cache utente                    | ripristinato | `utils/auth.py`, `routers/users.py` (fix `adc4eba70`)                                                    |
-| Shared-chat                                   | adattato     | `utils/chat.py`, `test/routers/test_v0120_shared_chat_analytics.py`                                      |
+| Invalidazione cache utente                    | ripristinato | `utils/oauth.py`, `routers/users.py` (fix `adc4eba70`)                                                    |
+| Shared-chat                                   | adattato     | `test/routers/test_v0120_shared_chat_analytics.py` (solo test; il delta di `utils/chat.py` riguarda lo stripping degli header Ollama)                                      |
 
 ### Frontend
 

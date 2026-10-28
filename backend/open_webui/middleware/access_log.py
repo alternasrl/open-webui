@@ -1209,6 +1209,12 @@ def log_scheduled_activity(
     """
     logger = logging.getLogger('open_webui.access')
     outcome = _outcome_from_status(status_code)
+    user_email = quote(str(user_email)[:200], safe='@.-_')
+    user_role, object_type, object_id, action = (
+        _sanitize_audit_object_id(str(value)[:200]) for value in (user_role, object_type, object_id, action)
+    )
+    if meta:
+        meta = '|'.join(quote(segment.strip()[:300], safe='@.-_=:/, ') for segment in str(meta).split('|')[:20])
     log_msg = (
         f'email={user_email} | session_id=scheduler | '
         f'correlation_id=- | oidc_sub=- | mfa=- | '

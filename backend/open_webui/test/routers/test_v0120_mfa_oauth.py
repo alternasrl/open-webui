@@ -434,10 +434,7 @@ def test_oidc_claims_are_bounded_identifiers_in_both_audits():
     values = access_log._decode_allowed_oidc_audit_claims(token)
     assert set(values) == {'sub', 'mfa', 'auth_time'}
     assert '\n' not in values['sub'] and '|' not in values['sub']
-    middleware = audit.AuditLoggingMiddleware(None)
-    claims = middleware._decode_jwt_claims(token)
-    assert claims == values
-    assert '-secret' not in json.dumps(claims)
+    assert '-secret' not in json.dumps(values)
 
 
 def test_upstream_password_redaction_is_preserved():

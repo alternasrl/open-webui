@@ -5,14 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.12.4] GIADA fork reconciliation candidate (unreleased, no tag)
+## [0.12.4-261028] - 2026-10-28 (GIADA fork reconciliation candidate, unreleased, no tag)
 
 Fork candidate on branch `integration-v0.12.4`, based on upstream Open WebUI [v0.12.4](https://github.com/open-webui/open-webui/releases/tag/v0.12.4). See the upstream entry below for upstream changes.
 
 ### Custom changes
 
 - Preserved the NIS2 access-log middleware (`setup_access_logging(app)` restored in `main.py`) with a new semantic route catalog (`middleware/audit_routes.py`) covering the upstream apps, channel apps/mute/access, file search/count, workspace search, chat params, calendar access and interface visibility routes: 610 mounted method/path pairs, 602 classified, 8 exempt, 0 unclassified (592/587/5/0 in production without SCIM).
-- Preserved the audit-log redaction for apps and channels, scheduled-automation audit coverage, OIDC/OAuth/MFA compliance, MCP import compatibility, proxy `trust_env` handling, web-loader safety, audio path validation and the user context cache fixes.
+- Preserved the audit-log redaction for apps and channels, scheduled-automation audit coverage, OIDC/OAuth/MFA compliance, MCP elicitation URL hardening and `BaseException` cleanup on upstream mcp 2.3.0 (the fork import-compat shim and the `AIOHTTP_CLIENT_TIMEOUT_TOOL_SERVER`/`follow_redirects` httpx overrides are dropped), proxy `trust_env` handling, web-loader safety, audio path validation and the user context cache fixes.
 - Preserved the Connections save behavior and OpenAI API error fallback in the admin UI.
 - Added the Alembic merge revision `3a9d5e7c1b42` joining heads `0bd252b206fb` and `e304e2e7c45a`; the Prompt Insights migrations are kept so historical data is never dropped.
 - Dropped the fork-only analytics customizations (Prompt Insights, routing analytics, cross-filter, TTFT/token-rate UI and endpoints, related locale keys); Analytics is exactly upstream v0.12.4.
