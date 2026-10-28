@@ -155,7 +155,6 @@ def test_shared_reply_preserves_owner_settings_and_actor(monkeypatch, caplog):
                     'usage': {
                         'input_tokens': 10,
                         'output_tokens': 3,
-                        'routing': {'requested_model_id': 'router', 'selected_model_id': 'target'},
                     },
                 },
             )
@@ -180,9 +179,9 @@ def test_shared_reply_preserves_owner_settings_and_actor(monkeypatch, caplog):
             assert stored.folder_id == 'owner-folder'
             rows = (await db.execute(select(ChatMessage))).scalars().all()
             assert {row.user_id for row in rows} == {'actor'}
-            assert await ChatMessages.get_token_usage_by_model(user_id='owner', db=db) == {}
-            tokens = await ChatMessages.get_token_usage_by_model(user_id='actor', db=db)
-            assert tokens['collaborator-model']['total_tokens'] == 13
+            usage = await ChatMessages.get_user_analytics(db=db)
+            assert 'owner' not in usage
+            assert usage['actor']['total_tokens'] == 13
 
     with caplog.at_level(logging.INFO, logger='open_webui.access'):
         _in_memory(monkeypatch, scenario)
