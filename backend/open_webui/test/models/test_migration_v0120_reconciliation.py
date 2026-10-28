@@ -112,8 +112,10 @@ def test_single_head_and_published_parents_unchanged():
     heads = set(graph) - parents
     assert len(heads) == 1, f'expected one head, got {sorted(heads)}'
     head = heads.pop()
-    assert set(graph) - set(published) == {head}
-    assert graph[head] == (FORK_HEAD, UPSTREAM_HEAD)
+    # v0.12.4 adds upstream revisions and one further merge head (see test_migration_v0124_reconciliation).
+    assert head not in published
+    assert graph[head] == ('0bd252b206fb', 'e304e2e7c45a')
+    assert graph['e304e2e7c45a'] == (FORK_HEAD, UPSTREAM_HEAD)
     assert _scripts().get_heads() == [head]
     merge = _scripts().get_revision(head).module
     # A future DDL operation in the merge must not silently mutate either history.
