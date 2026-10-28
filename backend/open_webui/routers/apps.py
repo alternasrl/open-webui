@@ -3,7 +3,7 @@
 import time
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from open_webui.internal.db import get_async_session
 from open_webui.models.access_grants import AccessGrant, AccessGrants
 from open_webui.models.apps import (
@@ -103,7 +103,7 @@ async def preview_app_manifest(
 
 @router.post('', response_model=AppResponse)
 async def create_new_app(
-    form_data: AppForm, user=Depends(get_admin_user), db: AsyncSession = Depends(get_async_session)
+    request: Request, form_data: AppForm, user=Depends(get_admin_user), db: AsyncSession = Depends(get_async_session)
 ):
     if not await Config.get('apps.enable'):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Apps are disabled')
@@ -137,6 +137,7 @@ async def create_new_app(
     except IntegrityError:
         await db.rollback()
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='App slug is already registered') from None
+    request.state.audit_app_id = app.id
     return get_app_response(app)
 
 

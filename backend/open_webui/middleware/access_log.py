@@ -9,7 +9,7 @@ Overview
 --------
 The middleware intercepts every inbound request, extracts identity
 and context from JWT cookies / OIDC tokens / DB lookups, classifies
-the action as one of ~165 NIS2-relevant types, then emits a single
+the action from the reviewed mounted route catalog, then emits a single
 pipe-delimited log line to stdout.  Security-relevant actions are
 logged at WARNING level so SIEM systems can filter on severity.
 
@@ -17,8 +17,10 @@ Key features:
   • User identity resolved via JWT cookie → DB (email, role).
   • OIDC subject (``sub``) and MFA status (``amr``/``acr``)
     extracted from server-side OAuth sessions (id_token).
-  • ~165 regex rules classify every API route into a semantic
-    action type (AUTH_LOGIN, GROUP_MEMBER_ADD, CONFIG_IMPORT, …).
+  • Explicit method/template policies classify mounted business routes into
+    semantic actions (AUTH_LOGIN, GROUP_MEMBER_ADD, APP_CONNECT, …).
+    Legacy regex fallbacks remain useful for unmatched requests, but never
+    count as business-route coverage.
   • Failed authentication attempts auto-detected (status ≥ 400
     on AUTH_LOGIN* → AUTH_LOGIN_FAIL with nis2=Y).
   • Target object (type + id) extracted from URL path for
@@ -59,7 +61,6 @@ New API surfaces added in v0.9.7–v0.10.1 and covered by this middleware:
   • ``/api/v1/knowledge/external/connections/*`` — External knowledge connections CRUD
   • ``/api/v1/knowledge/external/source/*``      — External knowledge source CRUD
   • ``/api/v1/memories/{search,path,paths,update}`` — Memory bulk operations
-  • ``/api/v1/analytics/routing/*``             — Model routing analytics (read-only)
 
 Azure WAF / Front Door Integration
 -----------------------------------
@@ -157,9 +158,12 @@ import uuid
 from typing import Callable, NamedTuple, Optional
 from urllib.parse import quote
 
-from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.datastructures import MutableHeaders
 from starlette.requests import Request
 from starlette.responses import Response
+from starlette.types import Receive, Scope, Send
+
+from open_webui.middleware.audit_routes import ROUTE_POLICIES, audit_route_template, match_route_policy
 
 try:
     import jwt as pyjwt
@@ -484,8 +488,6 @@ def _compile_action_rules() -> list[tuple[re.Pattern, Optional[str], str]]:
         (rf'^/api/v1/notifications/targets/{_ID}/default$', 'PUT', 'NOTIFICATION_TARGET_SET_DEFAULT'),
         (rf'^/api/v1/notifications/targets/{_ID}/test$', 'POST', 'NOTIFICATION_TARGET_TEST'),
         # ── New API surfaces added after v0.9.6 (v0.9.7–v0.11.0) ──────────
-        (rf'^/api/v1/analytics/routing/events$', 'GET', 'ANALYTICS_ROUTING_EVENTS'),
-        (rf'^/api/v1/analytics/routing/summary$', 'GET', 'ANALYTICS_ROUTING_SUMMARY'),
         (rf'^/api/v1/auths/admin/config/oauth$', 'POST', 'CONFIG_OAUTH_ADMIN'),
         (rf'^/api/v1/auths/admin/config/oauth$', 'GET', 'CONFIG_OAUTH_ADMIN_READ'),
         (rf'^/api/v1/chats/{_ID}/messages/{_ID}$', 'DELETE', 'CHAT_MESSAGE_DELETE'),
@@ -746,6 +748,25 @@ _NIS2_SECURITY_ACTIONS = frozenset(
         'MODEL_PROVIDER_LOAD',
         'MODEL_PROVIDER_UNLOAD',
         'MEMORY_REINDEX',
+        'APP_CREATE',
+        'APP_MANIFEST_PREVIEW',
+        'APP_UPDATE',
+        'APP_CONNECT',
+        'APP_DELETE',
+        'APP_INTERACTION',
+        'CHANNEL_CREATE',
+        'CHANNEL_UPDATE',
+        'CHANNEL_DELETE',
+        'CHANNEL_MEMBER_ADD',
+        'CHANNEL_MEMBER_REMOVE',
+        'CHANNEL_MEMBER_ACTIVE',
+        'CHANNEL_MEMBER_MUTE',
+        'CHANNEL_ACCESS_UPDATE',
+        'CHANNEL_APP_ADD',
+        'CHANNEL_APP_REMOVE',
+        'CHAT_PARAMS_UPDATE',
+        'CALENDAR_ACCESS_UPDATE',
+        'INTERFACE_VISIBILITY_UPDATE',
     }
 )
 
@@ -755,6 +776,9 @@ def _classify_action(method: str, path: str) -> tuple[str, bool]:
 
     Returns (action_type, is_security_relevant).
     """
+    policy = match_route_policy(method, path)
+    if policy:
+        return policy.action, policy.security
     for pattern, rule_method, action in _NIS2_ACTION_RULES:
         if rule_method is not None and method.upper() != rule_method:
             continue
@@ -836,6 +860,21 @@ def _extract_object_ref(path: str) -> tuple[Optional[str], Optional[str]]:
     Used to populate ManageEngine Log360 ``cs4`` (target resource)
     and ``cs5`` (resource type).
     """
+    path = path.rstrip('/')
+    if path in {
+        '/api/v1/files/user/search',
+        '/api/v1/files/user/count',
+        '/api/v1/files/search',
+        '/api/v1/files/count',
+    }:
+        return None, None
+    if path.startswith('/api/v1/apps/'):
+        parts = path.split('/')
+        if parts[4] != 'manifest':
+            return 'app', parts[4]
+        return None, None
+    if path.startswith('/api/v1/channels/webhooks/'):
+        return 'channel_webhook', path.split('/')[5]
     for pattern, obj_type in _OBJECT_ID_PATTERNS:
         m = pattern.search(path)
         if m:
@@ -1039,6 +1078,15 @@ def _decode_allowed_oidc_audit_claims(id_token_raw: str) -> dict[str, str]:
         return {}
 
 
+def _bounded_oidc_audit_claims(claims: dict) -> dict[str, str]:
+    """Apply the same allowlist to trusted state as to decoded token metadata."""
+    return {
+        key: quote(str(claims[key])[:200], safe='%@.,-_:')
+        for key in ('sub', 'mfa', 'auth_time')
+        if claims.get(key) is not None
+    }
+
+
 async def _resolve_user_context(user_id: str) -> _UserContext:
     """Resolve email, oidc_sub, mfa_status and role for a user UUID.
 
@@ -1176,7 +1224,7 @@ def log_scheduled_activity(
     logger.warning(log_msg)
 
 
-class AccessLogMiddleware(BaseHTTPMiddleware):
+class AccessLogMiddleware:
     """NIS2-compliant access logging middleware for Open WebUI.
 
     Logs every HTTP request with identity, action classification, outcome,
@@ -1197,10 +1245,33 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
     """
 
     def __init__(self, app, logger_name: str = 'open_webui.access', exclude_paths: list = None):
-        super().__init__(app)
+        self.app = app
         self.logger = logging.getLogger(logger_name)
         # Percorsi da escludere dal logging (es. health checks)
         self.exclude_paths = exclude_paths or ['/health', '/api/health']
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope['type'] != 'http' or scope.get('path') in self.exclude_paths:
+            return await self.app(scope, receive, send)
+        request = Request(scope)
+        session_id = _sanitize_audit_object_id(self._get_session_id(request)[:200])
+
+        async def call_next(request):
+            status = 500
+
+            async def send_wrapper(message):
+                nonlocal status
+                if message['type'] == 'http.response.start':
+                    status = message['status']
+                    MutableHeaders(scope=message)['X-Session-ID'] = session_id
+                await send(message)
+
+            # Do not introduce BaseHTTPMiddleware's task/cancel scope around
+            # upstream's streaming responses or in-flight database operations.
+            await self.app(scope, receive, send_wrapper)
+            return Response(status_code=status)
+
+        await self.dispatch(request, call_next)
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         # Salta logging per percorsi esclusi (opzionale)
@@ -1208,12 +1279,13 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         # Genera o recupera session_id
-        session_id = self._get_session_id(request)
+        session_id = _sanitize_audit_object_id(self._get_session_id(request)[:200])
 
         # Authentication runs inside call_next. A cookie's unverified UUID is
         # not an authenticated actor (in particular after session revocation).
         user_display, role = 'anonymous', None
         oidc_sub, mfa_status = None, None
+        allowed_claims = {}
 
         # NIS2: Extract correlation ID from WAF/ADSSPM
         correlation_id = self._get_correlation_id(request)
@@ -1234,7 +1306,7 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
         if len(user_agent) > 200:
             user_agent = user_agent[:200] + '…'
         # Sanitise: replace pipe characters to preserve log field delimiters
-        user_agent = user_agent.replace('|', '/')
+        user_agent = user_agent.replace('|', '/').replace('\r', '').replace('\n', '')
 
         # Client info: prefer Azure WAF / proxy headers over direct connection
         client_host = self._get_client_ip(request)
@@ -1259,21 +1331,52 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
         start_time = time.time()
 
         # Esegui la richiesta
+        async def resolve_actor():
+            nonlocal user_display, role, oidc_sub, mfa_status, allowed_claims
+            actor = getattr(request.state, 'auth_audit_user', None) or getattr(request.state, 'user', None)
+            if actor:
+                # The authenticated actor remains attributable even if the
+                # optional context lookup fails during exception handling.
+                user_display = quote(str(actor.email or actor.id)[:200], safe='@.-_')
+                role = _sanitize_audit_object_id(str(actor.role or '-')[:200])
+                try:
+                    ctx = await _resolve_user_context(actor.id)
+                    oidc_sub, mfa_status = ctx.oidc_sub, ctx.mfa_status
+                except Exception:
+                    pass
+            allowed_claims = _bounded_oidc_audit_claims(getattr(request.state, 'oidc_audit_claims', {}))
+            if allowed_claims:
+                oidc_sub, mfa_status = allowed_claims.get('sub'), allowed_claims.get('mfa')
+            return actor
+
+        def event_metadata() -> tuple[str, str]:
+            nonlocal action_type, is_nis2, object_type, object_id
+            route = request.scope.get('route')
+            template = getattr(route, 'path', None)
+            policy = ROUTE_POLICIES.get((request.method, template))
+            if policy:
+                action_type, is_nis2 = policy.action, policy.security
+            app_id = getattr(request.state, 'audit_app_id', None) or request.path_params.get('app_id')
+            if action_type == 'APP_CREATE' and app_id:
+                object_type, object_id = 'app', _sanitize_audit_object_id(str(app_id)[:200])
+            extra = f' | app_id={_sanitize_audit_object_id(str(app_id)[:200])}' if app_id else ''
+            # Templates exclude embedded webhook tokens, filenames and proxy
+            # paths. Unmatched URLs are untrusted input, not audit metadata.
+            return template or audit_route_template(request.method, request.url.path), extra
+
         try:
             response = await call_next(request)
             status_code = response.status_code
-            actor = getattr(request.state, 'auth_audit_user', None) or getattr(request.state, 'user', None)
-            if actor:
-                ctx = await _resolve_user_context(actor.id)
-                user_display = quote(str(actor.email or ctx.email or actor.id)[:200], safe='@.-_')
-                role = _sanitize_audit_object_id(str(actor.role or ctx.role or '-')[:200])
-                oidc_sub, mfa_status = ctx.oidc_sub, ctx.mfa_status
-            allowed_claims = getattr(request.state, 'oidc_audit_claims', {})
-            if allowed_claims:
-                oidc_sub, mfa_status = allowed_claims.get('sub'), allowed_claims.get('mfa')
+            logged_path, app_metadata = event_metadata()
+            actor = await resolve_actor()
 
         except Exception as e:
             # Log anche in caso di eccezione
+            try:
+                await resolve_actor()
+            except Exception:
+                pass
+            logged_path, app_metadata = event_metadata()
             process_time = time.time() - start_time
             self.logger.error(
                 f'email={user_display} | session_id={session_id[:8]} | '
@@ -1284,8 +1387,8 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
                 f'object={object_type or "-"}:{object_id or "-"} | '
                 f'ua={user_agent} | '
                 f'{client_display} - '
-                f'"{request.method} {request.url.path}" EXCEPTION - '
-                f'error_type={type(e).__name__} | time={process_time:.3f}s'
+                f'"{request.method} {logged_path}" EXCEPTION - '
+                f'error_type={type(e).__name__} | time={process_time:.3f}s{app_metadata}'
             )
             raise
 
@@ -1334,8 +1437,8 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
             f'object={object_type or "-"}:{object_id or "-"} | '
             f'ua={user_agent} | '
             f'{client_display} - '
-            f'"{request.method} {request.url.path}" {status_code} | '
-            f'time={process_time:.3f}s'
+            f'"{request.method} {logged_path}" {status_code} | '
+            f'time={process_time:.3f}s{app_metadata}'
         )
 
         # For OIDC login events append only explicitly approved identifiers.
@@ -1368,12 +1471,13 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
 
     def _get_correlation_id(self, request: Request) -> Optional[str]:
         """Extract correlation ID from WAF/ADSSPM/Azure Front Door."""
-        return (
+        value = (
             request.headers.get('X-Request-ID')
             or request.headers.get('X-Correlation-ID')
             or request.headers.get('X-Azure-Ref')
             or None
         )
+        return _sanitize_audit_object_id(value[:200]) if value else None
 
     def _get_client_ip(self, request: Request) -> str:
         """
@@ -1394,7 +1498,7 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
         ):
             value = request.headers.get(header)
             if value:
-                return value.split(',')[0].strip()
+                return quote(value.split(',')[0].strip()[:200], safe=':.-_')
 
         return request.client.host if request.client else '-'
 

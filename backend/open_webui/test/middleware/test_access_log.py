@@ -15,8 +15,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from open_webui.middleware.access_log import (
-    AccessLogMiddleware,
     _NIS2_SECURITY_ACTIONS,
+    AccessLogMiddleware,
     _cache_data,
     _cache_lock,
     _classify_action,
@@ -51,6 +51,9 @@ def classify(method: str, path: str):
         ('POST', '/api/v1/auths/mfa/verify', ('mfa', None)),
         ('DELETE', '/api/v1/functions/id/function|injected/history/revision', ('function', 'function%7Cinjected')),
         ('POST', '/api/v1/terminals/server/chats/chat-id/command', ('terminal_chat', 'chat-id')),
+        ('PATCH', '/api/v1/apps/app|id', ('app', 'app%7Cid')),
+        ('POST', '/api/v1/apps/manifest/preview', (None, None)),
+        ('POST', '/api/v1/channels/webhooks/webhook-id/token-secret', ('channel_webhook', 'webhook-id')),
     ],
 )
 def test_v0120_event_objects_have_only_sanitized_identifiers(method, path, expected):
@@ -61,6 +64,12 @@ def test_leaderboard_model_path_converter_keeps_history_action():
     assert (
         action_of('GET', '/api/v1/evaluations/leaderboard/org/model/history') == 'EVALUATION_LEADERBOARD_HISTORY_READ'
     )
+
+
+@pytest.mark.parametrize('path', ['/api/v1/files/user/search', '/api/v1/files/user/count'])
+@pytest.mark.parametrize('suffix', ['', '/'])
+def test_file_collection_path_and_slash_variant_have_no_file_id(path, suffix):
+    assert _extract_event_object_ref('GET', path + suffix) == (None, None)
 
 
 def action_of(method: str, path: str) -> str:
@@ -1145,10 +1154,6 @@ class TestClassifyPostV096Actions:
         assert action_of('POST', '/api/v1/memories/search') == 'MEMORY_SEARCH'
         assert not is_nis2('POST', '/api/v1/memories/search')
 
-    def test_analytics_routing_events_is_read(self):
-        assert action_of('GET', '/api/v1/analytics/routing/summary') == 'ANALYTICS_ROUTING_SUMMARY'
-        assert not is_nis2('GET', '/api/v1/analytics/routing/summary')
-
 
 class TestExtractObjectRefV096Additions:
     def test_external_connection_object_ref(self):
@@ -1268,7 +1273,13 @@ class TestClassifyV0114DeltaRoutes:
 
         wrong_action, wrong_is_nis2 = classify(wrong_method, path)
         assert wrong_action != expected_action
-        assert wrong_is_nis2 is False
+        if wrong_method == 'POST' and path == '/openai/models/0':
+            # This is a real mounted provider proxy write, not an unknown
+            # method for the admin-only GET catalog operation.
+            assert wrong_action == 'OPENAI_PROXY_WRITE'
+            assert wrong_is_nis2 is True
+        else:
+            assert wrong_is_nis2 is False
 
     def test_folder_shared_precedes_folder_access_read(self):
         assert action_of('GET', '/api/v1/folders/shared') == 'FOLDER_SHARED_READ'

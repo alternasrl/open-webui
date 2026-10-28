@@ -67,6 +67,41 @@ These are the actual `integration-v0.11.4` branch commits, not standalone replay
 
 ## NIS2 route action changes
 
+### v0.12.4 reconciliation (Task 4)
+
+- `backend/open_webui/middleware/audit_routes.py` is the reviewed method/template
+  catalog, including actor admission contracts and security severity. Every
+  mounted business HTTP route must have an explicit semantic action. Legacy
+  `READ`/`WRITE_OTHER`/`DELETE_OTHER` rules are unmatched-request diagnostics,
+  **not** coverage. New routes (including reads and routes matching a legacy
+  regex) fail the runtime inventory guard until reviewed.
+- Technical exceptions are exact health/PWA/development-doc routes. The guard
+  separately checks the exact Socket.IO transport and typed static-asset mounts;
+  no business prefix or arbitrary new ASGI mount is exempt.
+- `setup_access_logging(app)` remains active. The custom middleware is pure ASGI,
+  inside upstream `AppHTTPMiddleware` and the separate optional
+  `AuditLoggingMiddleware`, without introducing a streaming cancellation scope.
+- Access events contain sanitized identifiers, actor, correlation, outcome and
+  timing, never bodies or query strings. Logged route templates also keep
+  webhook credentials and arbitrary proxy paths out of audit URIs. Successful
+  app creation records the returned ID; channel-app events retain both IDs
+  once available from route parameters or validated handler state.
+- The separate upstream audit retains metadata events but never captures either
+  payload for Apps/channels, workspace search, calendar access updates or
+  interface visibility updates (including failures and slash redirects).
+  Existing auth, file, skill and workspace payload protections remain active.
+  Model-usage events retain upstream request-state linkage without query strings.
+- Channel ACL, update, delete and membership operations keep encrypted-session
+  invalidation and metadata-only audit events. Governance mutations are
+  security-relevant. Retired routing-analytics rules and Prompt Insights fallback
+  bookkeeping are removed; standard upstream Analytics routes remain audited.
+- Focused regression suites: `test_access_log.py`,
+  `test_access_log_route_coverage.py`, `test_access_log_runtime.py` and
+  `test_v0120_mfa_oauth.py`. Run mounted tests without lifespan/startup and with
+  isolated/mocked data access; the coverage suite uses the real registered app.
+
+### Earlier v0.11.4 integration
+
 - **New or made explicit:** `CONFIG_IMAGES_VERIFY`, `MODEL_LIST_ALL`, `FOLDER_ACCESS_READ`, `MODEL_PROVIDER_CATALOG`, `MODEL_PROVIDER_LIST`, `MODEL_PROVIDER_DOWNLOAD`, `MODEL_PROVIDER_DOWNLOAD_STATUS`, `MODEL_PROVIDER_LOAD`, `MODEL_PROVIDER_UNLOAD`, `MODEL_PROVIDER_SSE`, `RETRIEVAL_PROCESS_URL`, and `MEMORY_REINDEX`.
 - **Changed object-audit behavior:** `GET /api/v1/models/export` now records only sanitized `ids` in the object reference, never raw query payloads, tokens, or export contents.
 - **Removed/retired legacy surfaces:** `GET /api/v1/images/config/url/verify` and `POST /api/v1/utils/pdf` no longer appear in the route inventory, and their legacy NIS2 rules are absent.

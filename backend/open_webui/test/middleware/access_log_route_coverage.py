@@ -3,14 +3,39 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import re
 from types import SimpleNamespace
+
 from fastapi.routing import APIRoute
 from open_webui.env import ENABLE_SCIM
-from open_webui.main import app
-from open_webui.middleware.access_log import _NIS2_ACTION_RULES
+from open_webui.main import CORSStaticFiles, SPAStaticFiles, app, socket_app
+from open_webui.middleware.access_log import _NIS2_ACTION_RULES, _classify_action
+from open_webui.middleware.audit_routes import ROUTE_POLICIES, TECHNICAL_EXCEPTIONS
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.routing import Mount, Route
+from starlette.staticfiles import StaticFiles
 
 REQUIRED_ACTIONS = {
+    ('GET', '/api/v1/apps'): 'APP_LIST_READ',
+    ('GET', '/api/v1/apps/{app_id}'): 'APP_READ',
+    ('POST', '/api/v1/apps/manifest/preview'): 'APP_MANIFEST_PREVIEW',
+    ('POST', '/api/v1/apps'): 'APP_CREATE',
+    ('PATCH', '/api/v1/apps/{app_id}'): 'APP_UPDATE',
+    ('POST', '/api/v1/apps/{app_id}/connect'): 'APP_CONNECT',
+    ('DELETE', '/api/v1/apps/{app_id}'): 'APP_DELETE',
+    ('POST', '/api/v1/apps/{app_id}/interactions'): 'APP_INTERACTION',
+    ('GET', '/api/v1/channels/{channel_id}/apps'): 'CHANNEL_APPS_READ',
+    ('POST', '/api/v1/channels/{channel_id}/apps'): 'CHANNEL_APP_ADD',
+    ('DELETE', '/api/v1/channels/{channel_id}/apps/{app_id}'): 'CHANNEL_APP_REMOVE',
+    ('POST', '/api/v1/channels/{id}/members/mute'): 'CHANNEL_MEMBER_MUTE',
+    ('POST', '/api/v1/channels/{id}/members/active'): 'CHANNEL_MEMBER_ACTIVE',
+    ('POST', '/api/v1/channels/{id}/access/update'): 'CHANNEL_ACCESS_UPDATE',
+    ('GET', '/api/v1/files/user/search'): 'FILES_SEARCH_READ',
+    ('GET', '/api/v1/files/user/count'): 'FILES_COUNT_READ',
+    ('GET', '/api/v1/search'): 'WORKSPACE_SEARCH_READ',
+    ('PATCH', '/api/v1/chats/{id}/params'): 'CHAT_PARAMS_UPDATE',
+    ('POST', '/api/v1/calendars/{calendar_id}/access/update'): 'CALENDAR_ACCESS_UPDATE',
+    ('POST', '/api/v1/configs/interface/visibility'): 'INTERFACE_VISIBILITY_UPDATE',
     ('GET', '/oauth/clients/{client_id}/callback'): 'OAUTH_CLIENT_AUTHORIZE',
     ('POST', '/api/v1/auths/mfa/challenge'): 'AUTH_MFA_CHALLENGE',
     ('POST', '/api/v1/auths/mfa/enroll/start'): 'AUTH_MFA_ENROLL_START',
@@ -75,70 +100,6 @@ REMOVED_ROUTES = {
     ('POST', '/api/v1/utils/pdf'),
 }
 
-# Mutating routes that legitimately fall through to the WRITE_OTHER/DELETE_OTHER
-# catch-all today. Every entry here pre-dates this integration's NIS2 delta work
-# (upstream/main behavior untouched by v0.11.3..v0.11.4) and is tracked as a
-# known, accepted gap rather than semantic coverage. Any mutating route that is
-# NOT in this set and NOT in REQUIRED_ACTIONS must have an explicit action, or
-# the runtime guard below fails the build. Do not add new routes here to
-# silence a failure — either classify them explicitly or get NIS2 review
-# sign-off and document the justification in this comment block.
-DOCUMENTED_FALLBACK_EXEMPTIONS = {
-    ('POST', '/api/chat/actions/{action_id}'),
-    ('POST', '/api/chat/completed'),
-    ('POST', '/api/chat/completions'),
-    ('POST', '/api/events/webhooks'),
-    ('DELETE', '/api/events/webhooks/{webhook_id}'),
-    ('PUT', '/api/events/webhooks/{webhook_id}'),
-    ('POST', '/api/message'),
-    ('POST', '/api/message/count_tokens'),
-    ('POST', '/api/models/unload'),
-    ('POST', '/api/tasks/chat/{chat_id:path}/stop'),
-    ('POST', '/api/tasks/stop/{task_id}'),
-    ('POST', '/api/v1/analytics/prompt-insights/run'),
-    ('POST', '/api/v1/audio/speech'),
-    ('POST', '/api/v1/audio/transcriptions'),
-    ('POST', '/api/v1/channels/webhooks/{webhook_id}/{token}'),
-    ('POST', '/api/v1/channels/{id}/members/active'),
-    ('POST', '/api/v1/channels/{id}/messages/{message_id}/pin'),
-    ('POST', '/api/v1/channels/{id}/messages/{message_id}/reactions/add'),
-    ('POST', '/api/v1/channels/{id}/messages/{message_id}/reactions/remove'),
-    ('POST', '/api/v1/chat/completions'),
-    ('POST', '/api/v1/chats/{id}/messages/{message_id}'),
-    ('POST', '/api/v1/chats/{id}/messages/{message_id}/event'),
-    ('POST', '/api/v1/chats/{id}/messages/{message_id}/resolve'),
-    ('DELETE', '/api/v1/chats/{id}/tags'),
-    ('POST', '/api/v1/chats/{id}/tags'),
-    ('POST', '/api/v1/folders/{id}/update/expanded'),
-    ('POST', '/api/v1/functions/id/{id}/valves/user/update'),
-    ('POST', '/api/v1/groups/id/{id}/users'),
-    ('POST', '/api/v1/images/edit'),
-    ('POST', '/api/v1/images/generations'),
-    ('POST', '/api/v1/knowledge/{id}/dirs/create'),
-    ('DELETE', '/api/v1/knowledge/{id}/dirs/{dir_id}/delete'),
-    ('POST', '/api/v1/knowledge/{id}/dirs/{dir_id}/update'),
-    ('POST', '/api/v1/knowledge/{id}/file/move'),
-    ('POST', '/api/v1/memories/query'),
-    ('POST', '/api/v1/messages'),
-    ('POST', '/api/v1/messages/count_tokens'),
-    ('POST', '/api/v1/retrieval/delete'),
-    ('POST', '/api/v1/retrieval/process/file'),
-    ('POST', '/api/v1/retrieval/process/files/batch'),
-    ('POST', '/api/v1/retrieval/process/text'),
-    ('POST', '/api/v1/retrieval/process/web'),
-    ('POST', '/api/v1/retrieval/process/web/search'),
-    ('POST', '/api/v1/retrieval/process/youtube'),
-    ('POST', '/api/v1/retrieval/query/collection'),
-    ('POST', '/api/v1/retrieval/query/doc'),
-    ('DELETE', '/api/v1/terminals/{server_id}/{path:path}'),
-    ('PATCH', '/api/v1/terminals/{server_id}/{path:path}'),
-    ('POST', '/api/v1/terminals/{server_id}/{path:path}'),
-    ('PUT', '/api/v1/terminals/{server_id}/{path:path}'),
-    ('POST', '/api/v1/tools/id/{id}/valves/user/update'),
-    ('POST', '/api/v1/utils/code/execute'),
-    ('POST', '/api/v1/utils/code/format'),
-}
-
 ABSENT_RULE_PATTERNS = {
     ('GET', r'^/api/v1/images/config/url/verify$'),
     ('POST', r'^/api/v1/utils/pdf$'),
@@ -146,12 +107,10 @@ ABSENT_RULE_PATTERNS = {
 
 
 def classify_route(method: str, path: str) -> str:
-    for pattern, rule_method, action in _NIS2_ACTION_RULES:
-        if rule_method is not None and method != rule_method:
-            continue
-        if pattern.search(path):
-            return action
-    return '-'
+    if (method, path) in TECHNICAL_EXCEPTIONS:
+        return 'EXEMPT'
+    policy = ROUTE_POLICIES.get((method, path))
+    return policy.action if policy else 'UNCLASSIFIED'
 
 
 def dependency_names(route: APIRoute) -> set[str]:
@@ -167,7 +126,7 @@ def dependency_names(route: APIRoute) -> set[str]:
 def iter_runtime_routes() -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     for route in app.routes:
-        if not isinstance(route, APIRoute):
+        if not isinstance(route, Route):
             continue
         for method in sorted((route.methods or set()) - {'HEAD', 'OPTIONS'}):
             rows.append(
@@ -175,11 +134,33 @@ def iter_runtime_routes() -> list[dict[str, object]]:
                     'method': method,
                     'path': route.path,
                     'action': classify_route(method, route.path),
-                    'dependencies': sorted(dependency_names(route)),
+                    'dependencies': sorted(dependency_names(route)) if isinstance(route, APIRoute) else [],
                     'endpoint': route.endpoint,
                 }
             )
     return sorted(rows, key=lambda row: (row['path'], row['method']))
+
+
+def mount_issues() -> list[dict[str, str]]:
+    """Opaque transports/assets are not business-route prefix exemptions.
+
+    Only the exact mounted object/type + path below is exempt. Any additional
+    application/router mount must be inspected, never silently skipped.
+    """
+    issues = []
+    for route in app.routes:
+        if not isinstance(route, Mount):
+            continue
+        if route.path == '/ws' and route.app is socket_app:
+            continue  # Socket.IO's HTTP/WebSocket transport, not a REST router.
+        if (route.path, type(route.app)) in {
+            ('/static', StaticFiles),
+            ('/pyodide', CORSStaticFiles),
+            ('', SPAStaticFiles),
+        }:
+            continue  # Build assets and optional SPA fallback only.
+        issues.append({'path': route.path, 'problem': 'unreviewed ASGI mount'})
+    return issues
 
 
 def _exercise_inline_admin_guard(endpoint):
@@ -221,25 +202,16 @@ def build_report() -> dict[str, list]:
         if key in row_map:
             removed_routes.append({'route': key, 'problem': 'legacy runtime route still registered'})
 
-    # Scan every runtime mutating route (not just the routes we already know
-    # about via REQUIRED_ACTIONS) so a newly introduced, unclassified mutating
-    # route fails the build instead of silently escaping into WRITE_OTHER /
-    # DELETE_OTHER. Routes must be either explicitly classified (REQUIRED_ACTIONS
-    # or any other non-fallback action) or listed as a documented, justified
-    # exemption in DOCUMENTED_FALLBACK_EXEMPTIONS.
+    # Exact template/method membership is mandatory for *all* business routes.
+    # Even a new path that happens to match a legacy regex must fail closed.
     mutating_generic_issues = []
     for row in rows:
-        if row['method'] not in {'POST', 'PUT', 'PATCH', 'DELETE'}:
-            continue
-        if row['action'] not in {'WRITE_OTHER', 'DELETE_OTHER'}:
-            continue
-        key = (row['method'], row['path'])
-        if key in DOCUMENTED_FALLBACK_EXEMPTIONS:
+        if row['action'] not in {'READ', 'WRITE_OTHER', 'DELETE_OTHER', '-', 'UNCLASSIFIED'}:
             continue
         mutating_generic_issues.append(
             {
-                'route': key,
-                'problem': 'mutating route fell through to catch-all classification and is not a documented exemption',
+                'route': (row['method'], row['path']),
+                'problem': 'business route has no explicit semantic policy',
                 'actual': row['action'],
             }
         )
@@ -250,6 +222,17 @@ def build_report() -> dict[str, list]:
             rule_method == method and pattern.pattern == pattern_text for pattern, rule_method, _ in _NIS2_ACTION_RULES
         ):
             legacy_rule_issues.append({'method': method, 'pattern': pattern_text})
+
+    classification_issues = []
+    for row in rows:
+        key = row['method'], row['path']
+        policy = ROUTE_POLICIES.get(key)
+        if not policy:
+            continue
+        concrete = re.sub(r'\{[^}]+\}', 'audit-target', row['path'])
+        classified = _classify_action(row['method'], concrete)
+        if classified != (policy.action, policy.security):
+            classification_issues.append({'route': key, 'actual': classified, 'expected': policy})
 
     admin_only_routes = {
         ('GET', '/openai/models/{url_idx}'),
@@ -280,29 +263,41 @@ def build_report() -> dict[str, list]:
                 }
             )
 
-    dead_rules = []
-    for pattern, method, action in _NIS2_ACTION_RULES:
-        if not ENABLE_SCIM and action.startswith('SCIM_'):
-            continue
-        if action in {'READ', 'WRITE_OTHER', 'DELETE_OTHER', '-'}:
-            continue
-        if not any((method is None or row['method'] == method) and pattern.search(row['path']) for row in rows):
-            dead_rules.append({'method': method, 'pattern': pattern.pattern, 'action': action})
+    dead_rules = [
+        {'route': key, 'action': policy.action}
+        for key, policy in ROUTE_POLICIES.items()
+        if key not in row_map and not (not ENABLE_SCIM and '/scim/v2/' in key[1])
+    ]
 
     report = {
         'mismatches': mismatches,
         'removed_routes': removed_routes,
         'mutating_generic_issues': mutating_generic_issues,
         'legacy_rule_issues': legacy_rule_issues,
+        'classification_issues': classification_issues,
         'admin_behavior_issues': admin_behavior_issues,
         'dead_rules': dead_rules,
+        'mount_issues': mount_issues(),
     }
     return report
+
+
+def coverage_counts() -> dict[str, int]:
+    rows = iter_runtime_routes()
+    exempt = sum(row['action'] == 'EXEMPT' for row in rows)
+    unclassified = sum(row['action'] in {'UNCLASSIFIED', 'READ', 'WRITE_OTHER', 'DELETE_OTHER', '-'} for row in rows)
+    return {
+        'total': len(rows),
+        'classified': len(rows) - exempt - unclassified,
+        'exempt': exempt,
+        'unclassified': unclassified,
+    }
 
 
 def main() -> None:
     report = build_report()
     print(json.dumps(report, indent=2, default=str))
+    print(json.dumps(coverage_counts(), sort_keys=True))
     if any(report.values()):
         raise SystemExit(1)
 

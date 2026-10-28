@@ -916,8 +916,13 @@ async def get_channel_apps(
 
 @router.post('/{channel_id}/apps')
 async def invite_app(
-    channel_id: str, form: AppInvitation, user=Depends(get_verified_user), db: AsyncSession = Depends(get_async_session)
+    request: Request,
+    channel_id: str,
+    form: AppInvitation,
+    user=Depends(get_verified_user),
+    db: AsyncSession = Depends(get_async_session),
 ):
+    request.state.audit_app_id = form.app_id
     await check_app_channel_access(channel_id, require_manager=True, user=user, db=db)
     app = await get_app_by_id(form.app_id, require_active=True, db=db)
     if not await has_app_access(app, user, db=db):

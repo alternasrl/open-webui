@@ -13,7 +13,6 @@ from typing import (
     cast,
 )
 
-import jwt as pyjwt
 from asgiref.typing import (
     ASGI3Application,
     ASGIReceiveCallable,
@@ -25,7 +24,8 @@ from asgiref.typing import (
     Scope as ASGIScope,
 )
 from loguru import logger
-from open_webui.env import AUDIT_INCLUDED_PATHS, AUDIT_LOG_LEVEL, ENABLE_AUDIT_GET_REQUESTS, MAX_BODY_LOG_SIZE
+from open_webui.env import AUDIT_LOG_LEVEL, MAX_BODY_LOG_SIZE
+from open_webui.middleware.audit_routes import audit_route_template, match_route_policy
 from open_webui.models.users import UserModel
 from open_webui.utils.auth import get_current_user, get_http_authorization_cred
 from open_webui.utils.response import normalize_usage
@@ -145,7 +145,7 @@ def log_model_usage(request: Request, user: UserModel, model_id: str, usage: Opt
                 user=user.model_dump(include={'id', 'name', 'email', 'role'}),
                 audit_level=request.state.audit_level,
                 verb=request.method,
-                request_uri=str(request.url),
+                request_uri=audit_route_template(request.method, request.url.path),
                 source_ip=request.client.host if request.client else None,
                 user_agent=request.headers.get('user-agent'),
                 model_id=model_id,
@@ -230,7 +230,12 @@ class AuditLoggingMiddleware:
 
         request.state.audit_request_id = str(uuid.uuid4())
         request.state.audit_level = self.audit_level.value
-        capture_body = not (
+        policy = match_route_policy(request.method, request.url.path)
+        private_payload = policy and (
+            policy.action.startswith(('APP_', 'CHANNEL_'))
+            or policy.action in {'CALENDAR_ACCESS_UPDATE', 'INTERFACE_VISIBILITY_UPDATE', 'WORKSPACE_SEARCH_READ'}
+        )
+        capture_body = not private_payload and not (
             request.url.path.startswith(
                 (
                     '/api/v1/auths',
@@ -242,14 +247,16 @@ class AuditLoggingMiddleware:
                     '/api/v1/prompts',
                     '/api/v1/files',
                     '/api/v1/terminals',
+                    '/api/v1/chats',
+                    '/api/v1/chat/',
                 )
             )
         )
         async with self._audit_context(request) as context:
 
             async def send_wrapper(message: ASGISendEvent) -> None:
-                if self.audit_level == AuditLevel.REQUEST_RESPONSE and (
-                    capture_body or message['type'] == 'http.response.start'
+                if message['type'] == 'http.response.start' or (
+                    capture_body and self.audit_level == AuditLevel.REQUEST_RESPONSE
                 ):
                     await self._capture_response(message, context)
 
@@ -279,6 +286,9 @@ class AuditLoggingMiddleware:
         context = AuditContext()
         try:
             yield context
+        except BaseException:
+            context.metadata.setdefault('response_status_code', 500)
+            raise
         finally:
             await self._log_audit_entry(request, context)
 
@@ -296,78 +306,7 @@ class AuditLoggingMiddleware:
             user = await get_current_user(request, None, None, get_http_authorization_cred(auth_header))
             return user
         except Exception as e:
-            logger.debug('Failed to get authenticated user: {}', e)
-
-        return None
-
-    def _extract_correlation_id(self, request: Request) -> Optional[str]:
-        """Extract X-Request-ID header passed by WAF/ADSSPM for NIS2 correlation."""
-        return (
-            request.headers.get('X-Request-ID')
-            or request.headers.get('X-Correlation-ID')
-            or request.headers.get('X-Azure-Ref')
-            or None
-        )
-
-    def _extract_client_ip(self, request: Request) -> Optional[str]:
-        """
-        Extract the real client IP address, traversing Azure WAF / reverse proxy headers.
-
-        Priority:
-          1. X-Azure-ClientIP   — set by Azure Front Door / Application Gateway
-          2. X-Original-Forwarded-For — original client IP before WAF rewrite
-          3. X-Forwarded-For    — standard proxy header (first IP = real client)
-          4. X-Real-IP          — set by some reverse proxies (nginx)
-          5. request.client.host — direct ASGI connection IP (container-internal)
-        """
-        for header in (
-            'X-Azure-ClientIP',
-            'X-Original-Forwarded-For',
-            'X-Forwarded-For',
-            'X-Real-IP',
-        ):
-            value = request.headers.get(header)
-            if value:
-                # X-Forwarded-For can be comma-separated; first entry is the real client
-                return value.split(',')[0].strip()
-
-        return request.client.host if request.client else None
-
-    def _extract_oidc_claims(self, request: Request) -> Optional[dict[str, Any]]:
-        """
-        Extract NIS2-relevant OIDC claims from JWT tokens.
-
-        Tries in order:
-          1. oauth_id_token cookie (OIDC ID token from ADSSPM)
-          2. Authorization Bearer token
-          3. token cookie (session JWT)
-
-        Extracts: sub, auth_time, amr, acr, AD groups.
-        """
-        tokens_to_try = []
-
-        # Priority 1: OIDC ID token cookie (set by OAuth flow)
-        oauth_id_token = request.cookies.get('oauth_id_token')
-        if oauth_id_token:
-            tokens_to_try.append(oauth_id_token)
-
-        # Priority 2: Authorization ******
-        auth_header = request.headers.get('Authorization')
-        if auth_header and auth_header.startswith('Bearer '):
-            bearer_token = auth_header[len('Bearer ') :]
-            # Skip API keys
-            if not bearer_token.startswith('sk-'):
-                tokens_to_try.append(bearer_token)
-
-        # Priority 3: Session token cookie
-        session_token = request.cookies.get('token')
-        if session_token:
-            tokens_to_try.append(session_token)
-
-        for token in tokens_to_try:
-            claims = self._decode_jwt_claims(token)
-            if claims:
-                return claims
+            logger.debug('Failed to get authenticated user: {}', type(e).__name__)
 
         return None
 
@@ -378,12 +317,9 @@ class AuditLoggingMiddleware:
 
     def _extract_correlation_id(self, request: Request) -> Optional[str]:
         """Extract X-Request-ID header passed by WAF/ADSSPM for NIS2 correlation."""
-        return (
-            request.headers.get('X-Request-ID')
-            or request.headers.get('X-Correlation-ID')
-            or request.headers.get('X-Azure-Ref')
-            or None
-        )
+        from open_webui.middleware.access_log import AccessLogMiddleware
+
+        return AccessLogMiddleware._get_correlation_id(self, request)
 
     def _extract_client_ip(self, request: Request) -> Optional[str]:
         """
@@ -396,18 +332,9 @@ class AuditLoggingMiddleware:
           4. X-Real-IP          — set by some reverse proxies (nginx)
           5. request.client.host — direct ASGI connection IP (container-internal)
         """
-        for header in (
-            'X-Azure-ClientIP',
-            'X-Original-Forwarded-For',
-            'X-Forwarded-For',
-            'X-Real-IP',
-        ):
-            value = request.headers.get(header)
-            if value:
-                # X-Forwarded-For can be comma-separated; first entry is the real client
-                return value.split(',')[0].strip()
+        from open_webui.middleware.access_log import AccessLogMiddleware
 
-        return request.client.host if request.client else None
+        return AccessLogMiddleware._get_client_ip(self, request)
 
     def _extract_oidc_claims(self, request: Request) -> Optional[dict[str, Any]]:
         """
@@ -418,7 +345,7 @@ class AuditLoggingMiddleware:
           2. Authorization Bearer token
           3. token cookie (session JWT)
 
-        Extracts: sub, auth_time, amr, acr, AD groups.
+        Extracts only bounded sub, auth_time and MFA identifiers.
         """
         tokens_to_try = []
 
@@ -508,7 +435,14 @@ class AuditLoggingMiddleware:
 
             # NIS2: Extract correlation ID and OIDC claims
             correlation_id = self._extract_correlation_id(request)
-            oidc_claims = getattr(request.state, 'oidc_audit_claims', None) or self._extract_oidc_claims(request)
+            from open_webui.middleware.access_log import _bounded_oidc_audit_claims
+
+            oidc_claims = (
+                _bounded_oidc_audit_claims(
+                    getattr(request.state, 'oidc_audit_claims', None) or self._extract_oidc_claims(request) or {}
+                )
+                or None
+            )
 
             request_body = context.request_body.decode('utf-8', errors='replace')
             response_body = context.response_body.decode('utf-8', errors='replace')
@@ -522,7 +456,7 @@ class AuditLoggingMiddleware:
                 user=user,
                 audit_level=self.audit_level.value,
                 verb=request.method,
-                request_uri=request.url.path,
+                request_uri=audit_route_template(request.method, request.url.path),
                 correlation_id=correlation_id,
                 oidc_claims=oidc_claims,
                 response_status_code=context.metadata.get('response_status_code', None),

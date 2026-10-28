@@ -4,6 +4,7 @@ import asyncio
 import inspect
 import json
 import logging
+import uuid
 from dataclasses import asdict
 from http.cookies import SimpleCookie
 from types import SimpleNamespace
@@ -25,7 +26,7 @@ def request(path, *, cookie=None):
     headers = [(b'user-agent', b'pytest')]
     if cookie:
         headers.append((b'cookie', f'token={cookie}'.encode()))
-    return Request(
+    req = Request(
         {
             'type': 'http',
             'method': 'GET' if path.startswith('/oauth/') else 'POST',
@@ -38,6 +39,10 @@ def request(path, *, cookie=None):
             'app': SimpleNamespace(state=SimpleNamespace(redis=None)),
         }
     )
+
+    # Direct logger tests must supply the state normally set by __call__.
+    req.state.audit_request_id = str(uuid.uuid4())
+    return req
 
 
 @pytest.fixture
@@ -471,6 +476,8 @@ def test_workspace_audit_never_captures_content(path, monkeypatch):
 
     app = audit.AuditLoggingMiddleware(endpoint, audit_level=audit.AuditLevel.REQUEST_RESPONSE)
     req = request(path)
+    # AppHTTPMiddleware now extracts credentials before the audit middleware.
+    req.state.token = SimpleNamespace(credentials='test-only')
     req.scope['headers'].append((b'authorization', b'Bearer opaque'))
 
     async def scenario():
