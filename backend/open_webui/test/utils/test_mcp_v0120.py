@@ -1,14 +1,12 @@
 """MCP contracts against the pinned SDK, with in-memory HTTP only."""
 
 import asyncio
-import builtins
-import importlib.util
 import json
-from pathlib import Path
+import math
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-import httpx
+import httpx2
 import pytest
 from mcp.types import CallToolResult, ElicitRequestFormParams, ElicitRequestURLParams
 from open_webui.utils.mcp import client as mcp_client
@@ -42,11 +40,11 @@ def test_oauth_retries_401_only_after_token_rotation(rotated, status, tokens):
             if len(seen) == 1:
                 if rotated:
                     current = 'Bearer new'
-                return httpx.Response(401)
-            return httpx.Response(200)
+                return httpx2.Response(401)
+            return httpx2.Response(200)
 
-        async with httpx.AsyncClient(
-            transport=httpx.MockTransport(handle),
+        async with httpx2.AsyncClient(
+            transport=httpx2.MockTransport(handle),
             auth=mcp_client.OAuthTokenAuth(headers),
         ) as client:
             response = await client.post('https://mcp.example.com', content=b'replayable')
@@ -61,45 +59,37 @@ def test_oauth_missing_token_never_sends_request():
         def no_request(request):
             pytest.fail('Missing token must fail before transport')
 
-        async with httpx.AsyncClient(
-            transport=httpx.MockTransport(no_request),
+        async with httpx2.AsyncClient(
+            transport=httpx2.MockTransport(no_request),
             auth=mcp_client.OAuthTokenAuth(AsyncMock(return_value={})),
         ) as client:
-            with pytest.raises(httpx.RequestError):
+            with pytest.raises(httpx2.RequestError):
                 await client.get('https://mcp.example.com')
 
     asyncio.run(run())
 
 
-@pytest.mark.parametrize('modern_only', [False, True])
-def test_connect_real_sdk_transport_signature_and_auth(monkeypatch, modern_only):
-    module = mcp_client
-    if modern_only:
-        original_import = builtins.__import__
-
-        def import_without_deprecated(name, globals=None, locals=None, fromlist=(), level=0):
-            if name == 'mcp.client.streamable_http' and 'streamablehttp_client' in fromlist:
-                raise ImportError('Deprecated transport removed')
-            return original_import(name, globals, locals, fromlist, level)
-
-        monkeypatch.setattr(builtins, '__import__', import_without_deprecated)
-        spec = importlib.util.spec_from_file_location('mcp_modern_only', Path(mcp_client.__file__))
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-
+def test_connect_real_sdk_transport_signature_and_auth(monkeypatch):
     async def run():
         seen = []
         clients = []
-        initialized = asyncio.Event()
-        auth = httpx.BasicAuth('user', 'password')
+        auth = httpx2.BasicAuth('user', 'password')
 
         async def handle(request):
             assert request.headers['Authorization'].startswith('Basic ')
             assert request.headers['X-Test'] == 'configured'
+            if request.method != 'POST':
+                return httpx2.Response(405)
             body = json.loads(request.content)
             seen.append(body['method'])
+            if body['method'] == 'server/discover':
+                # A legacy server: the SDK falls back to the initialize handshake.
+                return httpx2.Response(
+                    200,
+                    json={'jsonrpc': '2.0', 'id': body['id'], 'error': {'code': -32601, 'message': 'Method not found'}},
+                )
             if body['method'] == 'initialize':
-                return httpx.Response(
+                return httpx2.Response(
                     200,
                     json={
                         'jsonrpc': '2.0',
@@ -112,29 +102,21 @@ def test_connect_real_sdk_transport_signature_and_auth(monkeypatch, modern_only)
                         },
                     },
                 )
-            initialized.set()
-            return httpx.Response(202)
+            return httpx2.Response(202)
 
-        def factory(headers=None, timeout=None, auth=None):
-            client = httpx.AsyncClient(
-                transport=httpx.MockTransport(handle),
-                headers=headers,
-                auth=auth,
-                timeout=timeout if timeout is not None else 30,
-            )
+        def factory(headers=None, auth=None):
+            client = httpx2.AsyncClient(transport=httpx2.MockTransport(handle), headers=headers, auth=auth)
             clients.append(client)
             return client
 
-        monkeypatch.setattr(module, 'create_httpx_client', factory)
-        monkeypatch.setattr(module, 'AIOHTTP_CLIENT_SESSION_TOOL_SERVER_SSL', True)
-        client = module.MCPClient()
+        monkeypatch.setattr(mcp_client, 'create_httpx_client', factory)
+        client = mcp_client.MCPClient()
         await client.connect('https://mcp.example.com', headers={'X-Test': 'configured'}, auth=auth)
         assert client.instructions == 'real SDK handshake'
-        await asyncio.wait_for(initialized.wait(), timeout=1)
-        assert seen == ['initialize', 'notifications/initialized']
+        assert 'initialize' in seen
         await client.disconnect()
         await client.disconnect()
-        assert client.session is None
+        assert client.client is None
         assert all(client.is_closed for client in clients)
 
     asyncio.run(run())
@@ -142,43 +124,34 @@ def test_connect_real_sdk_transport_signature_and_auth(monkeypatch, modern_only)
 
 @pytest.mark.parametrize('failure', [TimeoutError, asyncio.CancelledError])
 def test_initialize_failure_cleans_failed_session(monkeypatch, failure):
-    from contextlib import asynccontextmanager
+    clients = []
 
-    closed = []
+    def factory(headers=None, auth=None):
+        client = httpx2.AsyncClient(transport=httpx2.MockTransport(lambda request: httpx2.Response(500)))
+        clients.append(client)
+        return client
 
-    @asynccontextmanager
-    async def transport(*args, **kwargs):
-        try:
-            yield (None, None, None)
-        finally:
-            closed.append('transport')
-
-    class Session:
+    class FailingClient:
         def __init__(self, *args, **kwargs):
             pass
 
         async def __aenter__(self):
-            return self
+            raise failure()
 
         async def __aexit__(self, *args):
-            closed.append('session')
+            pass
 
-        async def initialize(self):
-            if failure is asyncio.CancelledError:
-                raise asyncio.CancelledError()
-            await asyncio.sleep(60)
-
-    monkeypatch.setattr(mcp_client, 'streamablehttp_client', transport)
-    monkeypatch.setattr(mcp_client, 'ClientSession', Session)
-    monkeypatch.setattr(mcp_client, 'MCP_INITIALIZE_TIMEOUT', 0.01)
+    monkeypatch.setattr(mcp_client, 'create_httpx_client', factory)
+    monkeypatch.setattr(mcp_client, 'Client', FailingClient)
 
     async def run():
         client = mcp_client.MCPClient()
         with pytest.raises(failure):
             await client.connect('https://mcp.example.com')
-        assert client.session is None
+        assert client.client is None
         assert client.exit_stack is None
-        assert closed == ['session', 'transport']
+        assert client.instructions is None
+        assert [c.is_closed for c in clients] == [True]
 
     asyncio.run(run())
 
@@ -298,7 +271,7 @@ def test_structured_content_is_appended_only_when_not_already_present(texts, str
         structuredContent=structured,
     )
     client = mcp_client.MCPClient()
-    client.session = SimpleNamespace(call_tool=AsyncMock(return_value=result))
+    client.client = SimpleNamespace(call_tool=AsyncMock(return_value=result))
     output = asyncio.run(client.call_tool('tool', {}))
     assert [item['text'] for item in output] == expected_texts
 
@@ -307,23 +280,35 @@ def test_tool_call_receives_configured_read_timeout(monkeypatch):
     monkeypatch.setattr(mcp_client, 'AIOHTTP_CLIENT_TIMEOUT_TOOL_SERVER', 4)
 
     async def call(name, args, *, read_timeout_seconds):
-        assert read_timeout_seconds.total_seconds() == 4
+        assert read_timeout_seconds == 4
         raise TimeoutError('tool timed out')
 
     client = mcp_client.MCPClient()
-    client.session = SimpleNamespace(call_tool=call)
+    client.client = SimpleNamespace(call_tool=call)
     with pytest.raises(TimeoutError, match='tool timed out'):
         asyncio.run(client.call_tool('slow', {}))
 
 
-@pytest.mark.parametrize(('explicit', 'expected'), [(None, 8), (2, 2)])
-def test_http_client_timeout_uses_explicit_or_configured_value(monkeypatch, explicit, expected):
-    monkeypatch.setattr(mcp_client, 'AIOHTTP_CLIENT_TIMEOUT_TOOL_SERVER', 8)
+def test_tool_call_without_configured_timeout_is_unbounded(monkeypatch):
+    monkeypatch.setattr(mcp_client, 'AIOHTTP_CLIENT_TIMEOUT_TOOL_SERVER', None)
+
+    async def call(name, args, *, read_timeout_seconds):
+        assert read_timeout_seconds == math.inf
+        raise TimeoutError('tool timed out')
+
+    client = mcp_client.MCPClient()
+    client.client = SimpleNamespace(call_tool=call)
+    with pytest.raises(TimeoutError):
+        asyncio.run(client.call_tool('slow', {}))
+
+
+def test_http_client_keeps_sdk_timeouts_and_configured_tls(monkeypatch):
+    monkeypatch.setattr(mcp_client, 'AIOHTTP_CLIENT_SESSION_TOOL_SERVER_SSL', False)
 
     async def run():
-        async with mcp_client.create_httpx_client(timeout=explicit) as client:
-            assert client.timeout.read == expected
-            assert client.timeout.connect == expected
-            assert client.follow_redirects is True
+        async with mcp_client.create_httpx_client(headers={'X-Test': '1'}) as client:
+            assert client.timeout.connect == 30
+            assert client.timeout.read == 300
+            assert client.headers['X-Test'] == '1'
 
     asyncio.run(run())

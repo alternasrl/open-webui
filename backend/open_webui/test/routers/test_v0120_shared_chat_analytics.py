@@ -202,28 +202,46 @@ def test_collaborator_cannot_edit_others_message(monkeypatch):
             [{'message_id': 'owner-reply', 'model_id': 'owner-model'}],
         )
         assert owner_turn['messages']['owner-prompt']['user_id'] == 'owner'
-        with pytest.raises(HTTPException) as regenerate:
-            await chats.Chats.insert_chat_turn(
-                chat.id,
-                _actor(),
-                {'id': 'owner-prompt', 'content': 'modified'},
-                [{'message_id': 'new-reply', 'model_id': 'model'}],
-            )
-        assert regenerate.value.status_code == 403
         monkeypatch.setattr(chat_router.Chats, 'get_chat_by_id', AsyncMock(return_value=chat))
-        with pytest.raises(HTTPException) as edit:
-            await chat_router.update_chat_message_by_id(
-                _request(_actor()),
-                chat.id,
-                'owner-prompt',
-                chat_router.MessageForm(content='modified'),
-                user=_actor(),
-                db=None,
-            )
-        assert edit.value.status_code == 401
+        for message_id in ('owner-prompt', 'owner-reply'):
+            with pytest.raises(HTTPException) as edit:
+                await chat_router.update_chat_message_by_id(
+                    _request(_actor()),
+                    chat.id,
+                    message_id,
+                    chat_router.MessageForm(content='modified'),
+                    user=_actor(),
+                    db=None,
+                )
+            assert edit.value.status_code == 401
         async with sessions() as db:
-            original = await db.get(ChatMessage, f'{chat.id}-owner-prompt')
-            assert original.content == 'owner content'
-            assert await db.get(ChatMessage, f'{chat.id}-new-reply') is None
+            assert (await db.get(ChatMessage, f'{chat.id}-owner-prompt')).content == 'owner content'
+            assert (await db.get(ChatMessage, f'{chat.id}-owner-reply')).content != 'modified'
+
+    _in_memory(monkeypatch, scenario)
+
+
+def test_collaborator_regeneration_keeps_prompt_and_owns_reply(monkeypatch):
+    async def scenario(sessions, chat):
+        await chats.Chats.insert_chat_turn(
+            chat.id,
+            SimpleNamespace(id='owner', name='Owner'),
+            {'id': 'owner-prompt', 'content': 'owner content'},
+            [{'message_id': 'owner-reply', 'model_id': 'owner-model'}],
+        )
+        # Upstream semantics: a collaborator may regenerate, but the owner's prompt is not rewritten.
+        turn = await chats.Chats.insert_chat_turn(
+            chat.id,
+            _actor(),
+            {'id': 'owner-prompt', 'content': 'modified'},
+            [{'message_id': 'new-reply', 'model_id': 'model'}],
+        )
+        assert turn['messages']['owner-prompt']['content'] == 'owner content'
+        assert turn['messages']['owner-prompt']['user_id'] == 'owner'
+        assert turn['messages']['new-reply']['user_id'] == 'actor'
+        async with sessions() as db:
+            assert (await db.get(ChatMessage, f'{chat.id}-owner-prompt')).content == 'owner content'
+            reply = await db.get(ChatMessage, f'{chat.id}-new-reply')
+            assert reply.user_id == 'actor'
 
     _in_memory(monkeypatch, scenario)
