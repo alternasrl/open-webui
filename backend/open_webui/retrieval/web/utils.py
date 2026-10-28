@@ -1067,8 +1067,7 @@ class SafeWebBaseLoader(BaseLoader):
         self.default_parser = default_parser
         self.bs_kwargs = bs_kwargs or {}
         self.bs_get_text_kwargs = bs_get_text_kwargs or {}
-        # Preserve the synchronous loader's environment-proxy behavior.
-        self.session = get_ssrf_safe_requests_session()
+        self.session = get_ssrf_safe_requests_session(trust_env=trust_env)
         self.session.verify = verify_ssl
         self.session.headers = WEB_LOADER_HEADERS
 

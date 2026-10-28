@@ -256,38 +256,38 @@ def _get_content_from_url_sync(request, url: str, config: dict):
         content = ' '.join([doc.page_content for doc in docs])
         return content, docs
 
-    # Streamed GET to check Content-Type without downloading the body.
-    # allow_redirects=False prevents redirect-based SSRF: validate_url() above is
-    # called on the originally-submitted URL only; following 3xx redirects without
-    # re-validation would let an attacker reach private IPs (RFC1918, loopback,
-    # cloud-metadata 169.254.169.254) via a public host that redirects internally.
+    # Probe through the safe adapter, preserving proxy configuration and loader headers.
+    session = get_ssrf_safe_requests_session(trust_env=config['web.search.trust_env'])
+    response = None
     try:
-        # Probe through the connect-time SSRF guard; bare requests.get re-resolves (DNS-rebinding gap).
-        session = get_ssrf_safe_requests_session()
         # Match the web loader's request, or sites that block unknown clients make a file look like a web page.
         session.headers = WEB_LOADER_HEADERS
         session.verify = config['web.loader.ssl_verification']
-        response = session.get(url, stream=True, timeout=30, allow_redirects=AIOHTTP_CLIENT_ALLOW_REDIRECTS)
-        response.raise_for_status()
-        content_type = response.headers.get('Content-Type', '')
-    except Exception:
-        content_type = ''
-        response = None
+        try:
+            response = session.get(url, stream=True, timeout=30, allow_redirects=AIOHTTP_CLIENT_ALLOW_REDIRECTS)
+            response.raise_for_status()
+            content_type = response.headers.get('Content-Type', '')
+        except Exception:
+            if response is not None:
+                response.close()
+                response = None
+            content_type = ''
 
-    # Text / HTML / unknown — use the configured web loader
-    if response is None or _is_text_content_type(content_type):
-        if response is not None:
-            response.close()
-        loader = get_loader(request, url, config)
-        docs = loader.load()
-        content = ' '.join([doc.page_content for doc in docs])
-        return content, docs
+        # Close the streamed probe before invoking a loader that opens its own session.
+        if response is None or _is_text_content_type(content_type):
+            if response is not None:
+                response.close()
+                response = None
+            loader = get_loader(request, url, config)
+            docs = loader.load()
+            content = ' '.join([doc.page_content for doc in docs])
+            return content, docs
 
-    # Binary content (PDF, DOCX, XLSX, PPTX, etc.) — download and extract
-    try:
         return _extract_text_from_binary_response(request, response, url, config)
     finally:
-        response.close()
+        if response is not None:
+            response.close()
+        session.close()
 
 
 CHUNK_HASH_KEY = '_chunk_hash'

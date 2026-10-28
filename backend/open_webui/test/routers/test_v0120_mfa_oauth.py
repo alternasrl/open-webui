@@ -296,36 +296,65 @@ def test_auth_body_never_logged(monkeypatch, caplog):
     assert '-secret' not in serialized + caplog.text
 
 
-def test_role_change_evicts_context_and_disconnects(monkeypatch):
+@pytest.mark.parametrize('field,value', [('role', 'admin'), ('email', 'updated@example.com')])
+@pytest.mark.parametrize('outcome', ['saved', 'not_saved', 'exception', 'noop'])
+def test_user_update_evicts_context_only_after_persistence(monkeypatch, field, value, outcome):
     user = SimpleNamespace(id='role-user', email='alice@example.com', role='user')
-    updated = SimpleNamespace(**{**vars(user), 'role': 'admin'})
+    updated = SimpleNamespace(**{**vars(user), field: value})
     monkeypatch.setattr(users_router.Users, 'get_first_user', AsyncMock(return_value=SimpleNamespace(id='primary')))
     monkeypatch.setattr(users_router.Users, 'get_user_by_id', AsyncMock(return_value=user))
-    monkeypatch.setattr(users_router.Users, 'update_user_by_id', AsyncMock(return_value=updated))
-    monkeypatch.setattr(users_router, 'publish_event', AsyncMock())
-    from open_webui.socket import main as socket
+    monkeypatch.setattr(users_router.Users, 'get_user_by_email', AsyncMock(return_value=None))
+    monkeypatch.setattr(users_router.Auths, 'update_email_by_id', AsyncMock(return_value=True))
+    cached = (access_log._UserContext(user.email, None, None, 'user'), 0)
 
-    disconnected = []
+    async def persist(user_id, updates, *, db):
+        assert access_log._cache_data[user_id] is cached, 'Do not evict before persistence'
+        assert updates == {field: value}
+        if outcome == 'exception':
+            raise RuntimeError('persistence failed')
+        return updated if outcome == 'saved' else None
 
-    async def disconnect(user_id):
-        disconnected.append(user_id)
+    save = AsyncMock(side_effect=persist)
+    monkeypatch.setattr(users_router.Users, 'update_user_by_id', save)
 
-    monkeypatch.setattr(socket, 'disconnect_user_sessions', disconnect)
-    monkeypatch.setattr(users_router, 'disconnect_user_sessions', disconnect)
-    access_log._cache_data[user.id] = (access_log._UserContext(user.email, None, None, 'user'), 0)
+    async def publish(*args, **kwargs):
+        assert user.id not in access_log._cache_data, 'Evict before publishing the persisted update'
+
+    event = AsyncMock(side_effect=publish)
+    monkeypatch.setattr(users_router, 'publish_event', event)
+    access_log._cache_data[user.id] = cached
     try:
-        result = asyncio.run(
-            users_router.update_user_by_id(
-                request('/api/v1/users/role-user/update'),
-                user.id,
-                UserUpdateForm(role='admin'),
-                session_user=SimpleNamespace(id='primary'),
-                db=None,
+
+        def update():
+            return asyncio.run(
+                users_router.update_user_by_id(
+                    request('/api/v1/users/role-user/update'),
+                    user.id,
+                    UserUpdateForm(**({} if outcome == 'noop' else {field: value})),
+                    session_user=SimpleNamespace(id='primary'),
+                    db=None,
+                )
             )
-        )
-        assert result.role == 'admin'
-        assert disconnected == [user.id]
-        assert user.id not in access_log._cache_data
+
+        if outcome == 'not_saved':
+            with pytest.raises(HTTPException) as error:
+                update()
+            assert error.value.status_code == 400
+        elif outcome == 'exception':
+            with pytest.raises(RuntimeError, match='persistence failed'):
+                update()
+        else:
+            assert update() is (updated if outcome == 'saved' else user)
+        if outcome == 'saved':
+            assert user.id not in access_log._cache_data
+            expected_event = (
+                users_router.EVENTS.USER_ROLE_UPDATED if field == 'role' else users_router.EVENTS.USER_UPDATED
+            )
+            assert event.await_args.args[1] == expected_event
+        else:
+            assert access_log._cache_data[user.id] is cached
+            event.assert_not_awaited()
+        assert save.await_count == (0 if outcome == 'noop' else 1)
     finally:
         access_log.invalidate_user_cache(user.id)
 

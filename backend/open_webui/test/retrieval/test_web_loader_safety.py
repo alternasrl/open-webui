@@ -150,11 +150,14 @@ def loader_config():
     }
 
 
-def test_safe_loader_uses_explicit_config(public_dns, loader_config):
+@pytest.mark.parametrize('trust_env', [False, True])
+def test_safe_loader_uses_explicit_config(public_dns, loader_config, trust_env):
+    loader_config['web.search.trust_env'] = trust_env
     loader = web_utils.get_web_loader('https://example.com/', loader_config)
     try:
-        assert loader.session.trust_env is False
+        assert loader.session.trust_env is trust_env
         assert loader.session.verify is False
+        assert loader.session.headers == web_utils.WEB_LOADER_HEADERS
         assert loader.requests_kwargs['timeout'] == 7
         assert loader.requests_per_second == 3
         assert isinstance(loader.session.get_adapter('https://'), web_utils._SSRFSafeAdapter)
@@ -189,7 +192,9 @@ def test_youtube_short_link_skips_mime_probe(public_dns, monkeypatch, loader_con
     assert docs[0].metadata == {'source': 'youtube'}
 
 
-@pytest.mark.parametrize('mode', ['text', 'binary', 'http_error', 'load_error', 'extract_error'])
+@pytest.mark.parametrize(
+    'mode', ['text', 'binary', 'http_error', 'get_error', 'loader_factory_error', 'load_error', 'extract_error']
+)
 def test_probe_closes_response_and_session(public_dns, monkeypatch, loader_config, mode):
     response = requests.Response()
     response.status_code = 500 if mode == 'http_error' else 200
@@ -197,6 +202,8 @@ def test_probe_closes_response_and_session(public_dns, monkeypatch, loader_confi
     response.close = Mock()
     session = requests.Session()
     session.get = Mock(return_value=response)
+    if mode == 'get_error':
+        session.get.side_effect = requests.ConnectionError('probe failed')
     session.close = Mock()
     monkeypatch.setattr(web_utils, 'get_ssrf_safe_requests_session', lambda **kwargs: session)
 
@@ -204,10 +211,16 @@ def test_probe_closes_response_and_session(public_dns, monkeypatch, loader_confi
         def load(self):
             if mode == 'load_error':
                 raise ValueError('loader failed')
-            assert response.close.called, 'Close the probe before starting another loader'
+            if mode != 'get_error':
+                assert response.close.called, 'Close the probe before starting another loader'
             return [Document(page_content='html')]
 
-    monkeypatch.setattr(retrieval_utils, 'get_loader', lambda request, url, config: Loader())
+    def get_loader(request, url, config):
+        if mode == 'loader_factory_error':
+            raise ValueError('loader construction failed')
+        return Loader()
+
+    monkeypatch.setattr(retrieval_utils, 'get_loader', get_loader)
 
     def extract(request, res, url, config):
         assert res is response
@@ -217,18 +230,20 @@ def test_probe_closes_response_and_session(public_dns, monkeypatch, loader_confi
         return 'pdf', [Document(page_content='pdf')]
 
     monkeypatch.setattr(retrieval_utils, '_extract_text_from_binary_response', extract)
-    if mode.endswith('_error') and mode != 'http_error':
+    if mode in {'loader_factory_error', 'load_error', 'extract_error'}:
         with pytest.raises(ValueError):
             retrieval_utils._get_content_from_url_sync(None, 'https://example.com/', loader_config)
     else:
         content, docs = retrieval_utils._get_content_from_url_sync(None, 'https://example.com/', loader_config)
         assert content == ('pdf' if mode == 'binary' else 'html')
         assert docs[0].page_content == content
-    assert response.close.call_count == 1
+    assert response.close.call_count == (0 if mode == 'get_error' else 1)
     assert session.close.call_count == 1
 
 
-def test_probe_honors_explicit_proxy_and_ssl_settings(public_dns, monkeypatch, loader_config):
+@pytest.mark.parametrize('trust_env', [False, True])
+def test_probe_honors_explicit_proxy_and_ssl_settings(public_dns, monkeypatch, loader_config, trust_env):
+    loader_config['web.search.trust_env'] = trust_env
     session = requests.Session()
     observed = {}
     response = requests.Response()
@@ -241,7 +256,7 @@ def test_probe_honors_explicit_proxy_and_ssl_settings(public_dns, monkeypatch, l
         return session
 
     def get(url, **kwargs):
-        observed.update(trust_env=session.trust_env, verify=session.verify, **kwargs)
+        observed.update(trust_env=session.trust_env, verify=session.verify, headers=dict(session.headers), **kwargs)
         return response
 
     monkeypatch.setattr(web_utils, 'get_ssrf_safe_requests_session', factory)
@@ -254,8 +269,9 @@ def test_probe_honors_explicit_proxy_and_ssl_settings(public_dns, monkeypatch, l
         ),
     )
     assert retrieval_utils._get_content_from_url_sync(None, 'https://example.com/', loader_config)[0] == 'configured'
-    assert observed['trust_env'] is False
+    assert observed['trust_env'] is trust_env
     assert observed['verify'] is False
+    assert observed['headers'] == web_utils.WEB_LOADER_HEADERS
     assert observed['allow_redirects'] is web_utils.AIOHTTP_CLIENT_ALLOW_REDIRECTS
 
 

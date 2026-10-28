@@ -1006,6 +1006,10 @@ async def update_user_by_id(
             updated_user = user
 
         if updated_user:
+            if update_data:
+                from open_webui.middleware.access_log import invalidate_user_cache
+
+                invalidate_user_cache(user_id)
             updated_fields = [field for field in update_data.keys() if field != 'role']
             role_changed = updated_user.role != user.role
 
