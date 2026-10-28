@@ -36,10 +36,10 @@ new file mode 100644
 index 000000000..e69de29bb
 diff --git a/backend/open_webui/middleware/access_log.py b/backend/open_webui/middleware/access_log.py
 new file mode 100644
-index 000000000..72888243e
+index 000000000..813849b0c
 --- /dev/null
 +++ b/backend/open_webui/middleware/access_log.py
-@@ -0,0 +1,1638 @@
+@@ -0,0 +1,1644 @@
 +"""
 +Custom Access Logging Middleware — Open WebUI
 +================================================================
@@ -1251,6 +1251,12 @@ index 000000000..72888243e
 +    """
 +    logger = logging.getLogger('open_webui.access')
 +    outcome = _outcome_from_status(status_code)
++    user_email = quote(str(user_email)[:200], safe='@.-_')
++    user_role, object_type, object_id, action = (
++        _sanitize_audit_object_id(str(value)[:200]) for value in (user_role, object_type, object_id, action)
++    )
++    if meta:
++        meta = '|'.join(quote(segment.strip()[:300], safe='@.-_=:/, ') for segment in str(meta).split('|')[:20])
 +    log_msg = (
 +        f'email={user_email} | session_id=scheduler | '
 +        f'correlation_id=- | oidc_sub=- | mfa=- | '
@@ -1680,7 +1686,7 @@ index 000000000..72888243e
 +    logger.info(f'Custom access logging attivato - Percorsi esclusi: {exclude_paths}')
 diff --git a/backend/open_webui/middleware/audit_routes.py b/backend/open_webui/middleware/audit_routes.py
 new file mode 100644
-index 000000000..3ee2e8c69
+index 000000000..907783758
 --- /dev/null
 +++ b/backend/open_webui/middleware/audit_routes.py
 @@ -0,0 +1,680 @@
@@ -1906,8 +1912,8 @@ index 000000000..3ee2e8c69
 +GET /api/v1/chats/{id}/tags CHAT_TAGS_READ authenticated access
 +POST /api/v1/chats/{id}/tags CHAT_TAG_ADD authenticated security
 +POST /api/v1/chats/{id}/unread CHAT_UNREAD authenticated access
-+GET /api/v1/configs/banners CONFIG_BANNERS_READ authenticated security
-+POST /api/v1/configs/banners CONFIG_BANNERS admin access
++GET /api/v1/configs/banners CONFIG_BANNERS_READ authenticated access
++POST /api/v1/configs/banners CONFIG_BANNERS admin security
 +GET /api/v1/configs/code_execution CONFIG_CODE_EXECUTION_READ admin security
 +POST /api/v1/configs/code_execution CONFIG_CODE_EXECUTION admin security
 +GET /api/v1/configs/connections CONFIG_CONNECTIONS_READ admin security
@@ -4580,10 +4586,10 @@ index 000000000..934ca1311
 +        assert security is (method != 'GET')
 diff --git a/backend/open_webui/test/middleware/test_access_log_runtime.py b/backend/open_webui/test/middleware/test_access_log_runtime.py
 new file mode 100644
-index 000000000..36397c052
+index 000000000..8a1f9ee20
 --- /dev/null
 +++ b/backend/open_webui/test/middleware/test_access_log_runtime.py
-@@ -0,0 +1,567 @@
+@@ -0,0 +1,674 @@
 +"""Mounted NIS2 wiring and dual-audit privacy, without startup or external I/O."""
 +
 +import asyncio
@@ -5151,6 +5157,113 @@ index 000000000..36397c052
 +    assert entry['audit_level'] == 'METADATA' and entry['model_id'] == 'model-id'
 +    assert options['extra'] == {'event': 'model_usage', 'request_id': 'request-link'}
 +    assert 'query-secret' not in json.dumps(entry)
++
++
++def _audit_wrapped_request(mounted, monkeypatch, method, path, body, headers=None):
++    monkeypatch.setattr(audit, 'AUDIT_LOG_LEVEL', 'REQUEST_RESPONSE')
++    inner = audit.AuditLoggingMiddleware(app, audit_level=audit.AuditLevel.REQUEST_RESPONSE, audit_get_requests=True)
++
++    async def wrapped(scope, receive, send):
++        # AppHTTPMiddleware sets the token inside the app, after the audit layer.
++        scope.setdefault('state', {})['token'] = SimpleNamespace(credentials='token-secret')
++        await inner(scope, receive, send)
++
++    async def call():
++        async with httpx.AsyncClient(
++            transport=httpx.ASGITransport(app=wrapped, raise_app_exceptions=False),
++            base_url='http://testserver',
++            headers={'Authorization': '******', **(headers or {})},
++        ) as client:
++            return await client.request(method, path, json=body)
++
++    return asyncio.run(call())
++
++
++@pytest.mark.parametrize(
++    ('method', 'path'),
++    [
++        ('POST', '/openai/config/update'),
++        ('POST', '/ollama/config/update'),
++        ('POST', '/api/v1/configs/import'),
++        ('POST', '/api/v1/retrieval/config/update'),
++        ('POST', '/api/v1/audio/config/update'),
++        ('POST', '/api/v1/images/config/update'),
++        ('POST', '/api/v1/users/user/variables/update'),
++    ],
++)
++def test_config_write_bodies_never_reach_the_audit_log(mounted, monkeypatch, method, path):
++    body = {
++        'ENABLE_OPENAI_API': True,
++        'OPENAI_API_KEYS': ['sk-marker-secret'],
++        'config': {'nested': [{'api_key': 'sk-marker-secret'}]},
++    }
++    _audit_wrapped_request(mounted, monkeypatch, method, path, body)
++    assert mounted.entries
++    assert 'sk-marker' not in json.dumps(mounted.entries) + mounted.logs.text
++
++
++def test_secret_keys_are_redacted_recursively_in_captured_bodies():
++    body = json.dumps(
++        {
++            'OPENAI_API_KEYS': ['sk-marker-secret'],
++            'Authorization': 'Bearer sk-marker-secret',
++            'items': [{'inner': {'client_secret': 'sk-marker-secret', 'token': 'sk-marker-secret'}}],
++            'max_tokens': 128,
++            'name': 'kept',
++        }
++    )
++    redacted = audit.redact_passwords(body)
++    assert 'sk-marker' not in redacted
++    parsed = json.loads(redacted)
++    assert parsed['max_tokens'] == 128 and parsed['name'] == 'kept'
++    truncated = audit.redact_passwords('{"api_key": "sk-marker-secret", "OPENAI_API_KEYS": ["sk-marker-secret"], "x')
++    assert 'sk-marker' not in truncated
++
++
++def test_audit_identity_claims_ignore_forged_client_tokens(mounted, monkeypatch):
++    forged = auth.create_token({'sub': 'forged-sub', 'amr': ['forged-mfa'], 'auth_time': 1})
++    monkeypatch.setattr(
++        access_log, '_resolve_user_context', AsyncMock(return_value=access_log._UserContext(None, None, None, None))
++    )
++
++    async def identity(request: Request):
++        request.state.user = mounted.user
++        return mounted.user
++
++    monkeypatch.setitem(app.dependency_overrides, auth.get_admin_user, identity)
++    monkeypatch.setitem(app.dependency_overrides, auth.get_verified_user, identity)
++    _audit_wrapped_request(
++        mounted,
++        monkeypatch,
++        'POST',
++        '/api/v1/configs/banners',
++        [],
++        headers={'Authorization': 'Bearer ' + forged, 'Cookie': f'oauth_id_token={forged}; token={forged}'},
++    )
++    assert mounted.entries
++    dumped = json.dumps(mounted.entries)
++    assert 'forged-sub' not in dumped and 'forged-mfa' not in dumped
++    assert all(not entry['oidc_claims'] for entry in mounted.entries)
++
++
++def test_scheduled_activity_log_encodes_email_and_meta(caplog):
++    caplog.set_level(logging.WARNING, logger='open_webui.access')
++    access_log.log_scheduled_activity(
++        action='TASK_AUTOMATION_SCHEDULED',
++        user_email='a@b.co\nWARNING forged | action=AUTH_LOGIN',
++        user_role='user\n|x',
++        object_id='id\n|y',
++        object_type='automation',
++        status_code=200,
++        duration_s=0.1,
++        meta='trigger=scheduler|name=Daily\nReport | action=AUTH_LOGIN',
++    )
++    messages = [r.getMessage() for r in caplog.records if r.name == 'open_webui.access']
++    assert len(messages) == 1
++    message = messages[0]
++    assert '\n' not in message
++    assert message.count(' | action=') == 1  # only the real field separator
++    assert 'email=a@b.co%0AWARNING%20forged%20%7C%20action' in message
 diff --git a/backend/open_webui/test/models/test_migration_v0120_reconciliation.py b/backend/open_webui/test/models/test_migration_v0120_reconciliation.py
 new file mode 100644
 index 000000000..7f8e72b00
@@ -6448,10 +6561,10 @@ index 000000000..fc5cc7ef4
 +    assert result.body == b'audio'
 diff --git a/backend/open_webui/test/routers/test_v0120_mfa_oauth.py b/backend/open_webui/test/routers/test_v0120_mfa_oauth.py
 new file mode 100644
-index 000000000..8146cdab9
+index 000000000..1da6d64a7
 --- /dev/null
 +++ b/backend/open_webui/test/routers/test_v0120_mfa_oauth.py
-@@ -0,0 +1,984 @@
+@@ -0,0 +1,981 @@
 +"""Session and dual-audit contracts for the v0.12.0 reconciliation."""
 +
 +import asyncio
@@ -6888,10 +7001,7 @@ index 000000000..8146cdab9
 +    values = access_log._decode_allowed_oidc_audit_claims(token)
 +    assert set(values) == {'sub', 'mfa', 'auth_time'}
 +    assert '\n' not in values['sub'] and '|' not in values['sub']
-+    middleware = audit.AuditLoggingMiddleware(None)
-+    claims = middleware._decode_jwt_claims(token)
-+    assert claims == values
-+    assert '-secret' not in json.dumps(claims)
++    assert '-secret' not in json.dumps(values)
 +
 +
 +def test_upstream_password_redaction_is_preserved():
@@ -8269,6 +8379,28 @@ index 000000000..ca4743d60
 +            )
 +
 +    asyncio.run(scenario())
+diff --git a/backend/open_webui/test/utils/test_changelog_env.py b/backend/open_webui/test/utils/test_changelog_env.py
+new file mode 100644
+index 000000000..65bfd3d04
+--- /dev/null
++++ b/backend/open_webui/test/utils/test_changelog_env.py
+@@ -0,0 +1,16 @@
++import re
++from pathlib import Path
++
++from bs4 import BeautifulSoup
++import markdown
++
++
++def test_every_changelog_h2_has_version_and_date_as_env_py_requires():
++    changelog = next(p for p in Path(__file__).resolve().parents if (p / 'CHANGELOG.md').exists()) / 'CHANGELOG.md'
++    html = markdown.markdown(changelog.read_text())
++    headings = [h.get_text().strip() for h in BeautifulSoup(html, 'html.parser').find_all('h2')]
++    assert headings
++    for heading in headings:
++        parts = heading.split(' - ')
++        assert len(parts) >= 2 and re.fullmatch(r'\[[^\]]+\]', parts[0]), heading
++        assert re.match(r'\d{4}-\d{2}-\d{2}', parts[1]), heading
 diff --git a/backend/open_webui/test/utils/test_mcp_v0120.py b/backend/open_webui/test/utils/test_mcp_v0120.py
 new file mode 100644
 index 000000000..a327e45ba
@@ -8590,10 +8722,11 @@ index 000000000..a327e45ba
 +
 +    asyncio.run(run())
 diff --git a/backend/open_webui/utils/audit.py b/backend/open_webui/utils/audit.py
-index 856bdd2d9..8446075b3 100644
+index 856bdd2d9..40b75977b 100644
 --- a/backend/open_webui/utils/audit.py
 +++ b/backend/open_webui/utils/audit.py
-@@ -1,7 +1,7 @@
+@@ -1,7 +1,8 @@
++import json
  import re
  import uuid
  from contextlib import asynccontextmanager
@@ -8602,7 +8735,7 @@ index 856bdd2d9..8446075b3 100644
  from enum import Enum
  from typing import (
      TYPE_CHECKING,
-@@ -24,7 +24,8 @@ from asgiref.typing import (
+@@ -24,7 +25,8 @@ from asgiref.typing import (
      Scope as ASGIScope,
  )
  from loguru import logger
@@ -8612,7 +8745,7 @@ index 856bdd2d9..8446075b3 100644
  from open_webui.models.users import UserModel
  from open_webui.utils.auth import get_current_user, get_http_authorization_cred
  from open_webui.utils.response import normalize_usage
-@@ -34,6 +35,17 @@ if TYPE_CHECKING:
+@@ -34,6 +36,17 @@ if TYPE_CHECKING:
      from loguru import Logger
  
  
@@ -8630,7 +8763,7 @@ index 856bdd2d9..8446075b3 100644
  @dataclass(frozen=True)
  class AuditLogEntry:
      # `Metadata` audit level properties
-@@ -42,6 +54,9 @@ class AuditLogEntry:
+@@ -42,6 +55,9 @@ class AuditLogEntry:
      audit_level: str
      verb: str
      request_uri: str
@@ -8640,7 +8773,7 @@ index 856bdd2d9..8446075b3 100644
      user_agent: Optional[str] = None
      source_ip: Optional[str] = None
      model_id: Optional[str] = None
-@@ -51,6 +66,7 @@ class AuditLogEntry:
+@@ -51,6 +67,7 @@ class AuditLogEntry:
      # `Request Response` level
      response_object: Any = None
      response_status_code: Optional[int] = None
@@ -8648,7 +8781,7 @@ index 856bdd2d9..8446075b3 100644
  
  
  class AuditLevel(str, Enum):
-@@ -129,7 +145,7 @@ def log_model_usage(request: Request, user: UserModel, model_id: str, usage: Opt
+@@ -129,7 +146,7 @@ def log_model_usage(request: Request, user: UserModel, model_id: str, usage: Opt
                  user=user.model_dump(include={'id', 'name', 'email', 'role'}),
                  audit_level=request.state.audit_level,
                  verb=request.method,
@@ -8657,14 +8790,63 @@ index 856bdd2d9..8446075b3 100644
                  source_ip=request.client.host if request.client else None,
                  user_agent=request.headers.get('user-agent'),
                  model_id=model_id,
-@@ -214,12 +230,33 @@ class AuditLoggingMiddleware:
+@@ -141,15 +158,41 @@ def log_model_usage(request: Request, user: UserModel, model_id: str, usage: Opt
+         logger.error('Failed to log model usage: {}', e)
+ 
+ 
++_SECRET_NAME = r'(?:\w*(?:password|passwd|secret|credential|authorization|api[_-]?keys?|tokens?)|keys?|\w+_keys?)'
++_SECRET_KEY = re.compile(_SECRET_NAME, re.IGNORECASE)
++_SECRET_JSON_FALLBACK = re.compile(
++    r'"(' + _SECRET_NAME + r')"\s*:\s*(?:"(?:[^"\\]|\\.)*"|\[[^\]]*\])',
++    re.IGNORECASE,
++)
++
++
++def _redact_secret_values(value: Any) -> Any:
++    if isinstance(value, dict):
++        return {
++            key: (
++                '********'
++                if isinstance(key, str) and _SECRET_KEY.fullmatch(key) and isinstance(item, (str, list, dict))
++                else _redact_secret_values(item)
++            )
++            for key, item in value.items()
++        }
++    if isinstance(value, list):
++        return [_redact_secret_values(item) for item in value]
++    return value
++
++
+ def redact_passwords(body: str) -> str:
+-    if 'password' not in body.lower():
++    """Mask credential-like values (passwords, API keys, tokens, secrets) in a JSON body."""
++    if not body:
+         return body
+-    return re.sub(
+-        r'"(\w*password)"\s*:\s*"(?:[^"\\]|\\.)*"',
+-        r'"\1": "********"',
+-        body,
+-        flags=re.IGNORECASE,
+-    )
++    try:
++        parsed = json.loads(body)
++    except ValueError:
++        # Truncated or non-JSON payloads: fall back to pattern masking.
++        return _SECRET_JSON_FALLBACK.sub(r'"\1": "********"', body)
++    if not isinstance(parsed, (dict, list)):
++        return body
++    return json.dumps(_redact_secret_values(parsed), ensure_ascii=False)
+ 
+ 
+ class AuditLoggingMiddleware:
+@@ -214,12 +257,33 @@ class AuditLoggingMiddleware:
  
          request.state.audit_request_id = str(uuid.uuid4())
          request.state.audit_level = self.audit_level.value
 -        capture_body = not (request.url.path.startswith('/api/v1/auths') or request.url.path.startswith('/oauth/'))
 +        policy = match_route_policy(request.method, request.url.path)
 +        private_payload = policy and (
-+            policy.action.startswith(('APP_', 'CHANNEL_'))
++            policy.action.startswith(('APP_', 'CHANNEL_', 'CONFIG_', 'USER_VARIABLES_'))
 +            or policy.action in {'CALENDAR_ACCESS_UPDATE', 'INTERFACE_VISIBILITY_UPDATE', 'WORKSPACE_SEARCH_READ'}
 +        )
 +        capture_body = not private_payload and not (
@@ -8694,7 +8876,7 @@ index 856bdd2d9..8446075b3 100644
                  ):
                      await self._capture_response(message, context)
  
-@@ -249,6 +286,9 @@ class AuditLoggingMiddleware:
+@@ -249,6 +313,9 @@ class AuditLoggingMiddleware:
          context = AuditContext()
          try:
              yield context
@@ -8704,20 +8886,15 @@ index 856bdd2d9..8446075b3 100644
          finally:
              await self._log_audit_entry(request, context)
  
-@@ -266,7 +306,71 @@ class AuditLoggingMiddleware:
+@@ -266,15 +333,50 @@ class AuditLoggingMiddleware:
              user = await get_current_user(request, None, None, get_http_authorization_cred(auth_header))
              return user
          except Exception as e:
 -            logger.debug('Failed to get authenticated user: {}', e)
 +            logger.debug('Failed to get authenticated user: {}', type(e).__name__)
-+
-+        return None
-+
-+    def _decode_jwt_claims(self, token: str) -> Optional[dict[str, Any]]:
-+        from open_webui.middleware.access_log import _decode_allowed_oidc_audit_claims
-+
-+        return _decode_allowed_oidc_audit_claims(token) or None
-+
+ 
+         return None
+ 
 +    def _extract_correlation_id(self, request: Request) -> Optional[str]:
 +        """Extract X-Request-ID header passed by WAF/ADSSPM for NIS2 correlation."""
 +        from open_webui.middleware.access_log import AccessLogMiddleware
@@ -8739,45 +8916,21 @@ index 856bdd2d9..8446075b3 100644
 +
 +        return AccessLogMiddleware._get_client_ip(self, request)
 +
-+    def _extract_oidc_claims(self, request: Request) -> Optional[dict[str, Any]]:
-+        """
-+        Extract NIS2-relevant OIDC claims from JWT tokens.
++    async def _resolve_oidc_claims(self, request: Request, user: dict) -> dict[str, Any]:
++        """Identity-assurance claims from trusted server state only, never client-supplied tokens."""
++        claims = getattr(request.state, 'oidc_audit_claims', None)
++        if not claims and user.get('id'):
++            from open_webui.middleware.access_log import _resolve_user_context
 +
-+        Tries in order:
-+          1. oauth_id_token cookie (OIDC ID token from ADSSPM)
-+          2. Authorization Bearer token
-+          3. token cookie (session JWT)
++            try:
++                ctx = await _resolve_user_context(user['id'])
++                claims = {'sub': ctx.oidc_sub, 'mfa': ctx.mfa_status}
++            except Exception:
++                claims = None
++        return claims or {}
 +
-+        Extracts only bounded sub, auth_time and MFA identifiers.
-+        """
-+        tokens_to_try = []
-+
-+        # Priority 1: OIDC ID token cookie (set by OAuth flow)
-+        oauth_id_token = request.cookies.get('oauth_id_token')
-+        if oauth_id_token:
-+            tokens_to_try.append(oauth_id_token)
-+
-+        # Priority 2: Authorization ******
-+        auth_header = request.headers.get('Authorization')
-+        if auth_header and auth_header.startswith('Bearer '):
-+            bearer_token = auth_header[len('Bearer ') :]
-+            # Skip API keys
-+            if not bearer_token.startswith('sk-'):
-+                tokens_to_try.append(bearer_token)
-+
-+        # Priority 3: Session token cookie
-+        session_token = request.cookies.get('token')
-+        if session_token:
-+            tokens_to_try.append(session_token)
-+
-+        for token in tokens_to_try:
-+            claims = self._decode_jwt_claims(token)
-+            if claims:
-+                return claims
- 
-         return None
- 
-@@ -275,6 +379,7 @@ class AuditLoggingMiddleware:
+     ALWAYS_LOG_ENDPOINTS = (
+         '/api/v1/auths/signin',
          '/api/v1/auths/signout',
          '/api/v1/auths/signup',
          '/api/v1/auths/mfa',
@@ -8785,7 +8938,7 @@ index 856bdd2d9..8446075b3 100644
      )
  
      def _should_skip_auditing(self, request: Request) -> bool:
-@@ -322,10 +427,23 @@ class AuditLoggingMiddleware:
+@@ -322,10 +424,18 @@ class AuditLoggingMiddleware:
  
      async def _log_audit_entry(self, request: Request, context: AuditContext):
          try:
@@ -8800,17 +8953,12 @@ index 856bdd2d9..8446075b3 100644
 +            correlation_id = self._extract_correlation_id(request)
 +            from open_webui.middleware.access_log import _bounded_oidc_audit_claims
 +
-+            oidc_claims = (
-+                _bounded_oidc_audit_claims(
-+                    getattr(request.state, 'oidc_audit_claims', None) or self._extract_oidc_claims(request) or {}
-+                )
-+                or None
-+            )
++            oidc_claims = _bounded_oidc_audit_claims(await self._resolve_oidc_claims(request, user)) or None
 +
              request_body = context.request_body.decode('utf-8', errors='replace')
              response_body = context.response_body.decode('utf-8', errors='replace')
  
-@@ -338,13 +456,16 @@ class AuditLoggingMiddleware:
+@@ -338,13 +448,16 @@ class AuditLoggingMiddleware:
                  user=user,
                  audit_level=self.audit_level.value,
                  verb=request.method,

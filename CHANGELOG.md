@@ -17,9 +17,11 @@ Fork candidate on branch `integration-v0.12.4`, based on upstream Open WebUI [v0
 - Added the Alembic merge revision `3a9d5e7c1b42` joining heads `0bd252b206fb` and `e304e2e7c45a`; the Prompt Insights migrations are kept so historical data is never dropped.
 - Dropped the fork-only analytics customizations (Prompt Insights, routing analytics, cross-filter, TTFT/token-rate UI and endpoints, related locale keys); Analytics is exactly upstream v0.12.4.
 
+- Final review fixes: dated fork heading (the previous one broke `open_webui.env` import); recursive secret redaction and no body capture for config-write audit entries; OIDC audit claims only from trusted server state; encoded scheduled-activity access-log fields; banner severity swap.
+
 ### Verification and limits
 
-- Backend: 721 passed, 3 skipped (PostgreSQL migration checks need `TEST_POSTGRES_URL`) with the slim pinned runtime, no network and a temporary SQLite database. Frontend: Vitest 18 passed; `npm run check` reports the same 5646 errors/188 warnings inherited from upstream, none in files that differ from upstream.
+- Backend: 732 passed, 3 skipped (PostgreSQL migration checks need `TEST_POSTGRES_URL`) with the slim pinned runtime, no network and a temporary SQLite database. Frontend: Vitest 18 passed; `npm run check` reports the same 5646 errors/188 warnings inherited from upstream, none in files that differ from upstream.
 - No real database, service, image build or deploy was exercised; PostgreSQL/MariaDB migrations and the full Docker build remain untested.
 
 ## [0.12.4] - 2026-10-25

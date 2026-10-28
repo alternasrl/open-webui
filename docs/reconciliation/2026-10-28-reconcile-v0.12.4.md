@@ -184,19 +184,28 @@ Gli unici percorsi con "analytics" nel nome che differiscono da upstream sono le
 
 | Controllo                      | Comando / contesto                                                                                                                                   | Esito                                                                                           |
 | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| Backend completo               | `pytest backend/` via runner isolato (runtime slim pinnato, rete/DNS bloccati, SQLite temporanea)                                                    | **721 passed, 3 skipped**, 0 failed                                                             |
+| Backend completo               | `pytest backend/` via runner isolato (runtime slim pinnato, rete/DNS bloccati, SQLite temporanea)                                                    | **732 passed, 3 skipped**, 0 failed (dopo i fix della review finale, HEAD `4e398be70`)                                                             |
 | Skip                           | Test PostgreSQL di migrazione (`TEST_POSTGRES_URL` non impostato)                                                                                    | Non prova il comportamento su PostgreSQL                                                        |
-| Middleware + audit automazioni | Suite middleware e `test_automations_audit.py`                                                                                                       | 518 passed                                                                                      |
-| Guardia route NIS2             | Inventario runtime dev/SCIM on e prod/SCIM off                                                                                                       | 610/602/8/0 e 592/587/5/0                                                                       |
+| Middleware + audit automazioni | Suite `test/middleware` (incl. test redazione segreti, claim OIDC, log injection)                                                                                                       | 513 passed                                                                                      |
+| Guardia route NIS2             | Inventario runtime dev/SCIM on e prod/SCIM off + `test_access_log_route_coverage.py` (175 passed)                                                      | 610/602/8/0 e 592/587/5/0                                                                       |
+| Regressione CHANGELOG          | `test/utils/test_changelog_env.py` + `import open_webui.main` (parsing di `env.py`)                                                                  | passed                                                                                          |
 | Migrazioni                     | `test_migration_v0120_*` + `test_migration_v0124_*`                                                                                                  | 8 passed, 3 skipped (PostgreSQL)                                                                |
 | Analytics                      | `test_v0124_analytics_surface.py`                                                                                                                    | 27 passed                                                                                       |
 | Frontend                       | `npx vitest run` (Node 22); `npm run test:frontend` è in modalità watch                                                                              | 3 file, 18 test passed                                                                          |
 | `npm run check`                | svelte-check                                                                                                                                         | 5646 errori / 188 warning in 319 file; 0 diagnostica nei 7 file sorgente differenti da upstream |
 | `npm run crypto:verify`        | Node 22                                                                                                                                              | OK                                                                                              |
 | `git diff --check`             | Codice/config                                                                                                                                        | Pulito (rumore solo in archivi docs e riga nota di THIRD_PARTY_LICENSES vendored)               |
-| Patch candidata                | `patches/integration-v0.12.4-customizations-from-main.patch` (48 file, +8834/−99); `git apply --check` e apply reale su checkout v0.12.4 usa-e-getta | OK, albero identico a HEAD                                                                      |
+| Patch candidata                | `patches/integration-v0.12.4-customizations-from-main.patch` (49 file, +8959/−106); `git apply --check` e apply reale su checkout v0.12.4 usa-e-getta | OK, albero identico a HEAD                                                                      |
 
 **Interpretazione `npm run check`:** i 5646 errori derivano da upstream: tutti i file `src/` non elencati sono byte-identici a v0.12.4, quindi nessuna nuova diagnostica. Baseline upstream non rieseguita su checkout pristine (inferita per identità dei file).
+
+### Fix della review finale (HEAD `4e398be70`)
+
+- CHANGELOG: intestazione datata `## [0.12.4-261028] - 2026-10-28 (...)`; prima rompeva `env.py` (`split(' - ')[1]`) e quindi l'import del backend. Test di regressione `test/utils/test_changelog_env.py`.
+- Audit: `redact_passwords` maschera ricorsivamente le chiavi `*password|*secret|*credential|authorization|*api_key(s)|*token(s)|key(s)|*_key(s)` (JSON valido, con fallback regex per body troncati) e il body non viene catturato per le azioni `CONFIG_*` e `USER_VARIABLES_*`; test montati con marker `sk-` su 7 route di configurazione.
+- Audit: i claim OIDC provengono solo da `request.state.oidc_audit_claims` o dal contesto server-side (`_resolve_user_context`); cookie/Bearer non verificati non sono più decodificati.
+- Access log: `log_scheduled_activity` codifica email, ruolo, azione, object e meta (anti log injection).
+- Catalogo: severità banner invertita correttamente.
 
 ## 11. Limitazioni e rischi residui
 
@@ -211,7 +220,7 @@ Gli unici percorsi con "analytics" nel nome che differiscono da upstream sono le
 | 4    | Path non corrispondenti loggati come `[unmatched]` (perso il path reale: rilevamento scansioni)                                                                        |
 | 4    | Riuso di metodi di `AccessLogMiddleware` con `self` di un'altra classe e import locali (`utils/audit.py`)                                                              |
 | 4    | Controllo duplicati del catalogo con `assert` (rimosso con `python -O`) → usare `ValueError`                                                                           |
-| 4    | Severità banner apparentemente invertite (`GET /configs/banners` security, `POST` access); delete chat/file/note/messaggio canale restano `access`                     |
+| 4    | Severità banner corrette in review finale (`GET /configs/banners` access, `POST` security); delete chat/file/note/messaggio canale restano `access`                     |
 | 4    | Matching delle route ripetuto più volte per richiesta (risolvere una volta e cache in `scope['state']`)                                                                |
 | 4    | Esclusioni body-capture incoerenti: `/api/chat/completions`, `/api/v1/messages`, `/openai/*`, `/ollama/*` restano catturati a livello REQUEST (comportamento upstream) |
 | 4    | Richieste cancellate (`CancelledError`) non loggate (comportamento ereditato)                                                                                          |
