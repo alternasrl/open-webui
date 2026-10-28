@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.4] GIADA fork reconciliation candidate (unreleased, no tag)
+
+Fork candidate on branch `integration-v0.12.4`, based on upstream Open WebUI [v0.12.4](https://github.com/open-webui/open-webui/releases/tag/v0.12.4). See the upstream entry below for upstream changes.
+
+### Custom changes
+
+- Preserved the NIS2 access-log middleware (`setup_access_logging(app)` restored in `main.py`) with a new semantic route catalog (`middleware/audit_routes.py`) covering the upstream apps, channel apps/mute/access, file search/count, workspace search, chat params, calendar access and interface visibility routes: 610 mounted method/path pairs, 602 classified, 8 exempt, 0 unclassified (592/587/5/0 in production without SCIM).
+- Preserved the audit-log redaction for apps and channels, scheduled-automation audit coverage, OIDC/OAuth/MFA compliance, MCP import compatibility, proxy `trust_env` handling, web-loader safety, audio path validation and the user context cache fixes.
+- Preserved the Connections save behavior and OpenAI API error fallback in the admin UI.
+- Added the Alembic merge revision `3a9d5e7c1b42` joining heads `0bd252b206fb` and `e304e2e7c45a`; the Prompt Insights migrations are kept so historical data is never dropped.
+- Dropped the fork-only analytics customizations (Prompt Insights, routing analytics, cross-filter, TTFT/token-rate UI and endpoints, related locale keys); Analytics is exactly upstream v0.12.4.
+
+### Verification and limits
+
+- Backend: 721 passed, 3 skipped (PostgreSQL migration checks need `TEST_POSTGRES_URL`) with the slim pinned runtime, no network and a temporary SQLite database. Frontend: Vitest 18 passed; `npm run check` reports the same 5646 errors/188 warnings inherited from upstream, none in files that differ from upstream.
+- No real database, service, image build or deploy was exercised; PostgreSQL/MariaDB migrations and the full Docker build remain untested.
+
 ## [0.12.4] - 2026-10-25
 
 ### Added

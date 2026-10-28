@@ -707,3 +707,13 @@
 - **Task 5 concern, not suppressed:** unchanged `test_collaborator_cannot_edit_others_message` expects a 403 when a collaborator generates a reply to an existing owner's user message. The pinned upstream transaction allows that operation; the expectation fails on the unmodified Task 3 base as well. Its assertions and all production shared-chat behavior remain unchanged for Task 5 reconciliation.
 - Inert retired-path access-log classifications and their audit tests remain owned by Task 4; they do not mount or implement analytics endpoints. Standard arena model-selection metadata and upstream usage metrics remain intact.
 - No production code, dependencies, migrations, schema or data were changed. Two existing Alembic heads remain Task 6's responsibility; checks use only disposable in-memory SQLite, not an upgrade or a real database. Full commands, results and limitations are recorded in `.superpowers/sdd/2026-10-27-reconcile-v0.12.4/task-3-report.md` in the coordination checkout.
+
+## Task 8 — Final verification and handoff (2026-10-28)
+
+- Backend `pytest -q backend/` (slim pinned v0.12.4 runtime, network blocked, temp SQLite): **721 passed, 3 skipped, 0 failed** (skips: PostgreSQL migration test, `TEST_POSTGRES_URL` unset). No failure to classify; no regression.
+- Frontend: `vitest run` 3 files/18 tests passed; `npm run check` 5646 errors/188 warnings in 319 files, identical to Task 7 and upstream-inherent; zero diagnostics in the 7 src files differing from upstream.
+- Analytics parity: `git diff 33c1978d5 HEAD` over `src/lib/components/admin/Analytics`, `src/lib/apis/analytics`, `routers/analytics.py` and `src/lib/i18n` is empty; no Prompt Insights/routing routes mounted; Prompt Insights migrations `f8a9b0c1d2e3`/`6c7d8e9f0a1b` preserved (the only `drop_table` is in its downgrade), merged by `3a9d5e7c1b42`.
+- NIS2: dev/SCIM on 610 routes, 602 classified, 8 exempt, 0 unclassified; production/SCIM off 592/587/5/0. Middleware, automation-audit and route-coverage tests: 518 passed.
+- `git diff --check`: clean for code/config; only whitespace noise is in archived docs and the known vendored THIRD_PARTY_LICENSES line.
+- `patches/integration-v0.12.4-customizations-from-main.patch` regenerated as `git diff --binary 33c1978d5 HEAD` excluding `.superpowers/`, `patches/`, `docs/`, CHANGELOG, fork Copilot instructions and the workspace file (48 files, +8834/-99); `git apply --check` and a real apply on a throwaway v0.12.4 checkout reproduce the HEAD tree exactly.
+- Limits: no PostgreSQL/MariaDB or real-service run; no Docker build. No tag, push, image or PR created.
