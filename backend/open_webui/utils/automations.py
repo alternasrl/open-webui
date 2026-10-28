@@ -140,15 +140,6 @@ async def scheduler_worker_loop(app) -> None:
                 except Exception:
                     log.exception('Scheduler: calendar alert error')
 
-            # ── Prompt Insights ──
-            if os.getenv('PROMPT_INSIGHTS_ENABLED', 'false').lower() == 'true':
-                try:
-                    from open_webui.prompt_insights.pipeline import run_prompt_insights_if_due  # noqa: PLC0415
-
-                    await run_prompt_insights_if_due(app)
-                except Exception:
-                    log.exception('Scheduler: prompt insights error')
-
         except Exception:
             log.exception('Scheduler worker error')
 
@@ -391,6 +382,7 @@ async def execute_automation(app, automation: AutomationModel, trigger: str = 's
                  real HTTP triggerer — this function only emits NIS2 log lines
                  for scheduler-triggered runs.
     """
+    chat = None
     # Lazy import to avoid circular imports at module load time.
     # access_log is only needed for scheduler-triggered runs.
     if trigger == 'scheduler':
@@ -612,10 +604,27 @@ async def execute_automation(app, automation: AutomationModel, trigger: str = 's
             'automation_id': automation.id,
             'background_tasks': {},
         }
+        # Match the chat UI's memory preference, including inherited defaults.
+        ui_settings = (user.settings.ui or {}) if user.settings else {}
+        memory = ui_settings.get('memory')
+        if memory is None:
+            defaults = await Config.get('ui.default_interface_settings') or {}
+            memory = defaults.get('memory')
+        if memory is None:
+            memory = await Config.get('memories.enable')
+        if memory:
+            form_data.setdefault('features', {})['memory'] = True
+
         # Call the full chat completion pipeline (same as POST /api/chat/completions).
         # The handler reference is stored on app.state to avoid circular imports.
         request = _build_request(app, token=token)
         await app.state.CHAT_COMPLETION_HANDLER(request, form_data, user=user)
+
+        reply = await Chats.get_message_by_id_and_message_id(chat.id, assistant_msg_id)
+        if reply and reply.get('error'):
+            raise ValueError(str(reply['error']['content']))
+        if not reply or not reply.get('done'):
+            raise ValueError('Automation reply did not complete')
 
         # Notify user
         from open_webui.socket.main import sio
@@ -656,16 +665,18 @@ async def execute_automation(app, automation: AutomationModel, trigger: str = 's
                 ),
             )
 
-    except Exception as e:
+    except (Exception, asyncio.CancelledError) as e:
         log.exception(f'Automation {automation.id} failed')
-        error = str(e)[:4000]
-        await _record_run(automation.id, 'error', error=error)
+        error = 'Automation reply was cancelled' if isinstance(e, asyncio.CancelledError) else str(e)[:4000]
+        await _record_run(automation.id, 'error', chat_id=chat.id if chat else None, error=error)
         await publish_event(
             app,
             EVENTS.AUTOMATION_RUN_FAILED,
             subject_id=automation.id,
-            data={'name': automation.name, 'error': error},
+            data={'name': automation.name, 'error': error, **({'chat_id': chat.id} if chat else {})},
         )
+        if isinstance(e, asyncio.CancelledError):
+            raise
         if log_scheduled_activity:
             log_scheduled_activity(
                 'TASK_AUTOMATION_SCHEDULED_ERROR',
@@ -712,7 +723,7 @@ async def _check_calendar_alerts(app) -> None:
 
     for event, user_tz in upcoming:
         # Skip if already alerted for this start time
-        if event.meta and event.meta.get('alerted_at'):
+        if event.meta and event.meta.get('alerted_at') == event.start_at:
             continue
 
         # Compute minutes until event starts
@@ -743,7 +754,7 @@ async def _check_calendar_alerts(app) -> None:
         try:
             await CalendarEvents.update_event_by_id(
                 event.id,
-                CalendarEventUpdateForm(meta={'alerted_at': now_ns}),
+                CalendarEventUpdateForm(meta={'alerted_at': event.start_at}),
             )
         except Exception:
             log.debug('Failed to mark event %s as alerted', event.id, exc_info=True)

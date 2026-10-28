@@ -30,6 +30,7 @@ import requests
 import urllib3.connection
 import urllib3.connectionpool
 import validators
+from requests.adapters import HTTPAdapter
 from fastapi import HTTPException
 from fastapi.concurrency import run_in_threadpool
 from langchain_core.document_loaders import BaseLoader
@@ -54,7 +55,6 @@ from open_webui.retrieval.loaders.microsoft_web_iq import MicrosoftWebIQLoader
 from open_webui.retrieval.loaders.tavily import TavilyLoader
 from open_webui.retrieval.web.firecrawl import scrape_firecrawl_url
 from open_webui.utils.misc import is_host_allowed, is_host_blocked
-from requests.adapters import HTTPAdapter
 
 log = logging.getLogger(__name__)
 
@@ -1031,6 +1031,17 @@ class SafePlaywrightURLLoader(BaseLoader, RateLimitMixin, URLProcessingMixin):
                         raise e
 
 
+WEB_LOADER_HEADERS = {
+    'User-Agent': USER_AGENT or 'DefaultLangchainUserAgent',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.5',
+    'Referer': 'https://www.google.com/',
+    'DNT': '1',
+    'Connection': 'keep-alive',
+    'Upgrade-Insecure-Requests': '1',
+}
+
+
 class SafeWebBaseLoader(BaseLoader):
     """Fetch pages with connect-time address checks and bounded concurrency."""
 
@@ -1056,17 +1067,10 @@ class SafeWebBaseLoader(BaseLoader):
         self.default_parser = default_parser
         self.bs_kwargs = bs_kwargs or {}
         self.bs_get_text_kwargs = bs_get_text_kwargs or {}
-        self.session = get_ssrf_safe_requests_session(trust_env=trust_env)
+        # Preserve the synchronous loader's environment-proxy behavior.
+        self.session = get_ssrf_safe_requests_session()
         self.session.verify = verify_ssl
-        self.session.headers = {
-            'User-Agent': USER_AGENT or 'DefaultLangchainUserAgent',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
-            'Referer': 'https://www.google.com/',
-            'DNT': '1',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
-        }
+        self.session.headers = WEB_LOADER_HEADERS
 
     async def fetch_all(self, urls):
         semaphore = asyncio.Semaphore(self.requests_per_second)

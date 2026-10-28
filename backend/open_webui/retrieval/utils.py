@@ -40,15 +40,15 @@ from open_webui.env import (
 )
 from open_webui.models.access_grants import AccessGrants
 from open_webui.models.chats import Chats
-from open_webui.models.config import Config
 from open_webui.models.files import Files
 from open_webui.models.folders import Folders
 from open_webui.models.knowledge import Knowledges
 from open_webui.models.notes import Notes
+from open_webui.models.config import Config
 from open_webui.models.users import UserModel
-from open_webui.retrieval.external import retrieve_external_knowledge
 from open_webui.retrieval.loaders.youtube import YoutubeLoader
 from open_webui.retrieval.vector.async_client import ASYNC_VECTOR_DB_CLIENT
+from open_webui.retrieval.external import retrieve_external_knowledge
 from open_webui.retrieval.vector.factory import get_vector_db_client
 from open_webui.retrieval.vector.main import GetResult, SearchResult
 from open_webui.retrieval.web.utils import get_web_loader
@@ -120,6 +120,9 @@ def _extract_text_from_binary_response(
     if not filename or '.' not in filename:
         ext = mimetypes.guess_extension(content_type) or ''
         filename = f'download{ext}'
+    elif not mimetypes.guess_type(filename)[0] and content_type != 'application/octet-stream':
+        # The dot in names like arXiv's 1706.03762 is not an extension.
+        filename += mimetypes.guess_extension(content_type) or ''
 
     suffix = '.' + filename.split('.')[-1].lower() if '.' in filename else ''
 
@@ -236,11 +239,7 @@ async def get_content_from_url(request, url: str, *, config: dict | None = None)
 
 
 def _get_content_from_url_sync(request, url: str, config: dict):
-    from open_webui.retrieval.web.utils import (
-        _SSRFSafeAdapter,
-        get_ssrf_safe_requests_session,
-        validate_url,
-    )
+    from open_webui.retrieval.web.utils import WEB_LOADER_HEADERS, validate_url, get_ssrf_safe_requests_session
 
     # Validate URL before making any request (blocks private IPs, non-HTTP, filter list)
     validate_url(url)
@@ -257,36 +256,38 @@ def _get_content_from_url_sync(request, url: str, config: dict):
         content = ' '.join([doc.page_content for doc in docs])
         return content, docs
 
-    # The safe adapter screens redirect targets and the DNS answers used for TCP.
-    session = get_ssrf_safe_requests_session(trust_env=config['web.search.trust_env'])
-    session.verify = config['web.loader.ssl_verification']
-    response = None
+    # Streamed GET to check Content-Type without downloading the body.
+    # allow_redirects=False prevents redirect-based SSRF: validate_url() above is
+    # called on the originally-submitted URL only; following 3xx redirects without
+    # re-validation would let an attacker reach private IPs (RFC1918, loopback,
+    # cloud-metadata 169.254.169.254) via a public host that redirects internally.
     try:
-        try:
-            response = session.get(url, stream=True, timeout=30, allow_redirects=AIOHTTP_CLIENT_ALLOW_REDIRECTS)
-            response.raise_for_status()
-            content_type = response.headers.get('Content-Type', '')
-        except Exception:
-            if response is not None:
-                response.close()
-                response = None
-            content_type = ''
+        # Probe through the connect-time SSRF guard; bare requests.get re-resolves (DNS-rebinding gap).
+        session = get_ssrf_safe_requests_session()
+        # Match the web loader's request, or sites that block unknown clients make a file look like a web page.
+        session.headers = WEB_LOADER_HEADERS
+        session.verify = config['web.loader.ssl_verification']
+        response = session.get(url, stream=True, timeout=30, allow_redirects=AIOHTTP_CLIENT_ALLOW_REDIRECTS)
+        response.raise_for_status()
+        content_type = response.headers.get('Content-Type', '')
+    except Exception:
+        content_type = ''
+        response = None
 
-        # Close the streamed probe before invoking a loader that opens its own session.
-        if response is None or _is_text_content_type(content_type):
-            if response is not None:
-                response.close()
-                response = None
-            loader = get_loader(request, url, config)
-            docs = loader.load()
-            content = ' '.join([doc.page_content for doc in docs])
-            return content, docs
-
-        return _extract_text_from_binary_response(request, response, url, config)
-    finally:
+    # Text / HTML / unknown — use the configured web loader
+    if response is None or _is_text_content_type(content_type):
         if response is not None:
             response.close()
-        session.close()
+        loader = get_loader(request, url, config)
+        docs = loader.load()
+        content = ' '.join([doc.page_content for doc in docs])
+        return content, docs
+
+    # Binary content (PDF, DOCX, XLSX, PPTX, etc.) — download and extract
+    try:
+        return _extract_text_from_binary_response(request, response, url, config)
+    finally:
+        response.close()
 
 
 CHUNK_HASH_KEY = '_chunk_hash'
@@ -1287,6 +1288,45 @@ def _is_safe_collection_name(name: str) -> bool:
     return isinstance(name, str) and bool(_SAFE_COLLECTION_NAME_RE.match(name))
 
 
+def resolve_collection_names(collection_name: str) -> set[str]:
+    """Names that may share a vector collection after backend normalization."""
+    normalized_name = collection_name.lower().replace('_', '-').strip('-')
+    collection_names = {normalized_name}
+    # Weaviate prepends C to digit-leading names, so both spellings can reach the same collection.
+    if normalized_name[:1].isdigit():
+        collection_names.add(f'c{normalized_name}')
+    elif normalized_name.startswith('c') and normalized_name[1:2].isdigit():
+        collection_names.add(normalized_name[1:])
+    return collection_names
+
+
+async def has_access_to_collection(collection_name: str, user: UserModel, access_type: str) -> bool:
+    """Require access to every recognized collection, preserving the policy for unknown names."""
+    has_authorized_collection = False
+    for resolved_name in resolve_collection_names(collection_name):
+        if resolved_name == 'knowledge-bases':
+            return False
+        if resolved_name.startswith('file-'):
+            has_access = await has_access_to_file(
+                file_id=resolved_name[len('file-') :], access_type=access_type, user=user
+            )
+        elif resolved_name.startswith('user-memory-'):
+            has_access = resolved_name == f'user-memory-{user.id}'
+        elif resolved_name.startswith('web-search-'):
+            has_access = resolved_name.startswith(f'web-search-{user.id}-')
+        else:
+            has_access = await Knowledges.check_access_by_user_id(resolved_name, user.id, permission=access_type)
+            if not has_access and not await Knowledges.get_knowledge_by_id(resolved_name):
+                continue
+
+        # A denied collection must win even when another name is authorized or unscoped names are enabled.
+        if not has_access:
+            return False
+        has_authorized_collection = True
+
+    return has_authorized_collection or ENABLE_RETRIEVAL_UNSCOPED_COLLECTIONS
+
+
 async def filter_accessible_collections(
     collection_names: set[str],
     user: UserModel,
@@ -1307,6 +1347,8 @@ async def filter_accessible_collections(
                           ENABLE_RETRIEVAL_UNSCOPED_COLLECTIONS is True,
                           the name is treated as a legacy/ephemeral
                           collection and allowed.
+
+    Access to every recognized collection is required; unknown names do not override a denial.
     """
     # Applied before the admin bypass — malformed names should never reach the vector store.
     safe_names = {n for n in collection_names if _is_safe_collection_name(n)}
@@ -1322,34 +1364,9 @@ async def filter_accessible_collections(
         return safe_names
 
     validated = set()
-    for name in safe_names:
-        if name == 'knowledge-bases':
-            # System meta-collection — never exposed to non-admins.
-            continue
-        elif name.startswith('file-'):
-            file_id = name[len('file-') :]
-            if await has_access_to_file(file_id=file_id, access_type=access_type, user=user):
-                validated.add(name)
-        elif name.startswith('user-memory-'):
-            if name == f'user-memory-{user.id}':
-                validated.add(name)
-        elif name.startswith('web-search-'):
-            # Ephemeral per-query collections, owner-bound: process_web_search mints
-            # them as web-search-{user.id}-<hash>, so only the creator may read/write.
-            if name.startswith(f'web-search-{user.id}-'):
-                validated.add(name)
-        else:
-            # May be a knowledge-base ID or a legacy/ephemeral collection.
-            # If it IS a KB, enforce access control.  If no such KB
-            # exists, the behaviour depends on
-            # ENABLE_RETRIEVAL_UNSCOPED_COLLECTIONS:
-            #   False (default) — deny (closes the unscoped namespace)
-            #   True  — allow (preserves legacy behaviour)
-            if await Knowledges.check_access_by_user_id(name, user.id, permission=access_type):
-                validated.add(name)
-            elif ENABLE_RETRIEVAL_UNSCOPED_COLLECTIONS and not await Knowledges.get_knowledge_by_id(name):
-                # Not a KB at all — legacy/ephemeral collection, allow
-                validated.add(name)
+    for collection_name in safe_names:
+        if await has_access_to_collection(collection_name, user, access_type):
+            validated.add(collection_name)
     return validated
 
 
@@ -1426,7 +1443,7 @@ async def get_sources_from_items(
                     # Fallback to item content
                     query_result = {
                         'documents': [[item.get('content')]],
-                        'metadatas': [[{'file_id': item.get('id'), 'name': item.get('name')}]],
+                        'metadatas': [[{'name': item.get('name')}]],
                     }
 
         elif item.get('type') == 'note':

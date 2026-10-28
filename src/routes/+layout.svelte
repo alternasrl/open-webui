@@ -82,7 +82,8 @@
 	import MfaManagement from '$lib/components/auth/MfaManagement.svelte';
 	import { getOutputText } from '$lib/components/chat/Messages/structuredOutput';
 	import { getUserSettings } from '$lib/apis/users';
-	import { getChannels } from '$lib/apis/channels';
+	import { getChannelById, getChannels } from '$lib/apis/channels';
+	import { shouldNotifyChannelMessage } from '$lib/utils/channelNotifications';
 	import { resolveTerminalConnection, terminalRequest } from '$lib/apis/terminal';
 
 	const unregisterServiceWorkers = async () => {
@@ -183,7 +184,7 @@
 			randomizationFactor: 0.5,
 			path: '/ws/socket.io',
 			transports: enableWebsocket ? ['websocket'] : ['polling', 'websocket'],
-			auth: { token: localStorage.token }
+			auth: (cb) => cb({ token: localStorage.token })
 		});
 		await socket.set(_socket);
 
@@ -553,7 +554,7 @@
 						: terminalFileResult(result, params, toolServer.url, chatId)
 					: res;
 
-			if (data?.name === 'display_file' && params?.path && !inlineDisplayFile) {
+			if (data?.name === 'display_file' && params?.path && !inlineDisplayFile && !chatId) {
 				if (result?.exists !== false) {
 					displayFileHandler(
 						result?.path ?? params.path,
@@ -671,7 +672,7 @@
 					const connection = resolveTerminalConnection(
 						data.terminal_id,
 						[],
-						$settings?.terminalServers ?? [],
+						$config?.features?.enable_direct_integrations ? ($settings?.terminalServers ?? []) : [],
 						localStorage.token
 					);
 					if (!connection) throw new Error('Terminal Not Found');
@@ -827,6 +828,16 @@
 
 	const channelEventHandler = async (event) => {
 		console.log('channelEventHandler', event);
+		if (event.data?.type === 'channel:mute') {
+			channels.update((items) =>
+				items.map((item) =>
+					item.id === event.channel_id
+						? { ...item, is_channel_muted: event.data.data.is_channel_muted }
+						: item
+				)
+			);
+			return;
+		}
 		if (event.data?.type === 'typing') {
 			return;
 		}
@@ -901,6 +912,19 @@
 			}
 
 			if (type === 'message') {
+				const preference =
+					$channels?.find((item) => item.id === event.channel_id) ??
+					(await getChannelById(localStorage.token, event.channel_id).catch(() => null));
+				if (
+					!preference ||
+					!shouldNotifyChannelMessage(
+						preference.is_channel_muted ?? false,
+						data?.content ?? '',
+						$user?.id ?? ''
+					)
+				) {
+					return;
+				}
 				const title = `${data?.user?.name}${event?.channel?.type !== 'dm' ? ` (#${event?.channel?.name})` : ''}`;
 				const content = data?.content?.replace(
 					/<([@#])([^|>\s]+)(?:\|([^>]*))?>/g,
@@ -1432,6 +1456,14 @@
 			'high-contrast',
 			$settings?.highContrastMode ?? false
 		);
+
+		const viewport = document.querySelector('meta[name="viewport"]');
+		if (viewport) {
+			viewport.content = viewport.content.replace(
+				/maximum-scale=[\d.]+/,
+				`maximum-scale=${$settings?.highContrastMode ? 5 : 1}`
+			);
+		}
 	}
 
 	onDestroy(() => {
@@ -1491,21 +1523,23 @@
 	<SyncStatsModal bind:show={showSyncStatsModal} eventData={syncStatsEventData} />
 {/if}
 
-<Toaster
-	theme={$theme.includes('dark')
-		? 'dark'
-		: $theme === 'system'
-			? window.matchMedia('(prefers-color-scheme: dark)').matches
-				? 'dark'
-				: 'light'
-			: 'light'}
-	richColors
-	position="top-right"
-	closeButton
-	toastOptions={{
-		classes: {
-			closeButton:
-				'!bg-white/80 !text-gray-500 !border-gray-200 hover:!bg-gray-50 hover:!text-gray-700 dark:!bg-gray-850 dark:!text-gray-400 dark:!border-gray-700 dark:hover:!bg-gray-800 dark:hover:!text-gray-200'
-		}
-	}}
-/>
+<div aria-live="polite">
+	<Toaster
+		theme={$theme.includes('dark')
+			? 'dark'
+			: $theme === 'system'
+				? window.matchMedia('(prefers-color-scheme: dark)').matches
+					? 'dark'
+					: 'light'
+				: 'light'}
+		richColors
+		position="top-right"
+		closeButton
+		toastOptions={{
+			classes: {
+				closeButton:
+					'!bg-white/80 !text-gray-500 !border-gray-200 hover:!bg-gray-50 hover:!text-gray-700 dark:!bg-gray-850 dark:!text-gray-400 dark:!border-gray-700 dark:hover:!bg-gray-800 dark:hover:!text-gray-200'
+			}
+		}}
+	/>
+</div>

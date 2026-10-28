@@ -4,8 +4,7 @@ export const getModelAnalytics = async (
 	token: string = '',
 	startDate: number | null = null,
 	endDate: number | null = null,
-	groupId: string | null = null,
-	userId: string | null = null
+	groupId: string | null = null
 ) => {
 	let error = null;
 
@@ -13,7 +12,6 @@ export const getModelAnalytics = async (
 	if (startDate) searchParams.append('start_date', startDate.toString());
 	if (endDate) searchParams.append('end_date', endDate.toString());
 	if (groupId) searchParams.append('group_id', groupId);
-	if (userId) searchParams.append('user_id', userId);
 
 	const res = await fetch(`${WEBUI_API_BASE_URL}/analytics/models?${searchParams.toString()}`, {
 		method: 'GET',
@@ -46,7 +44,7 @@ export const getUserAnalytics = async (
 	endDate: number | null = null,
 	limit: number = 50,
 	groupId: string | null = null,
-	modelId: string | null = null
+	metric: 'messages' | 'tokens' = 'messages'
 ) => {
 	let error = null;
 
@@ -55,7 +53,7 @@ export const getUserAnalytics = async (
 	if (endDate) searchParams.append('end_date', endDate.toString());
 	if (limit) searchParams.append('limit', limit.toString());
 	if (groupId) searchParams.append('group_id', groupId);
-	if (modelId) searchParams.append('model_id', modelId);
+	searchParams.append('metric', metric);
 
 	const res = await fetch(`${WEBUI_API_BASE_URL}/analytics/users?${searchParams.toString()}`, {
 		method: 'GET',
@@ -170,8 +168,10 @@ export const getDailyStats = async (
 	token: string = '',
 	startDate: number | null = null,
 	endDate: number | null = null,
-	granularity: 'hourly' | 'daily' = 'daily',
-	groupId: string | null = null
+	granularity: '10m' | 'hourly' | '3h' | '6h' | 'daily' = 'daily',
+	groupId: string | null = null,
+	metric: 'messages' | 'tokens' = 'messages',
+	compare = false
 ) => {
 	let error = null;
 
@@ -179,6 +179,8 @@ export const getDailyStats = async (
 	if (startDate) searchParams.append('start_date', startDate.toString());
 	if (endDate) searchParams.append('end_date', endDate.toString());
 	searchParams.append('granularity', granularity);
+	searchParams.append('metric', metric);
+	if (compare) searchParams.append('compare', 'true');
 	if (groupId) searchParams.append('group_id', groupId);
 
 	const res = await fetch(`${WEBUI_API_BASE_URL}/analytics/daily?${searchParams.toString()}`, {
@@ -210,9 +212,7 @@ export const getTokenUsage = async (
 	token: string = '',
 	startDate: number | null = null,
 	endDate: number | null = null,
-	groupId: string | null = null,
-	userId: string | null = null,
-	modelId: string | null = null
+	groupId: string | null = null
 ) => {
 	let error = null;
 
@@ -220,8 +220,6 @@ export const getTokenUsage = async (
 	if (startDate) searchParams.append('start_date', startDate.toString());
 	if (endDate) searchParams.append('end_date', endDate.toString());
 	if (groupId) searchParams.append('group_id', groupId);
-	if (userId) searchParams.append('user_id', userId);
-	if (modelId) searchParams.append('model_id', modelId);
 
 	const res = await fetch(`${WEBUI_API_BASE_URL}/analytics/tokens?${searchParams.toString()}`, {
 		method: 'GET',
@@ -304,274 +302,6 @@ export const getModelOverview = async (token: string = '', modelId: string, days
 
 	const res = await fetch(
 		`${WEBUI_API_BASE_URL}/analytics/models/${encodeURIComponent(modelId)}/overview?${searchParams.toString()}`,
-		{
-			method: 'GET',
-			headers: {
-				Accept: 'application/json',
-				'Content-Type': 'application/json',
-				authorization: `Bearer ${token}`
-			}
-		}
-	)
-		.then(async (res) => {
-			if (!res.ok) throw await res.json();
-			return res.json();
-		})
-		.catch((err) => {
-			error = err.detail;
-			console.error(err);
-			return null;
-		});
-
-	if (error) {
-		throw error;
-	}
-
-	return res;
-};
-
-export const getRoutingSummary = async (
-	token: string = '',
-	options: {
-		startDate?: number | null;
-		endDate?: number | null;
-		groupId?: string | null;
-		userId?: string | null;
-		modelSelected?: string | null;
-		modelRequested?: string | null;
-		modelMode?: 'or' | 'and' | 'selected' | 'requested';
-	} = {}
-) => {
-	const {
-		startDate = null,
-		endDate = null,
-		groupId = null,
-		userId = null,
-		modelSelected = null,
-		modelRequested = null,
-		modelMode = 'or'
-	} = options;
-
-	let error = null;
-
-	const searchParams = new URLSearchParams();
-	if (startDate) searchParams.append('start_date', startDate.toString());
-	if (endDate) searchParams.append('end_date', endDate.toString());
-	if (groupId) searchParams.append('group_id', groupId);
-	if (userId) searchParams.append('user_id', userId);
-	if (modelSelected) searchParams.append('model_selected', modelSelected);
-	if (modelRequested) searchParams.append('model_requested', modelRequested);
-	if (modelMode) searchParams.append('model_mode', modelMode);
-
-	const res = await fetch(
-		`${WEBUI_API_BASE_URL}/analytics/routing/summary?${searchParams.toString()}`,
-		{
-			method: 'GET',
-			headers: {
-				Accept: 'application/json',
-				'Content-Type': 'application/json',
-				authorization: `Bearer ${token}`
-			}
-		}
-	)
-		.then(async (res) => {
-			if (!res.ok) throw await res.json();
-			return res.json();
-		})
-		.catch((err) => {
-			error = err.detail;
-			console.error(err);
-			return null;
-		});
-
-	if (error) {
-		throw error;
-	}
-
-	return res;
-};
-
-// ── Prompt Insights ──────────────────────────────────────────────────────────
-
-export const getPromptInsightsSummary = async (token = '') => {
-	let error = null;
-	const res = await fetch(`${WEBUI_API_BASE_URL}/analytics/prompt-insights/summary`, {
-		method: 'GET',
-		headers: {
-			Accept: 'application/json',
-			'Content-Type': 'application/json',
-			authorization: `Bearer ${token}`
-		}
-	})
-		.then(async (res) => {
-			if (!res.ok) throw await res.json();
-			return res.json();
-		})
-		.catch((err) => {
-			error = err.detail;
-			console.error(err);
-			return null;
-		});
-	if (error) throw error;
-	return res;
-};
-
-export const getPromptInsightsClusters = async (token = '', runId: string | null = null) => {
-	let error = null;
-	const params = new URLSearchParams();
-	if (runId) params.append('run_id', runId);
-	const res = await fetch(
-		`${WEBUI_API_BASE_URL}/analytics/prompt-insights/clusters?${params.toString()}`,
-		{
-			method: 'GET',
-			headers: {
-				Accept: 'application/json',
-				'Content-Type': 'application/json',
-				authorization: `Bearer ${token}`
-			}
-		}
-	)
-		.then(async (res) => {
-			if (!res.ok) throw await res.json();
-			return res.json();
-		})
-		.catch((err) => {
-			error = err.detail;
-			console.error(err);
-			return null;
-		});
-	if (error) throw error;
-	return res;
-};
-
-export const getPromptInsightsTrend = async (token = '', clusterId: string) => {
-	let error = null;
-	const res = await fetch(
-		`${WEBUI_API_BASE_URL}/analytics/prompt-insights/clusters/${encodeURIComponent(clusterId)}/trend`,
-		{
-			method: 'GET',
-			headers: {
-				Accept: 'application/json',
-				'Content-Type': 'application/json',
-				authorization: `Bearer ${token}`
-			}
-		}
-	)
-		.then(async (res) => {
-			if (!res.ok) throw await res.json();
-			return res.json();
-		})
-		.catch((err) => {
-			error = err.detail;
-			console.error(err);
-			return null;
-		});
-	if (error) throw error;
-	return res;
-};
-
-export const getPromptInsightsEmerging = async (
-	token = '',
-	options: {
-		minVolume?: number;
-		minGrowthRatio?: number;
-		limit?: number;
-	} = {}
-) => {
-	const { minVolume = 5, minGrowthRatio = 1.5, limit = 20 } = options;
-	let error = null;
-	const params = new URLSearchParams();
-	params.append('min_volume', minVolume.toString());
-	params.append('min_growth_ratio', minGrowthRatio.toString());
-	params.append('limit', limit.toString());
-	const res = await fetch(
-		`${WEBUI_API_BASE_URL}/analytics/prompt-insights/emerging?${params.toString()}`,
-		{
-			method: 'GET',
-			headers: {
-				Accept: 'application/json',
-				'Content-Type': 'application/json',
-				authorization: `Bearer ${token}`
-			}
-		}
-	)
-		.then(async (res) => {
-			if (!res.ok) throw await res.json();
-			return res.json();
-		})
-		.catch((err) => {
-			error = err.detail;
-			console.error(err);
-			return null;
-		});
-	if (error) throw error;
-	return res;
-};
-
-export const runPromptInsights = async (token = '') => {
-	let error = null;
-	const res = await fetch(`${WEBUI_API_BASE_URL}/analytics/prompt-insights/run`, {
-		method: 'POST',
-		headers: {
-			Accept: 'application/json',
-			'Content-Type': 'application/json',
-			authorization: `Bearer ${token}`
-		}
-	})
-		.then(async (res) => {
-			if (!res.ok) throw await res.json();
-			return res.json();
-		})
-		.catch((err) => {
-			error = err.detail;
-			console.error(err);
-			return null;
-		});
-	if (error) throw error;
-	return res;
-};
-
-export const getRoutingEvents = async (
-	token: string = '',
-	options: {
-		startDate?: number | null;
-		endDate?: number | null;
-		groupId?: string | null;
-		userId?: string | null;
-		modelSelected?: string | null;
-		modelRequested?: string | null;
-		modelMode?: 'or' | 'and' | 'selected' | 'requested';
-		skip?: number;
-		limit?: number;
-	} = {}
-) => {
-	const {
-		startDate = null,
-		endDate = null,
-		groupId = null,
-		userId = null,
-		modelSelected = null,
-		modelRequested = null,
-		modelMode = 'or',
-		skip = 0,
-		limit = 100
-	} = options;
-
-	let error = null;
-
-	const searchParams = new URLSearchParams();
-	if (startDate) searchParams.append('start_date', startDate.toString());
-	if (endDate) searchParams.append('end_date', endDate.toString());
-	if (groupId) searchParams.append('group_id', groupId);
-	if (userId) searchParams.append('user_id', userId);
-	if (modelSelected) searchParams.append('model_selected', modelSelected);
-	if (modelRequested) searchParams.append('model_requested', modelRequested);
-	if (modelMode) searchParams.append('model_mode', modelMode);
-	if (skip) searchParams.append('skip', skip.toString());
-	if (limit) searchParams.append('limit', limit.toString());
-
-	const res = await fetch(
-		`${WEBUI_API_BASE_URL}/analytics/routing/events?${searchParams.toString()}`,
 		{
 			method: 'GET',
 			headers: {

@@ -1,55 +1,46 @@
 <script lang="ts">
 	import { onMount, getContext } from 'svelte';
-	import { toast } from 'svelte-sonner';
+	import dayjs from 'dayjs';
 	import { models } from '$lib/stores';
 	import {
 		getSummary,
 		getModelAnalytics,
 		getUserAnalytics,
 		getDailyStats,
-		getTokenUsage,
-		getRoutingSummary,
-		getRoutingEvents,
-		getPromptInsightsSummary,
-		getPromptInsightsClusters,
-		getPromptInsightsEmerging,
-		getPromptInsightsTrend,
-		runPromptInsights
+		getTokenUsage
 	} from '$lib/apis/analytics';
 	import { getGroups } from '$lib/apis/groups';
 	import Spinner from '$lib/components/common/Spinner.svelte';
 	import ChevronUp from '$lib/components/icons/ChevronUp.svelte';
 	import ChevronDown from '$lib/components/icons/ChevronDown.svelte';
-	import ChartLine from './ChartLine.svelte';
+	import UsageChart, {
+		usageShare,
+		modelColor,
+		defaultInterval,
+		type UsageBucket,
+		type UsageInterval
+	} from './UsageChart.svelte';
 	import AnalyticsModelModal from './AnalyticsModelModal.svelte';
-	import RoutingUsage from './RoutingUsage.svelte';
-	import PromptInsights from './PromptInsights.svelte';
-	import Tooltip from '$lib/components/common/Tooltip.svelte';
+	import ProfilePreview from '$lib/components/channel/Messages/Message/ProfilePreview.svelte';
 	import { WEBUI_API_BASE_URL } from '$lib/constants';
 	import { formatNumber } from '$lib/utils';
-	import { goto } from '$app/navigation';
-	import type { Instance } from 'tippy.js';
-	import {
-		createRequestTracker,
-		deriveRoutingFilters,
-		toggleSelection,
-		type RoutingMode,
-		type RoutingPair
-	} from './cross-filter-state';
 
-	const i18n: any = getContext('i18n');
-	const chartPeriodByRange: Record<string, 'hour' | 'week' | 'month' | 'year' | 'all'> = {
-		'1h': 'hour',
-		'24h': 'hour',
-		'7d': 'week',
-		'30d': 'month',
-		'90d': 'year',
-		all: 'all'
-	};
+	const i18n = getContext<any>('i18n');
 
 	// Time period - persist in localStorage
 	let selectedPeriod =
 		(typeof localStorage !== 'undefined' && localStorage.getItem('analyticsPeriod')) || '7d';
+	let granularity: UsageInterval;
+	$: granularity = defaultInterval(selectedPeriod);
+	let selectedMetric: 'messages' | 'tokens' = 'tokens';
+	let chartModel: string | null = null;
+	let chartView: 'volume' | 'activity' = 'volume';
+	let compare = false;
+	$: comparing = compare && chartView === 'volume' && selectedPeriod !== 'all' && validRange;
+	$: modelNames = Object.fromEntries([
+		...$models.map((model) => [model.id, model.name || model.id]),
+		...modelStats.map((model) => [model.model_id, model.name])
+	]);
 
 	// Custom date range (YYYY-MM-DD) - persist in localStorage
 	let customStart =
@@ -58,11 +49,12 @@
 		(typeof localStorage !== 'undefined' && localStorage.getItem('analyticsCustomEnd')) || '';
 
 	$: periods = [
-		{ value: '1h', label: $i18n.t('Last 1 hour') },
 		{ value: '24h', label: $i18n.t('Last 24 hours') },
 		{ value: '7d', label: $i18n.t('Last 7 days') },
 		{ value: '30d', label: $i18n.t('Last 30 days') },
 		{ value: '90d', label: $i18n.t('Last 90 days') },
+		{ value: 'ytd', label: $i18n.t('Year to date') },
+		{ value: '1y', label: $i18n.t('Last 12 months') },
 		{ value: 'all', label: $i18n.t('All time') },
 		{ value: 'custom', label: $i18n.t('Custom range') }
 	];
@@ -73,11 +65,8 @@
 
 	const getDateRange = (period: string): { start: number | null; end: number | null } => {
 		const now = Math.floor(Date.now() / 1000);
-		const hour = 3600;
 		const day = 86400;
 		switch (period) {
-			case '1h':
-				return { start: now - hour, end: now };
 			case '24h':
 				return { start: now - day, end: now };
 			case '7d':
@@ -86,6 +75,20 @@
 				return { start: now - 30 * day, end: now };
 			case '90d':
 				return { start: now - 90 * day, end: now };
+			case 'ytd':
+				return {
+					start: dayjs(now * 1000)
+						.startOf('year')
+						.unix(),
+					end: now
+				};
+			case '1y':
+				return {
+					start: dayjs(now * 1000)
+						.subtract(1, 'year')
+						.unix(),
+					end: now
+				};
 			case 'custom': {
 				// Parse YYYY-MM-DD inputs; end date is inclusive (covers the full day)
 				const start = customStart ? Math.floor(new Date(customStart).getTime() / 1000) : null;
@@ -97,221 +100,49 @@
 		}
 	};
 
+	type TokenUsage = { input_tokens: number; output_tokens: number; total_tokens: number };
+	$: tokenColumns = [
+		// $i18n.t('Input Tokens')
+		{ key: 'input_tokens', label: $i18n.t('Input') },
+		// $i18n.t('Output Tokens')
+		{ key: 'output_tokens', label: $i18n.t('Output') },
+		// $i18n.t('Total Tokens')
+		{ key: 'total_tokens', label: $i18n.t('Total') }
+	] as const;
+	let selectedLeaderboard = 'models';
+
 	// Data
-	type ModelStat = {
+	let summary = { total_messages: 0, total_chats: 0, total_models: 0, total_users: 0 };
+	let modelStats: Array<{
 		model_id: string;
 		count: number;
 		unique_users?: number;
 		unique_chats?: number;
-		name?: string;
-		avg_ttft_ms?: number | null;
-		avg_tokens_per_second?: number | null;
-		error_requests?: number;
-		total_requests?: number;
-		error_rate?: number;
-	};
-
-	let summary: {
-		total_messages: number;
-		total_chats: number;
-		total_models: number;
-		total_users: number;
-		avg_ttft_ms: number | null;
-		avg_tokens_per_second: number | null;
-		error_requests: number;
-		total_requests: number;
-		error_rate: number;
-	} = {
-		total_messages: 0,
-		total_chats: 0,
-		total_models: 0,
-		total_users: 0,
-		avg_ttft_ms: null,
-		avg_tokens_per_second: null,
-		error_requests: 0,
-		total_requests: 0,
-		error_rate: 0
-	};
-	let modelStats: Array<ModelStat> = [];
-	let userStats: Array<{
-		user_id: string;
-		name?: string;
-		email?: string;
-		count: number;
-		total_tokens?: number;
+		name: string;
 	}> = [];
-	let dailyStats: Array<{ date: string; models: Record<string, number> }> = [];
-	let tokenStats: Record<
-		string,
-		{ input_tokens: number; output_tokens: number; total_tokens: number }
-	> = {};
+	let userStats: Array<
+		{ user_id: string; name?: string; email?: string; count: number } & Partial<TokenUsage>
+	> = [];
+	let dailyStats: UsageBucket[] = [];
+	let tokenStats: Record<string, TokenUsage> = {};
 	let totalTokens = { input: 0, output: 0, total: 0 };
-	let tokenTooltip: Instance | null = null;
+	$: metricTotal = selectedMetric === 'tokens' ? totalTokens.total : summary.total_messages;
 
 	let loading = true;
-
-	// Cross-filter: selecting a model filters the user table; selecting a user filters the model table
-
-	const loadRoutingAnalytics = async () => {
-		loadingRouting = true;
-		const requestId = routingTracker.next();
-		try {
-			const { modelSelected, modelRequested } = deriveRoutingFilters({
-				routingSelectedPair,
-				filterByModelId: filterByModelId,
-				routingModelMode
-			});
-			const { start, end } = getDateRange(selectedPeriod);
-			const [summaryRes, eventsRes] = await Promise.all([
-				getRoutingSummary(localStorage.token, {
-					startDate: start,
-					endDate: end,
-					groupId: selectedGroupId,
-					userId: filterByUserId,
-					modelSelected,
-					modelRequested,
-					modelMode: routingModelMode
-				}),
-				getRoutingEvents(localStorage.token, {
-					startDate: start,
-					endDate: end,
-					groupId: selectedGroupId,
-					userId: filterByUserId,
-					modelSelected,
-					modelRequested,
-					modelMode: routingModelMode,
-					limit: 100
-				})
-			]);
-			if (!routingTracker.isLatest(requestId)) return;
-			routingPairs = summaryRes ?? [];
-			routingEvents = eventsRes ?? [];
-		} catch (err) {
-			console.error('Routing analytics load failed:', err);
-			if (routingTracker.isLatest(requestId)) {
-				toast.error($i18n.t('Failed to load routing analytics'));
-				routingPairs = [];
-				routingEvents = [];
-			}
-		} finally {
-			if (routingTracker.isLatest(requestId)) {
-				loadingRouting = false;
-			}
-		}
-	};
+	let mounted = false;
+	let loadError = false;
+	let loadId = 0;
+	$: validRange =
+		selectedPeriod !== 'custom' || Boolean(customStart && customEnd && customStart <= customEnd);
 
 	// Selected model for drill-down
 	let selectedModel: { id: string; name: string } | null = null;
 	let showModelModal = false;
 
-	// Cross-filter state: filter users by model, or filter models by user
-	let filterByModelId: string | null = null;
-	let filterByModelName: string | null = null;
-	let filterByUserId: string | null = null;
-	let filterByUserName: string | null = null;
-	let loadingModels = false;
-	let loadingUsers = false;
-	let loadingRouting = false;
-	let routingPairs: Array<{
-		requested_model_id: string;
-		selected_model_id: string;
-		count: number;
-		percentage: number;
-	}> = [];
-	let routingEvents: Array<{
-		message_id: string;
-		chat_id: string;
-		user_id?: string | null;
-		created_at: number;
-		requested_model_id: string;
-		selected_model_id: string;
-	}> = [];
-	let routingSelectedPair: { requested_model_id: string; selected_model_id: string } | null = null;
-	let routingModelMode: RoutingMode = 'or';
-	let previousFilterByUserId: string | null = filterByUserId;
-	let previousFilterByModelId: string | null = filterByModelId;
-
-	// Prompt Insights state
-	let promptInsightsSummary: {
-		latest_run: {
-			id: string;
-			status: string;
-			total_prompts: number | null;
-			clusters_found: number | null;
-			created_at: number;
-			completed_at: number | null;
-		} | null;
-		active_run: { id: string; status: string } | null;
-		total_runs: number;
-	} | null = null;
-	let promptInsightsClusters: Array<{
-		id: string;
-		canonical_label: string;
-		cluster_size: number;
-		run_id: string;
-		created_at: number;
-	}> = [];
-	let promptInsightsEmerging: Array<{
-		canonical_label: string;
-		recent_count: number;
-		total_count: number;
-		growth_ratio: number;
-	}> = [];
-	let promptInsightsTrend: Array<{ bucket: string; count: number }> = [];
-	let loadingPromptInsights = false;
-	let promptInsightsError: string | null = null;
-
-	const loadPromptInsights = async () => {
-		loadingPromptInsights = true;
-		promptInsightsError = null;
-		try {
-			const [summaryRes, clustersRes, emergingRes] = await Promise.all([
-				getPromptInsightsSummary(localStorage.token),
-				getPromptInsightsClusters(localStorage.token),
-				getPromptInsightsEmerging(localStorage.token)
-			]);
-			promptInsightsSummary = summaryRes;
-			promptInsightsClusters = clustersRes?.clusters ?? [];
-			promptInsightsEmerging = emergingRes?.topics ?? [];
-		} catch (err) {
-			console.error('Prompt insights load failed:', err);
-			promptInsightsError = typeof err === 'string' ? err : 'Caricamento fallito';
-		} finally {
-			loadingPromptInsights = false;
-		}
-	};
-
-	const triggerPromptInsightsRun = async () => {
-		try {
-			await runPromptInsights(localStorage.token);
-			toast.success('Analisi avviata');
-			await loadPromptInsights();
-		} catch (err) {
-			console.error('Prompt insights run failed:', err);
-			toast.error('Avvio analisi fallito');
-		}
-	};
-
-	const loadPromptInsightsTrend = async (clusterId: string) => {
-		try {
-			const res = await getPromptInsightsTrend(localStorage.token, clusterId);
-			promptInsightsTrend = res?.trend ?? [];
-		} catch (err) {
-			console.error('Trend load failed:', err);
-			promptInsightsTrend = [];
-		}
-	};
-
-	// Request trackers for race guard
-	const dashboardTracker = createRequestTracker();
-	const routingTracker = createRequestTracker();
-	const modelTracker = createRequestTracker();
-	const userTracker = createRequestTracker();
-
 	// Sorting
-	let modelOrderBy = 'count';
+	let modelOrderBy = 'total_tokens';
 	let modelDirection: 'asc' | 'desc' = 'desc';
-	let userOrderBy = 'count';
+	let userOrderBy = 'total_tokens';
 	let userDirection: 'asc' | 'desc' = 'desc';
 
 	const toggleModelSort = (key: string) => {
@@ -332,55 +163,44 @@
 		}
 	};
 
-	const onSelectPair = (requestedModelId: string, selectedModelId: string) => {
-		routingSelectedPair = {
-			requested_model_id: requestedModelId,
-			selected_model_id: selectedModelId
-		};
-		filterByModelId = selectedModelId;
-		reloadModelTable();
-		reloadUserTable();
-		loadRoutingAnalytics();
-	};
-
-	const onClearPair = () => {
-		routingSelectedPair = null;
-		filterByModelId = null;
-		reloadModelTable();
-		reloadUserTable();
-		loadRoutingAnalytics();
-	};
-
 	const loadDashboard = async () => {
+		const id = ++loadId;
 		loading = true;
-		const requestId = dashboardTracker.next();
+		loadError = false;
 		try {
 			const { start, end } = getDateRange(selectedPeriod);
-			const granularity = selectedPeriod === '1h' || selectedPeriod === '24h' ? 'hourly' : 'daily';
 			const [summaryRes, modelsRes, usersRes, dailyRes, tokensRes] = await Promise.all([
 				getSummary(localStorage.token, start, end, selectedGroupId),
-				getModelAnalytics(localStorage.token, start, end, selectedGroupId, filterByUserId),
-				getUserAnalytics(localStorage.token, start, end, 50, selectedGroupId, filterByModelId),
-				getDailyStats(localStorage.token, start, end, granularity, selectedGroupId),
-				getTokenUsage(
+				getModelAnalytics(localStorage.token, start, end, selectedGroupId),
+				getUserAnalytics(localStorage.token, start, end, 50, selectedGroupId, selectedMetric),
+				getDailyStats(
 					localStorage.token,
 					start,
 					end,
+					granularity,
 					selectedGroupId,
-					filterByUserId,
-					filterByModelId
-				)
+					selectedMetric,
+					comparing
+				),
+				getTokenUsage(localStorage.token, start, end, selectedGroupId)
 			]);
 
-			if (!dashboardTracker.isLatest(requestId)) return;
-
-			summary = summaryRes ?? summary;
+			if (id !== loadId) return;
+			if (!summaryRes || !modelsRes || !usersRes || !dailyRes || !tokensRes) {
+				throw new Error('Incomplete analytics response');
+			}
+			if (comparing && dailyRes.data.some((bucket: UsageBucket) => !bucket.previous)) {
+				throw new Error('Incomplete comparison response');
+			}
+			summary = summaryRes;
 
 			const modelsMap = new Map($models.map((m) => [m.id, m.name || m.id]));
-			modelStats = (modelsRes?.models ?? []).map((entry: ModelStat) => ({
-				...entry,
-				name: modelsMap.get(entry.model_id) || entry.model_id
-			}));
+			modelStats = (modelsRes?.models ?? []).map(
+				(entry: Omit<(typeof modelStats)[number], 'name'>) => ({
+					...entry,
+					name: modelsMap.get(entry.model_id) || entry.model_id
+				})
+			);
 
 			userStats = usersRes?.users ?? [];
 			dailyStats = dailyRes?.data ?? [];
@@ -403,109 +223,29 @@
 			}
 		} catch (err) {
 			console.error('Dashboard load failed:', err);
-			if (!dashboardTracker.isLatest(requestId)) return;
-			toast.error($i18n.t('Failed to load analytics data'));
-		}
-		if (dashboardTracker.isLatest(requestId)) {
-			loading = false;
+			if (id === loadId) loadError = true;
+		} finally {
+			if (id === loadId) loading = false;
 		}
 	};
 
-	const reloadModelTable = async () => {
-		loadingModels = true;
-		const requestId = modelTracker.next();
-		try {
-			const { start, end } = getDateRange(selectedPeriod);
-			const [modelsRes, tokensRes] = await Promise.all([
-				getModelAnalytics(localStorage.token, start, end, selectedGroupId, filterByUserId),
-				getTokenUsage(
-					localStorage.token,
-					start,
-					end,
-					selectedGroupId,
-					filterByUserId,
-					filterByModelId
-				)
-			]);
-			if (!modelTracker.isLatest(requestId)) return;
-			const modelsMap = new Map($models.map((m) => [m.id, m.name || m.id]));
-			modelStats = (modelsRes?.models ?? []).map((entry: ModelStat) => ({
-				...entry,
-				name: modelsMap.get(entry.model_id) || entry.model_id
-			}));
-			if (tokensRes) {
-				tokenStats = {};
-				for (const m of tokensRes.models) {
-					tokenStats[m.model_id] = {
-						input_tokens: m.input_tokens,
-						output_tokens: m.output_tokens,
-						total_tokens: m.total_tokens
-					};
-				}
-				totalTokens = {
-					input: tokensRes.total_input_tokens,
-					output: tokensRes.total_output_tokens,
-					total: tokensRes.total_tokens
-				};
-			}
-		} catch (err) {
-			console.error('Model table reload failed:', err);
-			if (!modelTracker.isLatest(requestId)) return;
-			toast.error($i18n.t('Failed to load analytics data'));
-		}
-		if (modelTracker.isLatest(requestId)) {
-			await loadRoutingAnalytics();
-			loadingModels = false;
-		}
-	};
-
-	const reloadUserTable = async () => {
-		loadingUsers = true;
-		const requestId = userTracker.next();
-		try {
-			const { start, end } = getDateRange(selectedPeriod);
-			const usersRes = await getUserAnalytics(
-				localStorage.token,
-				start,
-				end,
-				50,
-				selectedGroupId,
-				filterByModelId
-			);
-			if (!userTracker.isLatest(requestId)) return;
-			userStats = usersRes?.users ?? [];
-		} catch (err) {
-			console.error('User table reload failed:', err);
-			if (!userTracker.isLatest(requestId)) return;
-			toast.error($i18n.t('Failed to load analytics data'));
-		}
-		if (userTracker.isLatest(requestId)) {
-			await loadRoutingAnalytics();
-			loadingUsers = false;
-		}
-	};
-
-	// Reload when the period, group, or custom range changes.
-	// In custom mode, wait until both dates are set to avoid a half-specified query.
-	$: if (selectedPeriod === 'custom' ? customStart && customEnd : selectedPeriod) {
+	$: if (mounted) {
+		selectedPeriod;
 		customStart;
 		customEnd;
 		selectedGroupId;
-		routingSelectedPair = null;
-		previousFilterByModelId = null;
-		filterByModelId = null;
-		loadDashboard();
-		loadRoutingAnalytics();
-	}
-
-	$: if (filterByUserId !== previousFilterByUserId || filterByModelId !== previousFilterByModelId) {
-		previousFilterByUserId = filterByUserId;
-		previousFilterByModelId = filterByModelId;
-		loadDashboard();
-		loadRoutingAnalytics();
+		selectedMetric;
+		granularity;
+		comparing;
+		if (validRange) loadDashboard();
+		else {
+			++loadId;
+			loading = false;
+		}
 	}
 
 	onMount(async () => {
+		mounted = true;
 		// Load groups for filter
 		try {
 			const res = await getGroups(localStorage.token);
@@ -513,22 +253,24 @@
 		} catch (e) {
 			console.error('Failed to load groups:', e);
 		}
-		loadPromptInsights();
 	});
 
 	$: sortedModels = [...modelStats].sort((a, b) => {
 		if (modelOrderBy === 'name') {
-			const nameA = a.name ?? a.model_id;
-			const nameB = b.name ?? b.model_id;
-			return modelDirection === 'asc' ? nameA.localeCompare(nameB) : nameB.localeCompare(nameA);
+			return modelDirection === 'asc' ? a.name.localeCompare(b.name) : b.name.localeCompare(a.name);
 		}
-		if (['tokens', 'input_tokens', 'output_tokens'].includes(modelOrderBy)) {
-			const tokenKey =
-				modelOrderBy === 'tokens'
-					? 'total_tokens'
-					: (modelOrderBy as 'input_tokens' | 'output_tokens');
-			const aTokens = tokenStats[a.model_id]?.[tokenKey] ?? 0;
-			const bTokens = tokenStats[b.model_id]?.[tokenKey] ?? 0;
+		if (modelOrderBy === 'percentage') {
+			const value = (m: (typeof modelStats)[number]) =>
+				selectedMetric === 'tokens' ? (tokenStats[m.model_id]?.total_tokens ?? 0) : m.count;
+			return modelDirection === 'asc' ? value(a) - value(b) : value(b) - value(a);
+		}
+		if (
+			modelOrderBy === 'input_tokens' ||
+			modelOrderBy === 'output_tokens' ||
+			modelOrderBy === 'total_tokens'
+		) {
+			const aTokens = tokenStats[a.model_id]?.[modelOrderBy] ?? 0;
+			const bTokens = tokenStats[b.model_id]?.[modelOrderBy] ?? 0;
 			return modelDirection === 'asc' ? aTokens - bTokens : bTokens - aTokens;
 		}
 		if (modelOrderBy === 'users') {
@@ -541,21 +283,6 @@
 			const bChats = b.unique_chats ?? 0;
 			return modelDirection === 'asc' ? aChats - bChats : bChats - aChats;
 		}
-		if (modelOrderBy === 'ttft') {
-			const aV = a.avg_ttft_ms ?? (modelDirection === 'asc' ? Infinity : -Infinity);
-			const bV = b.avg_ttft_ms ?? (modelDirection === 'asc' ? Infinity : -Infinity);
-			return modelDirection === 'asc' ? aV - bV : bV - aV;
-		}
-		if (modelOrderBy === 'tps') {
-			const aV = a.avg_tokens_per_second ?? (modelDirection === 'asc' ? -Infinity : Infinity);
-			const bV = b.avg_tokens_per_second ?? (modelDirection === 'asc' ? -Infinity : Infinity);
-			return modelDirection === 'asc' ? aV - bV : bV - aV;
-		}
-		if (modelOrderBy === 'error_rate') {
-			const aT = a.error_rate ?? 0;
-			const bT = b.error_rate ?? 0;
-			return modelDirection === 'asc' ? aT - bT : bT - aT;
-		}
 		return modelDirection === 'asc' ? a.count - b.count : b.count - a.count;
 	});
 
@@ -565,15 +292,29 @@
 			const nameB = b.name || b.user_id;
 			return userDirection === 'asc' ? nameA.localeCompare(nameB) : nameB.localeCompare(nameA);
 		}
-		if (userOrderBy === 'tokens') {
-			const aTokens = a.total_tokens ?? 0;
-			const bTokens = b.total_tokens ?? 0;
+		if (userOrderBy === 'percentage') {
+			const aValue = selectedMetric === 'tokens' ? (a.total_tokens ?? 0) : a.count;
+			const bValue = selectedMetric === 'tokens' ? (b.total_tokens ?? 0) : b.count;
+			return userDirection === 'asc' ? aValue - bValue : bValue - aValue;
+		}
+		if (
+			userOrderBy === 'input_tokens' ||
+			userOrderBy === 'output_tokens' ||
+			userOrderBy === 'total_tokens'
+		) {
+			const aTokens = a[userOrderBy] ?? 0;
+			const bTokens = b[userOrderBy] ?? 0;
 			return userDirection === 'asc' ? aTokens - bTokens : bTokens - aTokens;
 		}
 		return userDirection === 'asc' ? a.count - b.count : b.count - a.count;
 	});
 
-	$: totalModelMessages = modelStats.reduce((sum, m) => sum + m.count, 0);
+	$: metricLabel = selectedMetric === 'tokens' ? $i18n.t('Tokens') : $i18n.t('Messages');
+	const selectMetric = (metric: 'tokens' | 'messages') => {
+		selectedMetric = metric;
+		modelOrderBy = userOrderBy = metric === 'tokens' ? 'total_tokens' : 'count';
+		modelDirection = userDirection = 'desc';
+	};
 
 	// Persist period selection
 	$: if (typeof localStorage !== 'undefined' && selectedPeriod) {
@@ -587,20 +328,15 @@
 	}
 </script>
 
-<svelte:window
-	on:keydown={(event) => {
-		if (event.key === 'Escape') tokenTooltip?.hide();
-	}}
-/>
-
-<div class="flex items-center justify-between mb-2 gap-2">
-	<h2 class="text-sm font-medium text-gray-900 dark:text-white shrink-0">
+<div class="flex flex-wrap items-center justify-between mb-3 gap-x-4 gap-y-2">
+	<h2 class="text-sm font-normal text-gray-900 dark:text-white shrink-0">
 		{$i18n.t('Analytics')}
 	</h2>
 	<div class="flex items-center gap-2 flex-wrap justify-end min-w-0">
 		{#if groups.length > 0}
 			<select
 				bind:value={selectedGroupId}
+				aria-label={$i18n.t('User group')}
 				class="w-fit pr-8 rounded-sm px-2 text-xs bg-transparent outline-none text-right"
 			>
 				<option value={null}>{$i18n.t('All Users')}</option>
@@ -613,19 +349,22 @@
 			<input
 				type="date"
 				bind:value={customStart}
+				aria-label={$i18n.t('Start date')}
 				max={customEnd || undefined}
-				class="w-fit rounded-sm px-2 text-xs bg-transparent outline-none"
+				class="w-fit rounded-sm px-2 text-xs bg-transparent outline-none dark:scheme-dark"
 			/>
 			<span class="text-xs text-gray-400">–</span>
 			<input
 				type="date"
 				bind:value={customEnd}
+				aria-label={$i18n.t('End date')}
 				min={customStart || undefined}
-				class="w-fit rounded-sm px-2 text-xs bg-transparent outline-none"
+				class="w-fit rounded-sm px-2 text-xs bg-transparent outline-none dark:scheme-dark"
 			/>
 		{/if}
 		<select
 			bind:value={selectedPeriod}
+			aria-label={$i18n.t('Date range')}
 			class="w-fit pr-8 rounded-sm px-2 text-xs bg-transparent outline-none text-right"
 		>
 			{#each periods as period}
@@ -643,580 +382,514 @@
 	endDate={getDateRange(selectedPeriod).end}
 />
 
-<!-- Summary stats -->
-{#if !loading}
-	<div class="flex gap-3 text-xs text-gray-500 dark:text-gray-400 px-0.5 pb-2">
-		<span
-			><span class="font-medium text-gray-900 dark:text-gray-300"
-				>{summary.total_messages.toLocaleString()}</span
-			>
-			{$i18n.t('messages')}</span
-		>
-		<Tooltip
-			as="button"
-			className="whitespace-nowrap rounded-sm cursor-pointer hover:underline decoration-dotted underline-offset-4 focus-visible:outline focus-visible:outline-offset-2"
-			placement="bottom"
-			interactive
-			tippyOptions={{
-				trigger: 'mouseenter focus click',
-				appendTo: () => document.body,
-				aria: { content: 'describedby', expanded: true },
-				onCreate: (instance) => (tokenTooltip = instance),
-				onDestroy: () => (tokenTooltip = null)
-			}}
-			content={`<div class="p-1 text-left">
-				<div class="flex justify-between gap-6"><span>${$i18n.t('Input')}</span><span class="tabular-nums">${totalTokens.input.toLocaleString()}</span></div>
-				<div class="flex justify-between gap-6 mt-1"><span>${$i18n.t('Output')}</span><span class="tabular-nums">${totalTokens.output.toLocaleString()}</span></div>
-				<div class="mt-2 max-w-56 text-gray-400">${$i18n.t('Token counts are estimates and may not reflect actual API usage')}</div>
-			</div>`}
-		>
-			<span
-				><span class="font-normal text-gray-900 dark:text-gray-300"
-					>{formatNumber(totalTokens.total)}</span
+{#if !loading && !loadError && validRange}
+	<dl
+		class="flex flex-wrap items-baseline gap-x-4 gap-y-1 text-xs text-gray-500 dark:text-gray-400"
+	>
+		{#each [{ label: $i18n.t('Tokens'), value: formatNumber(totalTokens.total), exact: totalTokens.total }, { label: $i18n.t('Input'), value: formatNumber(totalTokens.input), exact: totalTokens.input }, { label: $i18n.t('Output'), value: formatNumber(totalTokens.output), exact: totalTokens.output }, { label: $i18n.t('Messages'), value: summary.total_messages.toLocaleString(), exact: summary.total_messages }, { label: $i18n.t('Chats'), value: summary.total_chats.toLocaleString(), exact: summary.total_chats }, { label: $i18n.t('Users'), value: summary.total_users.toLocaleString(), exact: summary.total_users }] as metric}
+			<div class="flex items-baseline gap-1.5 whitespace-nowrap">
+				<dt>{metric.label}</dt>
+				<dd
+					class="tabular-nums text-gray-900 dark:text-gray-200"
+					title={metric.exact.toLocaleString()}
 				>
-				{$i18n.t('tokens')}</span
-			>
-		</Tooltip>
-		<span
-			><span class="font-medium text-gray-900 dark:text-gray-300"
-				>{summary.total_chats.toLocaleString()}</span
-			>
-			{$i18n.t('chats')}</span
-		>
-		<span
-			><span class="font-medium text-gray-900 dark:text-gray-300">{summary.total_users}</span>
-			{$i18n.t('users')}</span
-		>
-		<Tooltip
-			content={$i18n.t(
-				'Time to First Token is shown when provider usage data includes timing information.'
-			)}
-		>
-			<span class="cursor-help"
-				><span class="font-medium text-gray-900 dark:text-gray-300"
-					>{summary.avg_ttft_ms != null ? `${summary.avg_ttft_ms.toFixed(0)} ms` : 'N/A'}</span
-				>
-				TTFT</span
-			>
-		</Tooltip>
-		<Tooltip
-			content={$i18n.t(
-				'Token/s is shown when provider usage data includes throughput or duration details.'
-			)}
-		>
-			<span class="cursor-help"
-				><span class="font-medium text-gray-900 dark:text-gray-300"
-					>{summary.avg_tokens_per_second != null
-						? `${summary.avg_tokens_per_second.toFixed(1)}/s`
-						: 'N/A'}</span
-				>
-				{$i18n.t('Token/s')}</span
-			>
-		</Tooltip>
-		<span
-			><span class="font-medium text-gray-900 dark:text-gray-300"
-				>{summary.error_requests.toLocaleString()}</span
-			>
-			{$i18n.t('request errors')}
-			{#if summary.total_requests > 0}
-				({summary.error_rate.toFixed(1)}%)
-			{/if}
-		</span>
-	</div>
-
-	<!-- Daily usage chart -->
-	{#if dailyStats.length > 1}
-		{@const allModels = [...new Set(dailyStats.flatMap((d) => Object.keys(d.models || {})))]}
-		{@const topModels = allModels.slice(0, 8)}
-		{@const chartColors = [
-			'#3b82f6',
-			'#10b981',
-			'#f59e0b',
-			'#ef4444',
-			'#8b5cf6',
-			'#ec4899',
-			'#06b6d4',
-			'#84cc16'
-		]}
-		<div class="mb-4">
-			<div class="text-xs font-medium text-gray-600 dark:text-gray-400 mb-2 px-0.5">
-				{selectedPeriod === '1h' || selectedPeriod === '24h'
-					? $i18n.t('Hourly Messages')
-					: $i18n.t('Daily Messages')}
+					{metric.value}
+				</dd>
 			</div>
-			<ChartLine
-				data={dailyStats}
-				models={topModels}
-				colors={chartColors}
-				height={200}
-				period={chartPeriodByRange[selectedPeriod] || 'week'}
-			/>
+		{/each}
+	</dl>
+	<section class="mt-3 min-w-0" aria-label={$i18n.t('Usage over time')}>
+		<div class="mb-2 flex flex-wrap items-center justify-between gap-x-4 gap-y-2 text-xs">
+			<!-- Previous selector labels retained for i18n extraction: {$i18n.t('Chart metric')} -->
+			<!-- {$i18n.t('10-Minute Messages')} {$i18n.t('Hourly Messages')} {$i18n.t('Daily Messages')} -->
+			<!-- {$i18n.t('10-Minute Tokens')} {$i18n.t('Hourly Tokens')} {$i18n.t('Daily Tokens')} -->
+			<div class="flex items-center gap-3" aria-label={$i18n.t('Usage metric')}>
+				{#each [{ key: 'tokens', label: $i18n.t('Tokens') }, { key: 'messages', label: $i18n.t('Messages') }] as metric}
+					<button
+						type="button"
+						class="analytics-tab"
+						class:tab-selected={selectedMetric === metric.key}
+						aria-pressed={selectedMetric === metric.key}
+						on:click={() => selectMetric(metric.key as 'tokens' | 'messages')}
+						>{metric.label}</button
+					>
+				{/each}
+			</div>
+			<div class="flex flex-wrap items-center gap-x-4 gap-y-1">
+				{#if chartView === 'volume'}
+					<button
+						type="button"
+						class="analytics-tab disabled:opacity-40 disabled:cursor-default"
+						class:tab-selected={comparing}
+						aria-pressed={comparing}
+						disabled={selectedPeriod === 'all'}
+						title={selectedPeriod === 'all'
+							? $i18n.t('Choose a date range to compare')
+							: $i18n.t('Compare to previous period')}
+						on:click={() => (compare = !compare)}>{$i18n.t('Compare')}</button
+					>
+				{/if}
+				<div class="flex items-center gap-3" aria-label={$i18n.t('Chart view')}>
+					{#each [{ key: 'volume', label: $i18n.t('Volume') }, { key: 'activity', label: $i18n.t('Activity') }] as view}
+						<button
+							type="button"
+							class="analytics-tab"
+							class:tab-selected={chartView === view.key}
+							aria-pressed={chartView === view.key}
+							on:click={() => (chartView = view.key as 'volume' | 'activity')}>{view.label}</button
+						>
+					{/each}
+				</div>
+				<select
+					bind:value={granularity}
+					aria-label={$i18n.t('Chart interval')}
+					class="w-fit pr-5 py-1 text-xs bg-transparent outline-none text-gray-500 dark:text-gray-400"
+				>
+					{#if selectedPeriod === '24h'}<option value="10m">{$i18n.t('10 min')}</option>{/if}
+					{#if ['24h', '7d', '30d'].includes(selectedPeriod)}<option value="hourly"
+							>{$i18n.t('Hourly')}</option
+						>{/if}
+					{#if selectedPeriod === '30d'}
+						<option value="3h">{$i18n.t('3 hours')}</option>
+						<option value="6h">{$i18n.t('6 hours')}</option>
+					{/if}
+					<option value="daily">{$i18n.t('Daily')}</option>
+				</select>
+			</div>
 		</div>
-	{/if}
+		{#if dailyStats.length && (summary.total_messages > 0 || comparing)}
+			<UsageChart
+				data={dailyStats}
+				compare={comparing}
+				{granularity}
+				{metricLabel}
+				{modelNames}
+				bind:selectedModel={chartModel}
+				view={chartView}
+			/>
+		{:else}<div
+				class="h-40 flex items-center justify-center text-xs text-gray-500 dark:text-gray-400"
+			>
+				{$i18n.t('No activity in this period')}
+			</div>{/if}
+	</section>
 {/if}
 
-{#if loading}
+{#if !validRange}
+	<div class="my-10 text-center text-xs text-gray-500 dark:text-gray-400">
+		{$i18n.t('Choose a valid start and end date.')}
+	</div>
+{:else if loadError}
+	<div role="alert" class="my-10 text-center text-xs text-gray-500 dark:text-gray-400">
+		{$i18n.t('Unable to load analytics. Please try again.')}
+		<button class="ml-2 underline underline-offset-2" on:click={loadDashboard}
+			>{$i18n.t('Retry')}</button
+		>
+	</div>
+{:else if loading}
 	<div class="my-10 flex justify-center">
 		<Spinner className="size-5" />
 	</div>
 {:else}
-	<div class="grid md:grid-cols-2 gap-4">
-		<!-- Model Usage Table -->
-		<div>
-			<div
-				class="flex items-center justify-between text-xs font-medium text-gray-700 dark:text-gray-300 mb-1 px-0.5"
-			>
-				<span>{$i18n.t('Model Usage')}</span>
-				{#if filterByUserId}
-					<span class="flex items-center gap-1 text-blue-500 font-normal">
-						{$i18n.t('Filtered by')}:
-						<span class="font-medium">{filterByUserName}</span>
-						<button
-							class="ml-0.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 transition"
-							on:click={() => {
-								filterByUserId = null;
-								filterByUserName = null;
-								reloadModelTable();
-							}}
-							title={$i18n.t('Clear filter')}>✕</button
-						>
-					</span>
-				{/if}
-			</div>
-			<div class="scrollbar-hidden relative whitespace-nowrap overflow-x-auto max-w-full">
-				<table class="w-full text-sm text-left text-gray-500 dark:text-gray-400 table-auto">
-					<thead class="text-xs text-gray-800 uppercase bg-transparent dark:text-gray-200">
-						<tr class="border-b-[1.5px] border-gray-50 dark:border-gray-850/30">
-							<th scope="col" class="px-2.5 py-2 w-8">#</th>
-							<th
-								scope="col"
-								class="px-2.5 py-2 cursor-pointer select-none"
-								on:click={() => toggleModelSort('name')}
-							>
-								<div class="flex gap-1.5 items-center">
-									{$i18n.t('Model')}
-									{#if modelOrderBy === 'name'}
-										<span class="font-normal">
-											{#if modelDirection === 'asc'}<ChevronUp
-													className="size-2"
-												/>{:else}<ChevronDown className="size-2" />{/if}
-										</span>
-									{:else}
-										<span class="invisible"><ChevronUp className="size-2" /></span>
-									{/if}
-								</div>
-							</th>
-							<th
-								scope="col"
-								class="px-2.5 py-2 cursor-pointer select-none text-right"
-								on:click={() => toggleModelSort('count')}
-							>
-								<div class="flex gap-1.5 items-center justify-end">
-									{$i18n.t('Messages')}
-									{#if modelOrderBy === 'count'}
-										<span class="font-normal">
-											{#if modelDirection === 'asc'}<ChevronUp
-													className="size-2"
-												/>{:else}<ChevronDown className="size-2" />{/if}
-										</span>
-									{:else}
-										<span class="invisible"><ChevronUp className="size-2" /></span>
-									{/if}
-								</div>
-							</th>
-							<th
-								scope="col"
-								class="px-2.5 py-2 cursor-pointer select-none text-right"
-								on:click={() => toggleModelSort('users')}
-							>
-								<div class="flex gap-1.5 items-center justify-end">
-									{$i18n.t('Users')}
-									{#if modelOrderBy === 'users'}
-										<span class="font-normal">
-											{#if modelDirection === 'asc'}<ChevronUp
-													className="size-2"
-												/>{:else}<ChevronDown className="size-2" />{/if}
-										</span>
-									{:else}
-										<span class="invisible"><ChevronUp className="size-2" /></span>
-									{/if}
-								</div>
-							</th>
-							<th
-								scope="col"
-								class="px-2.5 py-2 cursor-pointer select-none text-right"
-								on:click={() => toggleModelSort('chats')}
-							>
-								<div class="flex gap-1.5 items-center justify-end">
-									{$i18n.t('Chats')}
-									{#if modelOrderBy === 'chats'}
-										<span class="font-normal">
-											{#if modelDirection === 'asc'}<ChevronUp
-													className="size-2"
-												/>{:else}<ChevronDown className="size-2" />{/if}
-										</span>
-									{:else}
-										<span class="invisible"><ChevronUp className="size-2" /></span>
-									{/if}
-								</div>
-							</th>
-							<th
-								scope="col"
-								class="px-2.5 py-2 cursor-pointer select-none text-right"
-								on:click={() => toggleModelSort('tokens')}
-							>
-								<div class="flex gap-1.5 items-center justify-end">
-									{$i18n.t('Tokens')}
-									{#if modelOrderBy === 'tokens'}
-										<span class="font-normal">
-											{#if modelDirection === 'asc'}<ChevronUp
-													className="size-2"
-												/>{:else}<ChevronDown className="size-2" />{/if}
-										</span>
-									{:else}
-										<span class="invisible"><ChevronUp className="size-2" /></span>
-									{/if}
-								</div>
-							</th>
-							{#each [{ key: 'input_tokens', label: 'Input' }, { key: 'output_tokens', label: 'Output' }] as column}
-								<th
-									scope="col"
-									class="px-2.5 py-2 cursor-pointer select-none text-right"
-									on:click={() => toggleModelSort(column.key)}
-								>
-									<div class="flex gap-1.5 items-center justify-end">
-										{$i18n.t(column.label)}
-										{#if modelOrderBy === column.key}
-											<span class="font-normal">
-												{#if modelDirection === 'asc'}<ChevronUp
-														className="size-2"
-													/>{:else}<ChevronDown className="size-2" />{/if}
-											</span>
-										{:else}
-											<span class="invisible"><ChevronUp className="size-2" /></span>
-										{/if}
-									</div>
-								</th>
-							{/each}
-							<th
-								scope="col"
-								class="px-2.5 py-2 cursor-pointer select-none text-right"
-								on:click={() => toggleModelSort('ttft')}
-							>
-								<div class="flex gap-1.5 items-center justify-end">
-									{$i18n.t('TTFT')}
-									{#if modelOrderBy === 'ttft'}
-										<span class="font-normal">
-											{#if modelDirection === 'asc'}<ChevronUp
-													className="size-2"
-												/>{:else}<ChevronDown className="size-2" />{/if}
-										</span>
-									{:else}
-										<span class="invisible"><ChevronUp className="size-2" /></span>
-									{/if}
-								</div>
-							</th>
-							<th
-								scope="col"
-								class="px-2.5 py-2 cursor-pointer select-none text-right"
-								on:click={() => toggleModelSort('tps')}
-							>
-								<div class="flex gap-1.5 items-center justify-end">
-									{$i18n.t('Tok/s')}
-									{#if modelOrderBy === 'tps'}
-										<span class="font-normal">
-											{#if modelDirection === 'asc'}<ChevronUp
-													className="size-2"
-												/>{:else}<ChevronDown className="size-2" />{/if}
-										</span>
-									{:else}
-										<span class="invisible"><ChevronUp className="size-2" /></span>
-									{/if}
-								</div>
-							</th>
-							<th
-								scope="col"
-								class="px-2.5 py-2 cursor-pointer select-none text-right"
-								on:click={() => toggleModelSort('error_rate')}
-							>
-								<div class="flex gap-1.5 items-center justify-end">
-									{$i18n.t('Err%')}
-									{#if modelOrderBy === 'error_rate'}
-										<span class="font-normal">
-											{#if modelDirection === 'asc'}<ChevronUp
-													className="size-2"
-												/>{:else}<ChevronDown className="size-2" />{/if}
-										</span>
-									{:else}
-										<span class="invisible"><ChevronUp className="size-2" /></span>
-									{/if}
-								</div>
-							</th>
-							<th
-								scope="col"
-								class="px-2.5 py-2 cursor-pointer select-none text-right w-16"
-								on:click={() => toggleModelSort('percentage')}
-							>
-								<div class="flex gap-1.5 items-center justify-end">
-									%
-									{#if modelOrderBy === 'percentage'}
-										<span class="font-normal">
-											{#if modelDirection === 'asc'}<ChevronUp
-													className="size-2"
-												/>{:else}<ChevronDown className="size-2" />{/if}
-										</span>
-									{:else}
-										<span class="invisible"><ChevronUp className="size-2" /></span>
-									{/if}
-								</div>
-							</th>
-						</tr>
-					</thead>
-					<tbody>
-						{#each sortedModels as model, idx (model.model_id)}
-							<tr
-								class="bg-white dark:bg-gray-900 dark:border-gray-850 text-xs cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
-								class:bg-blue-50={filterByModelId === model.model_id}
-								class:dark:bg-blue-950={filterByModelId === model.model_id}
-								on:click={() => {
-									const next = toggleSelection(filterByModelId, model.model_id);
-									filterByModelId = next;
-									filterByModelName = next ? (model.name ?? model.model_id) : null;
-									reloadUserTable();
-								}}
-							>
-								<td class="px-3 py-1 text-gray-400">{idx + 1}</td>
-								<td class="px-3 py-1 font-medium text-gray-900 dark:text-white">
-									<div class="flex items-center gap-2">
-										<img
-											src="{WEBUI_API_BASE_URL}/models/model/profile/image?id={model.model_id}"
-											alt={model.name}
-											class="size-5 rounded-full object-cover shrink-0"
-											on:error={(e) => {
-												// LICENSE covers this Open WebUI fallback logo.
-												// Do not alter, remove, obscure, or replace it except as LICENSE permits:
-												// https://docs.openwebui.com/license.
-												(e.currentTarget as HTMLImageElement).src = '/favicon.png';
-											}}
-										/>
-										<span class="truncate max-w-[150px]">{model.name}</span>
-										<button
-											class="ml-auto text-gray-300 hover:text-blue-500 transition shrink-0"
-											title={$i18n.t('View details')}
-											on:click|stopPropagation={() => {
-												selectedModel = { id: model.model_id, name: model.name ?? model.model_id };
-												showModelModal = true;
-											}}>→</button
-										>
-									</div>
-								</td>
-								<td class="px-3 py-1 text-right">{model.count.toLocaleString()}</td>
-								<td class="px-3 py-1 text-right">{(model.unique_users ?? 0).toLocaleString()}</td>
-								<td class="px-3 py-1 text-right">{(model.unique_chats ?? 0).toLocaleString()}</td>
-								<td class="px-3 py-1 text-right"
-									>{formatNumber(tokenStats[model.model_id]?.total_tokens ?? 0)}</td
-								>
-								<td class="px-3 py-1 text-right"
-									>{formatNumber(tokenStats[model.model_id]?.input_tokens ?? 0)}</td
-								>
-								<td class="px-3 py-1 text-right"
-									>{formatNumber(tokenStats[model.model_id]?.output_tokens ?? 0)}</td
-								>
-								<td class="px-3 py-1 text-right text-gray-400">
-									{model.avg_ttft_ms != null ? model.avg_ttft_ms.toFixed(0) + ' ms' : '—'}
-								</td>
-								<td class="px-3 py-1 text-right text-gray-400">
-									{model.avg_tokens_per_second != null
-										? model.avg_tokens_per_second.toFixed(1)
-										: '—'}
-								</td>
-								<td class="px-3 py-1 text-right text-gray-400">
-									{model.error_rate != null ? (model.error_rate * 100).toFixed(1) + '%' : '—'}
-								</td>
-								<td class="px-3 py-1 text-right text-gray-400">
-									{totalModelMessages > 0
-										? ((model.count / totalModelMessages) * 100).toFixed(1)
-										: 0}%
-								</td>
-							</tr>
-						{/each}
-						{#if sortedModels.length === 0}
-							<tr
-								><td colspan="12" class="px-3 py-2 text-center text-gray-400"
-									>{$i18n.t('No data')}</td
-								></tr
-							>
-						{/if}
-					</tbody>
-				</table>
+	<div class="mt-4 min-w-0">
+		<div class="mb-2 flex items-center gap-3">
+			<div class="flex items-center gap-3">
+				{#each [{ key: 'models', label: $i18n.t('Models') }, { key: 'users', label: $i18n.t('Users') }] as tab}
+					<button
+						type="button"
+						class="analytics-tab"
+						class:tab-selected={selectedLeaderboard === tab.key}
+						aria-pressed={selectedLeaderboard === tab.key}
+						on:click={() => (selectedLeaderboard = tab.key)}>{tab.label}</button
+					>
+				{/each}
 			</div>
 		</div>
-
-		<!-- User Activity Table -->
-		<div>
-			<div
-				class="flex items-center justify-between text-xs font-medium text-gray-700 dark:text-gray-300 mb-1 px-0.5"
-			>
-				<span>{$i18n.t('User Activity')}</span>
-				{#if filterByModelId}
-					<span class="flex items-center gap-1 text-blue-500 font-normal">
-						{$i18n.t('Filtered by')}:
-						<span class="font-medium">{filterByModelName}</span>
-						<button
-							class="ml-0.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 transition"
-							on:click={() => {
-								filterByModelId = null;
-								filterByModelName = null;
-								reloadUserTable();
-							}}
-							title={$i18n.t('Clear filter')}>✕</button
+		<div class="min-w-0">
+			{#if selectedLeaderboard === 'models'}
+				<!-- Model Usage Table -->
+				<!-- {$i18n.t('Model Usage')} -->
+				<div>
+					<div class="scrollbar-hidden relative whitespace-nowrap overflow-x-auto max-w-full">
+						<table
+							class="w-full text-xs tabular-nums text-left text-gray-500 dark:text-gray-400 table-auto"
 						>
-					</span>
-				{/if}
-			</div>
-			<div class="scrollbar-hidden relative whitespace-nowrap overflow-x-auto max-w-full">
-				<table class="w-full text-sm text-left text-gray-500 dark:text-gray-400 table-auto">
-					<thead class="text-xs text-gray-800 uppercase bg-transparent dark:text-gray-200">
-						<tr class="border-b-[1.5px] border-gray-50 dark:border-gray-850/30">
-							<th scope="col" class="px-2.5 py-2 w-8">#</th>
-							<th
-								scope="col"
-								class="px-2.5 py-2 cursor-pointer select-none"
-								on:click={() => toggleUserSort('name')}
+							<thead
+								class="text-[0.6875rem] font-normal text-gray-500 bg-transparent dark:text-gray-400"
 							>
-								<div class="flex gap-1.5 items-center">
-									{$i18n.t('User')}
-									{#if userOrderBy === 'name'}
-										<span class="font-normal">
-											{#if userDirection === 'asc'}<ChevronUp
-													className="size-2"
-												/>{:else}<ChevronDown className="size-2" />{/if}
-										</span>
-									{:else}
-										<span class="invisible"><ChevronUp className="size-2" /></span>
-									{/if}
-								</div>
-							</th>
-							<th
-								scope="col"
-								class="px-2.5 py-2 cursor-pointer select-none text-right"
-								on:click={() => toggleUserSort('count')}
-							>
-								<div class="flex gap-1.5 items-center justify-end">
-									{$i18n.t('Messages')}
-									{#if userOrderBy === 'count'}
-										<span class="font-normal">
-											{#if userDirection === 'asc'}<ChevronUp
-													className="size-2"
-												/>{:else}<ChevronDown className="size-2" />{/if}
-										</span>
-									{:else}
-										<span class="invisible"><ChevronUp className="size-2" /></span>
-									{/if}
-								</div>
-							</th>
-							<th
-								scope="col"
-								class="px-2.5 py-2 cursor-pointer select-none text-right"
-								on:click={() => toggleUserSort('tokens')}
-							>
-								<div class="flex gap-1.5 items-center justify-end">
-									{$i18n.t('Tokens')}
-									{#if userOrderBy === 'tokens'}
-										<span class="font-normal">
-											{#if userDirection === 'asc'}<ChevronUp
-													className="size-2"
-												/>{:else}<ChevronDown className="size-2" />{/if}
-										</span>
-									{:else}
-										<span class="invisible"><ChevronUp className="size-2" /></span>
-									{/if}
-								</div>
-							</th>
-						</tr>
-					</thead>
-					<tbody>
-						{#each sortedUsers as user, idx (user.user_id)}
-							<tr
-								class="bg-white dark:bg-gray-900 dark:border-gray-850 text-xs cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
-								class:bg-blue-50={filterByUserId === user.user_id}
-								class:dark:bg-blue-950={filterByUserId === user.user_id}
-								on:click={() => {
-									const next = toggleSelection(filterByUserId, user.user_id);
-									filterByUserId = next;
-									filterByUserName = next
-										? user.name || user.email || user.user_id.substring(0, 8)
-										: null;
-									reloadModelTable();
-								}}
-							>
-								<td class="px-3 py-1 text-gray-400">{idx + 1}</td>
-								<td class="px-3 py-1 font-medium text-gray-900 dark:text-white">
-									<div class="flex items-center gap-2">
-										<img
-											src="{WEBUI_API_BASE_URL}/users/{user.user_id}/profile/image"
-											alt={user.name || 'User'}
-											class="size-5 rounded-full object-cover shrink-0"
-											on:error={(e) => {
-												(e.currentTarget as HTMLImageElement).src = '/user.png';
-											}}
-										/>
-										<span class="truncate max-w-[150px]"
-											>{user.name || user.email || user.user_id.substring(0, 8)}</span
+								<tr>
+									<th scope="col" class="font-normal px-2.5 py-1.5 w-8">#</th>
+									<th
+										scope="col"
+										class="font-normal px-2.5 py-1.5 cursor-pointer select-none"
+										on:click={() => toggleModelSort('name')}
+									>
+										<div class="flex gap-1.5 items-center">
+											{$i18n.t('Model')}
+											{#if modelOrderBy === 'name'}
+												<span class="font-normal">
+													{#if modelDirection === 'asc'}<ChevronUp
+															className="size-2"
+														/>{:else}<ChevronDown className="size-2" />{/if}
+												</span>
+											{:else}
+												<span class="invisible"><ChevronUp className="size-2" /></span>
+											{/if}
+										</div>
+									</th>
+									<th
+										scope="col"
+										class="font-normal px-2.5 py-1.5 cursor-pointer select-none text-right"
+										on:click={() => toggleModelSort('count')}
+									>
+										<div class="flex gap-1.5 items-center justify-end">
+											{$i18n.t('Messages')}
+											{#if modelOrderBy === 'count'}
+												<span class="font-normal">
+													{#if modelDirection === 'asc'}<ChevronUp
+															className="size-2"
+														/>{:else}<ChevronDown className="size-2" />{/if}
+												</span>
+											{:else}
+												<span class="invisible"><ChevronUp className="size-2" /></span>
+											{/if}
+										</div>
+									</th>
+									<th
+										scope="col"
+										class="font-normal px-2.5 py-1.5 cursor-pointer select-none text-right"
+										on:click={() => toggleModelSort('users')}
+									>
+										<div class="flex gap-1.5 items-center justify-end">
+											{$i18n.t('Users')}
+											{#if modelOrderBy === 'users'}
+												<span class="font-normal">
+													{#if modelDirection === 'asc'}<ChevronUp
+															className="size-2"
+														/>{:else}<ChevronDown className="size-2" />{/if}
+												</span>
+											{:else}
+												<span class="invisible"><ChevronUp className="size-2" /></span>
+											{/if}
+										</div>
+									</th>
+									<th
+										scope="col"
+										class="font-normal px-2.5 py-1.5 cursor-pointer select-none text-right"
+										on:click={() => toggleModelSort('chats')}
+									>
+										<div class="flex gap-1.5 items-center justify-end">
+											{$i18n.t('Chats')}
+											{#if modelOrderBy === 'chats'}
+												<span class="font-normal">
+													{#if modelDirection === 'asc'}<ChevronUp
+															className="size-2"
+														/>{:else}<ChevronDown className="size-2" />{/if}
+												</span>
+											{:else}
+												<span class="invisible"><ChevronUp className="size-2" /></span>
+											{/if}
+										</div>
+									</th>
+									<!-- {$i18n.t('Tokens')} -->
+									{#each tokenColumns as column}
+										<th
+											scope="col"
+											title={`${column.label} ${$i18n.t('tokens')}`}
+											class="font-normal px-2.5 py-1.5 cursor-pointer select-none text-right"
+											on:click={() => toggleModelSort(column.key)}
 										>
-									</div>
-								</td>
-								<td class="px-3 py-1 text-right">{user.count.toLocaleString()}</td>
-								<td class="px-3 py-1 text-right">{formatNumber(user.total_tokens ?? 0)}</td>
-							</tr>
-						{/each}
-						{#if sortedUsers.length === 0}
-							<tr
-								><td colspan="4" class="px-3 py-2 text-center text-gray-400"
-									>{$i18n.t('No data')}</td
-								></tr
+											<div class="flex gap-1.5 items-center justify-end">
+												{column.label}
+												{#if modelOrderBy === column.key}
+													<span class="font-normal">
+														{#if modelDirection === 'asc'}<ChevronUp
+																className="size-2"
+															/>{:else}<ChevronDown className="size-2" />{/if}
+													</span>
+												{:else}
+													<span class="invisible"><ChevronUp className="size-2" /></span>
+												{/if}
+											</div>
+										</th>
+									{/each}
+									<th
+										scope="col"
+										class="font-normal px-2.5 py-1.5 cursor-pointer select-none text-right w-16"
+										on:click={() => toggleModelSort('percentage')}
+									>
+										<div class="flex gap-1.5 items-center justify-end">
+											{selectedMetric === 'tokens'
+												? $i18n.t('Token share')
+												: $i18n.t('Message share')}
+											{#if modelOrderBy === 'percentage'}
+												<span class="font-normal">
+													{#if modelDirection === 'asc'}<ChevronUp
+															className="size-2"
+														/>{:else}<ChevronDown className="size-2" />{/if}
+												</span>
+											{:else}
+												<span class="invisible"><ChevronUp className="size-2" /></span>
+											{/if}
+										</div>
+									</th>
+								</tr>
+							</thead>
+							<tbody>
+								{#each sortedModels as model, idx (model.model_id)}
+									{@const value =
+										selectedMetric === 'tokens'
+											? (tokenStats[model.model_id]?.total_tokens ?? 0)
+											: model.count}
+									<tr
+										class="text-xs cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+										on:click={() => {
+											selectedModel = { id: model.model_id, name: model.name };
+											showModelModal = true;
+										}}
+									>
+										<td class="font-normal px-3 py-1.5 text-gray-400">{idx + 1}</td>
+										<td class="font-normal px-3 py-1.5 text-gray-900 dark:text-white">
+											<div class="flex items-center gap-2">
+												<img
+													src="{WEBUI_API_BASE_URL}/models/model/profile/image?id={model.model_id}"
+													alt={model.name}
+													class="size-5 rounded-full object-cover shrink-0"
+													on:error={(e) => {
+														// LICENSE covers this Open WebUI fallback logo.
+														// Do not alter, remove, obscure, or replace it except as LICENSE permits:
+														// https://docs.openwebui.com/license.
+														const image = e.currentTarget as HTMLImageElement;
+														if (!image.src.endsWith('/favicon.png')) image.src = '/favicon.png';
+													}}
+												/>
+												<span class="truncate max-w-[9.375rem]">{model.name}</span>
+											</div>
+										</td>
+										<td class="font-normal px-3 py-1.5 text-right"
+											>{model.count.toLocaleString()}</td
+										>
+										<td class="font-normal px-3 py-1.5 text-right"
+											>{(model.unique_users ?? 0).toLocaleString()}</td
+										>
+										<td class="font-normal px-3 py-1.5 text-right"
+											>{(model.unique_chats ?? 0).toLocaleString()}</td
+										>
+										{#each tokenColumns as column}
+											<td class="font-normal px-3 py-1.5 text-right"
+												>{formatNumber(tokenStats[model.model_id]?.[column.key] ?? 0)}</td
+											>
+										{/each}
+										<td class="font-normal px-3 py-1.5 text-right text-gray-400">
+											<div class="flex items-center justify-end gap-2 tabular-nums">
+												<div
+													class="h-1 w-16 bg-gray-100 dark:bg-gray-800 overflow-hidden"
+													aria-hidden="true"
+												>
+													<div
+														class="h-full"
+														style:background-color={modelColor(model.model_id)}
+														style:width={`${metricTotal > 0 ? (value / metricTotal) * 100 : 0}%`}
+													></div>
+												</div>
+												<span class="w-12">{usageShare(value, metricTotal)}</span>
+											</div>
+										</td>
+									</tr>
+								{/each}
+								{#if sortedModels.length === 0}
+									<tr
+										><td colspan="9" class="font-normal px-3 py-1.5 text-center text-gray-400"
+											>{$i18n.t('No data')}</td
+										></tr
+									>
+								{/if}
+							</tbody>
+						</table>
+					</div>
+				</div>
+			{:else}
+				<!-- User Activity Table -->
+				<!-- {$i18n.t('User Activity')} -->
+				<div>
+					<div class="scrollbar-hidden relative whitespace-nowrap overflow-x-auto max-w-full">
+						<table
+							class="w-full text-xs tabular-nums text-left text-gray-500 dark:text-gray-400 table-auto"
+						>
+							<thead
+								class="text-[0.6875rem] font-normal text-gray-500 bg-transparent dark:text-gray-400"
 							>
-						{/if}
-					</tbody>
-				</table>
-			</div>
+								<tr>
+									<th scope="col" class="font-normal px-2.5 py-1.5 w-8">#</th>
+									<th
+										scope="col"
+										class="font-normal px-2.5 py-1.5 cursor-pointer select-none"
+										on:click={() => toggleUserSort('name')}
+									>
+										<div class="flex gap-1.5 items-center">
+											{$i18n.t('User')}
+											{#if userOrderBy === 'name'}
+												<span class="font-normal">
+													{#if userDirection === 'asc'}<ChevronUp
+															className="size-2"
+														/>{:else}<ChevronDown className="size-2" />{/if}
+												</span>
+											{:else}
+												<span class="invisible"><ChevronUp className="size-2" /></span>
+											{/if}
+										</div>
+									</th>
+									<th
+										scope="col"
+										class="font-normal px-2.5 py-1.5 cursor-pointer select-none text-right"
+										on:click={() => toggleUserSort('count')}
+									>
+										<div class="flex gap-1.5 items-center justify-end">
+											{$i18n.t('Messages')}
+											{#if userOrderBy === 'count'}
+												<span class="font-normal">
+													{#if userDirection === 'asc'}<ChevronUp
+															className="size-2"
+														/>{:else}<ChevronDown className="size-2" />{/if}
+												</span>
+											{:else}
+												<span class="invisible"><ChevronUp className="size-2" /></span>
+											{/if}
+										</div>
+									</th>
+									<!-- {$i18n.t('Tokens')} -->
+									{#each tokenColumns as column}
+										<th
+											scope="col"
+											title={`${column.label} ${$i18n.t('tokens')}`}
+											class="font-normal px-2.5 py-1.5 cursor-pointer select-none text-right"
+											on:click={() => toggleUserSort(column.key)}
+										>
+											<div class="flex gap-1.5 items-center justify-end">
+												{column.label}
+												{#if userOrderBy === column.key}
+													<span class="font-normal">
+														{#if userDirection === 'asc'}<ChevronUp
+																className="size-2"
+															/>{:else}<ChevronDown className="size-2" />{/if}
+													</span>
+												{:else}
+													<span class="invisible"><ChevronUp className="size-2" /></span>
+												{/if}
+											</div>
+										</th>
+									{/each}
+									<th
+										scope="col"
+										class="font-normal px-2.5 py-1.5 cursor-pointer select-none text-right w-16"
+										on:click={() => toggleUserSort('percentage')}
+									>
+										<div class="flex gap-1.5 items-center justify-end">
+											{selectedMetric === 'tokens'
+												? $i18n.t('Token share')
+												: $i18n.t('Message share')}
+											{#if userOrderBy === 'percentage'}
+												<span class="font-normal">
+													{#if userDirection === 'asc'}<ChevronUp
+															className="size-2"
+														/>{:else}<ChevronDown className="size-2" />{/if}
+												</span>
+											{:else}
+												<span class="invisible"><ChevronUp className="size-2" /></span>
+											{/if}
+										</div>
+									</th>
+								</tr>
+							</thead>
+							<tbody>
+								{#each sortedUsers as user, idx (user.user_id)}
+									{@const value =
+										selectedMetric === 'tokens' ? (user.total_tokens ?? 0) : user.count}
+									<tr class="text-xs">
+										<td class="font-normal px-3 py-1.5 text-gray-400">{idx + 1}</td>
+										<td class="font-normal px-3 py-1.5 text-gray-900 dark:text-white">
+											<div class="flex items-center gap-2">
+												<ProfilePreview
+													user={{ id: user.user_id, name: user.name || user.email }}
+													side="right"
+													align="center"
+													sideOffset={6}
+												>
+													<img
+														src="{WEBUI_API_BASE_URL}/users/{user.user_id}/profile/image"
+														alt={user.name || 'User'}
+														class="size-5 rounded-full object-cover shrink-0"
+														on:error={(e) => {
+															const image = e.currentTarget as HTMLImageElement;
+															if (!image.src.endsWith('/user.png')) image.src = '/user.png';
+														}}
+													/>
+												</ProfilePreview>
+												<span class="truncate max-w-[9.375rem]"
+													>{user.name || user.email || user.user_id.substring(0, 8)}</span
+												>
+											</div>
+										</td>
+										<td class="font-normal px-3 py-1.5 text-right">{user.count.toLocaleString()}</td
+										>
+										{#each tokenColumns as column}
+											<td class="font-normal px-3 py-1.5 text-right"
+												>{formatNumber(user[column.key] ?? 0)}</td
+											>
+										{/each}
+
+										<td class="font-normal px-3 py-1.5 text-right text-gray-400">
+											<div class="flex items-center justify-end gap-2 tabular-nums">
+												<div
+													class="h-1 w-16 bg-gray-100 dark:bg-gray-800 overflow-hidden"
+													aria-hidden="true"
+												>
+													<div
+														class="h-full bg-gray-400"
+														style:width={`${metricTotal > 0 ? (value / metricTotal) * 100 : 0}%`}
+													></div>
+												</div>
+												<span class="w-12">{usageShare(value, metricTotal)}</span>
+											</div>
+										</td>
+									</tr>
+								{/each}
+								{#if sortedUsers.length === 0}
+									<tr
+										><td colspan="7" class="font-normal px-3 py-1.5 text-center text-gray-400"
+											>{$i18n.t('No data')}</td
+										></tr
+									>
+								{/if}
+							</tbody>
+						</table>
+					</div>
+				</div>
+			{/if}
 		</div>
 	</div>
-
-	<div class="mt-4">
-		<RoutingUsage
-			pairs={routingPairs}
-			events={routingEvents}
-			loading={loadingRouting}
-			modelMode={routingModelMode}
-			selectedPair={routingSelectedPair}
-			modelFilterLabel={filterByModelName}
-			userFilterLabel={filterByUserName}
-			onModelModeChange={(mode) => {
-				routingModelMode = mode;
-				routingSelectedPair = null;
-				loadRoutingAnalytics();
-			}}
-			{onSelectPair}
-			{onClearPair}
-		/>
-	</div>
-
-	<div class="mt-6">
-		<PromptInsights
-			summary={promptInsightsSummary}
-			clusters={promptInsightsClusters}
-			emerging={promptInsightsEmerging}
-			trend={promptInsightsTrend}
-			loading={loadingPromptInsights}
-			error={promptInsightsError}
-			onRefresh={triggerPromptInsightsRun}
-			onLoadData={loadPromptInsights}
-			onSelectCluster={(id) => loadPromptInsightsTrend(id)}
-		/>
-	</div>
-
-	<div class="text-gray-500 text-xs mt-1.5 text-right">
-		ⓘ {$i18n.t('Message counts are based on assistant responses.')}
+	<div class="mt-2 text-[0.6875rem] text-gray-400 dark:text-gray-500">
+		{$i18n.t('Message counts are based on assistant responses.')}
+		{$i18n.t('Token counts are estimates and may not reflect actual API usage')}
 	</div>
 {/if}
+
+<style>
+	.analytics-tab {
+		padding-block: 0.25rem;
+		font-size: 0.75rem;
+		font-weight: 400;
+		color: var(--color-gray-500);
+	}
+	.analytics-tab:hover,
+	.tab-selected {
+		color: var(--color-gray-900);
+	}
+	:global(.dark) .analytics-tab {
+		color: var(--color-gray-400);
+	}
+	:global(.dark) .analytics-tab:hover,
+	:global(.dark) .tab-selected {
+		color: var(--color-gray-100);
+	}
+</style>

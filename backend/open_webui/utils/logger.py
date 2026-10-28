@@ -161,6 +161,8 @@ def file_format(record: 'Record'):
         # NIS2 compliance fields
         'correlation_id': record['extra'].get('correlation_id'),
         'oidc_claims': record['extra'].get('oidc_claims'),
+        'model_id': record['extra'].get('model_id', ''),
+        'usage': record['extra'].get('usage'),
         'request_object': record['extra'].get('request_object', b''),
         'response_object': record['extra'].get('response_object', b''),
         'extra': record['extra'].get('extra', {}),
